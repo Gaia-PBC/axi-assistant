@@ -561,6 +561,9 @@ async def _fire_schedules(
                         await audited_channel_send(sched_ch, f"*System:* 📅 Scheduled: `{name}`", operation="schedule.fire")
 
                     if agent_name in agents.agents:
+                        if entry.get("reset_context"):
+                            log.info("Resetting context for existing session '%s' before firing '%s'", agent_name, name)
+                            await agents.reset_session(agent_name)
                         log.info("Routing event '%s' to existing session '%s'", name, agent_name)
                         await agents.send_prompt_to_agent(agent_name, entry["prompt"])
                     else:
@@ -589,6 +592,9 @@ async def _fire_schedules(
                         )
 
                     if agent_name in agents.agents:
+                        if entry.get("reset_context"):
+                            log.info("Resetting context for existing session '%s' before firing one-off '%s'", agent_name, name)
+                            await agents.reset_session(agent_name)
                         log.info("Routing event '%s' to existing session '%s'", name, agent_name)
                         await agents.send_prompt_to_agent(agent_name, entry["prompt"])
                     else:
