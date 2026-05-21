@@ -204,6 +204,10 @@ def _wrap_content_with_flowchart(content: MessageContent, session: AgentSession)
 
     raw = _strip_ts(content)
 
+    m = re.match(r"^\[Inter-agent message from [^\]]+\] (/.+)", raw, re.DOTALL)
+    if m:
+        raw = m.group(1)
+
     # /raw bypass — strip prefix and send directly
     if raw.startswith("/raw"):
         return raw[4:].lstrip() if len(raw) > 4 else raw
