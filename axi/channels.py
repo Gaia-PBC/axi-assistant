@@ -555,8 +555,9 @@ async def ensure_agent_channel(agent_name: str, cwd: str | None = None) -> TextC
                 if ch.category_id not in target_group_ids:
                     dest = await _get_category_with_room(target_group, target_base_name)
                     try:
-                        await ch.move(category=dest, beginning=True, sync_permissions=True)
+                        await ch.move(category=dest, end=True, sync_permissions=True)
                         ch.category_id = dest.id
+                        await position_agent_channel_top(ch, dest)
                         log.info("Moved channel #%s from %s to %s", normalized, cat.name, dest.name)
                     except discord.HTTPException as e:
                         log.warning("Failed to move #%s to %s: %s", normalized, dest.name, e)
@@ -572,8 +573,9 @@ async def ensure_agent_channel(agent_name: str, cwd: str | None = None) -> TextC
             if _match_channel_name(ch.name, normalized):
                 dest = await _get_category_with_room(target_group, target_base_name)
                 try:
-                    await ch.move(category=dest, beginning=True, sync_permissions=True)
+                    await ch.move(category=dest, end=True, sync_permissions=True)
                     ch.category_id = dest.id
+                    await position_agent_channel_top(ch, dest)
                 except discord.HTTPException as e:
                     log.warning("Failed to move channel #%s from Killed to %s: %s", normalized, dest.name, e)
                     await _send_to_exceptions(
@@ -606,6 +608,7 @@ async def ensure_agent_channel(agent_name: str, cwd: str | None = None) -> TextC
             bot_creating_channels.discard(normalized)
     _channel_to_agent[channel.id] = agent_name
     log.info("Created channel #%s in %s category", normalized, dest.name)
+    await position_agent_channel_top(channel, dest)
     return channel
 
 
@@ -721,6 +724,71 @@ async def get_master_channel() -> TextChannel | None:
 
 _master_position_cooldown: float = 0.0
 _master_position_lock = asyncio.Lock()
+
+
+async def position_agent_channel_top(
+    channel: TextChannel, category: CategoryChannel
+) -> None:
+    """Place an agent channel just below axi-master inside its category.
+
+    Position 1 if the category contains axi-master (master stays at 0);
+    position 0 otherwise (overflow categories, Active, etc.).
+
+    Discord does not auto-renumber sibling channels when a single channel's
+    position is changed — ties are broken by snowflake ID (older first), so
+    a naive PATCH leaves the new channel underneath older ones.  This helper
+    sends a full bulk reorder of all sibling channels, mirroring the
+    pattern used by reorder_channels_by_recency.
+
+    Skips the master channel itself — its position is owned by
+    ensure_master_channel_position (always 0).
+    """
+    master_normalized = normalize_channel_name(config.MASTER_AGENT_NAME)
+    if _match_channel_name(channel.name, master_normalized):
+        return
+
+    if _bot is None or target_guild is None:
+        return
+
+    is_master_cat = bool(axi_categories) and category.id == axi_categories[0].id
+
+    # Build the desired order: master (if present) first, then this channel,
+    # then all other text channels in their current relative order.
+    siblings = [
+        ch for ch in category.text_channels
+        if ch.id != channel.id
+        and not _match_channel_name(ch.name, master_normalized)
+    ]
+    siblings.sort(key=lambda c: c.position)
+    master_in_cat = [
+        ch for ch in category.text_channels
+        if _match_channel_name(ch.name, master_normalized)
+    ]
+
+    desired_order: list[TextChannel] = []
+    if is_master_cat and master_in_cat:
+        desired_order.extend(master_in_cat)
+    desired_order.append(channel)
+    desired_order.extend(siblings)
+
+    payload: Any = [
+        {"id": ch.id, "position": idx}
+        for idx, ch in enumerate(desired_order)
+    ]
+
+    try:
+        await _bot.http.bulk_channel_update(
+            target_guild.id, payload, reason="Position new agent channel below master"
+        )
+        log.info(
+            "Positioned #%s at position %d in '%s'",
+            channel.name, 1 if is_master_cat and master_in_cat else 0, category.name,
+        )
+    except discord.HTTPException as e:
+        log.warning(
+            "Failed to position #%s at top of '%s': %s",
+            channel.name, category.name, e,
+        )
 
 
 async def ensure_master_channel_position() -> None:
