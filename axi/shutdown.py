@@ -258,9 +258,9 @@ class ShutdownCoordinator:
         (used when an agent triggers its own restart to avoid deadlocking on
         itself).
 
-        There is a 5-minute hard timeout on the wait. If agents are still
-        busy after that, shutdown proceeds anyway. The user can also call
-        force_shutdown() to bail out sooner.
+        Waits indefinitely for busy agents. No hard timeout — the user can
+        call force_shutdown() (e.g. via `/restart-including-bridge force=True`)
+        to bail out and force-kill in-flight agents.
 
         In bridge mode, busy agents are not waited for — they keep running
         in the bridge process and will be reconnected after restart.
@@ -296,11 +296,10 @@ class ShutdownCoordinator:
         for name in busy:
             await self._notify(name, f"Restart pending — waiting for **{name}** to finish current task...")
 
-        # Wait indefinitely for agents to finish
+        # Wait indefinitely for agents to finish. force_shutdown() is the
+        # escape hatch if the user gives up.
         start = time.monotonic()
         last_status = 0.0
-
-        shutdown_timeout = 300  # 5 minutes
 
         while True:
             await asyncio.sleep(POLL_INTERVAL)
@@ -309,14 +308,6 @@ class ShutdownCoordinator:
             still_busy = self.get_busy_agents(skip=skip_agent)
             if not still_busy:
                 log.info("All agents finished after %ds — exiting", int(elapsed))
-                break
-
-            if elapsed > shutdown_timeout:
-                log.warning(
-                    "Shutdown timeout after %ds — agents still busy: %s",
-                    int(elapsed),
-                    list(still_busy.keys()),
-                )
                 break
 
             # Periodic status updates

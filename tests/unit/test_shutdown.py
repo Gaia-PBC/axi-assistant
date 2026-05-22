@@ -187,6 +187,43 @@ class TestGracefulShutdown:
         await coord.graceful_shutdown("test")
         sleep_fn.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_wait_is_indefinite_past_old_300s_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Wait must not give up at 300s — it should keep polling until busy clears.
+
+        Old code force-exited at elapsed > 300s and force-killed in-flight agents.
+        With the timeout removed, the loop should only exit on still_busy == {}.
+        We make ~70 polls' worth of "still busy" answers (would have exceeded the
+        old 300s window at the real 5s POLL_INTERVAL) before clearing busy.
+        """
+        monkeypatch.setattr("axi.shutdown.POLL_INTERVAL", 0.001)
+        session = _make_session("a", busy=True)
+        poll_count = {"n": 0}
+        threshold = 70  # > 300s / 5s = 60 polls — well past the old timeout
+
+        def fake_get_busy_agents(skip: str | None = None) -> dict[str, MagicMock]:
+            poll_count["n"] += 1
+            if poll_count["n"] > threshold:
+                return {}
+            return {"a": session}
+
+        kill_fn = MagicMock()
+        coord = ShutdownCoordinator(
+            agents={"a": session},
+            sleep_fn=AsyncMock(),
+            close_bot_fn=AsyncMock(),
+            kill_fn=kill_fn,
+        )
+        monkeypatch.setattr(coord, "get_busy_agents", fake_get_busy_agents)
+
+        await coord.graceful_shutdown("test")
+        assert poll_count["n"] > threshold, (
+            f"wait exited too early at poll {poll_count['n']} — should wait until busy clears"
+        )
+        kill_fn.assert_called_once()
+
 
 class TestForceShutdown:
     @pytest.mark.asyncio

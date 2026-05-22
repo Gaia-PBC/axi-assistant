@@ -218,7 +218,8 @@ class ShutdownCoordinator:
     ) -> None:
         """Wait for busy agents to finish, then exit.
 
-        5-minute hard timeout. In bridge mode, busy agents are not waited for.
+        Waits indefinitely. force_shutdown() is the escape hatch. In bridge
+        mode, busy agents are not waited for.
         """
         if self._requested:
             log.info(
@@ -257,7 +258,6 @@ class ShutdownCoordinator:
 
         start = time.monotonic()
         last_status = 0.0
-        shutdown_timeout = 300
 
         while True:
             await asyncio.sleep(POLL_INTERVAL)
@@ -266,14 +266,6 @@ class ShutdownCoordinator:
             still_busy = self.get_busy_agents(skip=skip_agent)
             if not still_busy:
                 log.info("All agents finished after %ds — exiting", int(elapsed))
-                break
-
-            if elapsed > shutdown_timeout:
-                log.warning(
-                    "Shutdown timeout after %ds — agents still busy: %s",
-                    int(elapsed),
-                    list(still_busy.keys()),
-                )
                 break
 
             if elapsed - last_status >= STATUS_INTERVAL:
