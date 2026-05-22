@@ -1234,6 +1234,31 @@ async def _handle_system_message(
         if not data.get("success", True) and (ds.verbose or ds.fc_current_command not in _FC_QUIET_COMMANDS):
             block_name = data.get("block_name", "?")
             await _retry_discord_503(channel.send, f"> {block_name} **FAILED**")
+        # Persist inner Claude's session_id mid-flowchart so axi maintains accurate
+        # state if a long run is interrupted. Flowcoder-engine plumbs the latest
+        # known session_id on every block_complete; null before the first prompt
+        # block, monotonic thereafter.
+        block_session_id = data.get("session_id")
+        if block_session_id and block_session_id != session.session_id:
+            assert _set_session_id_fn is not None
+            await _set_session_id_fn(session, block_session_id, channel=channel)
+
+    elif msg.subtype == "block_timeout":
+        # Per-block timeout fired in flowcoder-engine. Walker kills the Claude
+        # subprocess and halts the flowchart; a block_complete(success=false)
+        # and flowchart_complete(status='halted') follow.
+        data = msg.data.get("data", {})
+        block_name = data.get("block_name", "?")
+        block_type = data.get("block_type", "?")
+        elapsed_ms = data.get("elapsed_ms", 0)
+        timeout_seconds = data.get("timeout_seconds", 0)
+        elapsed_s = elapsed_ms / 1000 if isinstance(elapsed_ms, (int, float)) else 0
+        assert _send_system is not None
+        await _send_system(
+            channel,
+            f"⏱️ Block **{block_name}** (`{block_type}`) timed out after "
+            f"{elapsed_s:.0f}s (limit: {timeout_seconds}s)",
+        )
 
     elif msg.subtype == "flowchart_start":
         data = msg.data.get("data", {})
@@ -1348,60 +1373,64 @@ async def _stream_response_to_channel_impl(session: AgentSession, channel: TextC
     live_edit = _LiveEditState(channel.id) if config.STREAMING_DISCORD else None
     ctx = _StreamCtx(live_edit=live_edit)
 
-    # Stall watchdog — logs warnings when no stream events arrive for 5+ min
+    # Stall watchdog — logs warnings when no stream events arrive for 5+ min.
+    # Wrapped in try/finally so the task is always cancelled, even if the
+    # async-for loop is interrupted by an outer asyncio.timeout cancellation.
+    # Without this, the watchdog task leaks and logs stall warnings forever.
     t_last_event_ref = [time.monotonic()]
     stall_done = asyncio.Event()
     watchdog = asyncio.create_task(_stall_watchdog(session.name, t_last_event_ref, stall_done))
 
-    async with channel.typing() as typing_ctx:
-        async for msg in _receive_response_safe(session):
-            t_last_event_ref[0] = time.monotonic()
-            if t_first_event is None:
-                t_first_event = time.monotonic()
-            ctx.msg_total += 1
-            if session.agent_log:
-                session.agent_log.debug(
-                    "MSG_SEQ[%s][%d] type=%s buf_len=%d",
-                    stream_id,
-                    ctx.msg_total,
-                    type(msg).__name__,
-                    len(ctx.text_buffer),
-                )
+    try:
+        async with channel.typing() as typing_ctx:
+            async for msg in _receive_response_safe(session):
+                t_last_event_ref[0] = time.monotonic()
+                if t_first_event is None:
+                    t_first_event = time.monotonic()
+                ctx.msg_total += 1
+                if session.agent_log:
+                    session.agent_log.debug(
+                        "MSG_SEQ[%s][%d] type=%s buf_len=%d",
+                        stream_id,
+                        ctx.msg_total,
+                        type(msg).__name__,
+                        len(ctx.text_buffer),
+                    )
 
-            # Surface any stderr output (CLI warnings/errors) before handling the message
-            await _drain_and_send_stderr(session, channel)
+                # Surface any stderr output (CLI warnings/errors) before handling the message
+                await _drain_and_send_stderr(session, channel)
 
-            if isinstance(msg, StreamEvent):
-                await _handle_stream_event(ctx, session, channel, msg, typing_ctx)
-            elif isinstance(msg, AssistantMessage):
-                await _handle_assistant_message(ctx, session, channel, msg, typing_ctx)
-            elif isinstance(msg, UserMessage):
-                await _handle_user_message(ctx, session, msg)
-            elif isinstance(msg, ResultMessage):
-                await _handle_result_message(ctx, session, channel, msg, typing_ctx)
-            elif isinstance(msg, SystemMessage):
-                if msg.subtype == "flowchart_start":
-                    ctx.in_flowchart = True
-                    ctx.had_flowchart = True
-                elif msg.subtype == "flowchart_complete":
-                    ctx.in_flowchart = False
-                await _handle_system_message(session, channel, msg, ctx)
-            elif session.agent_log:
-                session.agent_log.debug("OTHER_MSG: %s", type(msg).__name__)
+                if isinstance(msg, StreamEvent):
+                    await _handle_stream_event(ctx, session, channel, msg, typing_ctx)
+                elif isinstance(msg, AssistantMessage):
+                    await _handle_assistant_message(ctx, session, channel, msg, typing_ctx)
+                elif isinstance(msg, UserMessage):
+                    await _handle_user_message(ctx, session, msg)
+                elif isinstance(msg, ResultMessage):
+                    await _handle_result_message(ctx, session, channel, msg, typing_ctx)
+                elif isinstance(msg, SystemMessage):
+                    if msg.subtype == "flowchart_start":
+                        ctx.in_flowchart = True
+                        ctx.had_flowchart = True
+                    elif msg.subtype == "flowchart_complete":
+                        ctx.in_flowchart = False
+                    await _handle_system_message(session, channel, msg, ctx)
+                elif session.agent_log:
+                    session.agent_log.debug("OTHER_MSG: %s", type(msg).__name__)
 
-            # Mid-turn flush (skipped in streaming mode — live-edit handles splitting)
-            if not ctx.hit_rate_limit and ctx.live_edit is None and not ctx.suppress_stream and len(ctx.text_buffer) >= 1800:
-                split_at = ctx.text_buffer.rfind("\n", 0, 1800)
-                if split_at == -1:
-                    split_at = 1800
-                remainder = ctx.text_buffer[split_at:].lstrip("\n")
-                ctx.text_buffer = ctx.text_buffer[:split_at]
-                await _flush_text(ctx, session, channel, "mid_turn_split")
-                ctx.text_buffer = remainder
-
-    # Stop the stall watchdog now that the stream is done
-    stall_done.set()
-    watchdog.cancel()
+                # Mid-turn flush (skipped in streaming mode — live-edit handles splitting)
+                if not ctx.hit_rate_limit and ctx.live_edit is None and not ctx.suppress_stream and len(ctx.text_buffer) >= 1800:
+                    split_at = ctx.text_buffer.rfind("\n", 0, 1800)
+                    if split_at == -1:
+                        split_at = 1800
+                    remainder = ctx.text_buffer[split_at:].lstrip("\n")
+                    ctx.text_buffer = ctx.text_buffer[:split_at]
+                    await _flush_text(ctx, session, channel, "mid_turn_split")
+                    ctx.text_buffer = remainder
+    finally:
+        # Stop the stall watchdog regardless of how the loop exited
+        stall_done.set()
+        watchdog.cancel()
 
     # Post-loop stderr drain — catch anything emitted during final processing
     await _drain_and_send_stderr(session, channel)

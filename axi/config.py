@@ -579,7 +579,7 @@ HTTP_API_HOST = os.environ.get("HTTP_API_HOST", "127.0.0.1")
 HTTP_API_TOKEN = os.environ.get("HTTP_API_TOKEN", "")
 MAX_AWAKE_AGENTS = int(os.environ.get("MAX_AWAKE_AGENTS", "7"))
 IDLE_REMINDER_THRESHOLDS = [timedelta(minutes=30), timedelta(hours=3), timedelta(hours=48)]
-QUERY_TIMEOUT = 43200  # 12 hours
+QUERY_TIMEOUT = 604800  # 7 days — outer ceiling for between-block flowcoder hangs; per-block timeout (flowcoder-engine, 6h default) is the primary safety net
 INTERRUPT_TIMEOUT = 15  # seconds to wait after interrupt
 API_ERROR_MAX_RETRIES = 3
 API_ERROR_BASE_DELAY = 5  # seconds, doubles each retry

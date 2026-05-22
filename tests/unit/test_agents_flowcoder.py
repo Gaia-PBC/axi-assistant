@@ -80,6 +80,116 @@ class TestBlockComplete:
         await _handle_system_message(session, ch, msg, ctx)  # type: ignore[arg-type]
         assert len(ch.sent) == 0
 
+    @pytest.mark.asyncio
+    async def test_session_id_update_mid_flowchart(self) -> None:
+        session = AgentSession(name="test")
+        session.session_id = "old-sid"
+        ch = FakeChannel()
+        ctx = _StreamCtx()
+
+        import axi.discord_stream as ds
+        original = ds._set_session_id_fn
+        captured: list[str | None] = []
+
+        async def fake_set(sess: object, sid: str | None, channel: object | None = None) -> None:
+            captured.append(sid)
+            sess.session_id = sid  # type: ignore[attr-defined]
+
+        ds._set_session_id_fn = fake_set  # type: ignore[assignment]
+        try:
+            msg = SystemMessage(subtype="block_complete", data={
+                "data": {"block_name": "Step1", "success": True, "session_id": "new-sid"},
+            })
+            await _handle_system_message(session, ch, msg, ctx)  # type: ignore[arg-type]
+            assert captured == ["new-sid"]
+            assert session.session_id == "new-sid"
+        finally:
+            ds._set_session_id_fn = original
+
+    @pytest.mark.asyncio
+    async def test_session_id_null_is_noop(self) -> None:
+        session = AgentSession(name="test")
+        session.session_id = "existing"
+        ch = FakeChannel()
+        ctx = _StreamCtx()
+
+        import axi.discord_stream as ds
+        original = ds._set_session_id_fn
+        captured: list[str | None] = []
+
+        async def fake_set(sess: object, sid: str | None, channel: object | None = None) -> None:
+            captured.append(sid)
+
+        ds._set_session_id_fn = fake_set  # type: ignore[assignment]
+        try:
+            msg = SystemMessage(subtype="block_complete", data={
+                "data": {"block_name": "Step1", "success": True, "session_id": None},
+            })
+            await _handle_system_message(session, ch, msg, ctx)  # type: ignore[arg-type]
+            assert captured == []
+            assert session.session_id == "existing"
+        finally:
+            ds._set_session_id_fn = original
+
+    @pytest.mark.asyncio
+    async def test_session_id_unchanged_is_noop(self) -> None:
+        session = AgentSession(name="test")
+        session.session_id = "same-sid"
+        ch = FakeChannel()
+        ctx = _StreamCtx()
+
+        import axi.discord_stream as ds
+        original = ds._set_session_id_fn
+        captured: list[str | None] = []
+
+        async def fake_set(sess: object, sid: str | None, channel: object | None = None) -> None:
+            captured.append(sid)
+
+        ds._set_session_id_fn = fake_set  # type: ignore[assignment]
+        try:
+            msg = SystemMessage(subtype="block_complete", data={
+                "data": {"block_name": "Step1", "success": True, "session_id": "same-sid"},
+            })
+            await _handle_system_message(session, ch, msg, ctx)  # type: ignore[arg-type]
+            assert captured == []
+            assert session.session_id == "same-sid"
+        finally:
+            ds._set_session_id_fn = original
+
+
+class TestBlockTimeout:
+    @pytest.mark.asyncio
+    async def test_emits_user_facing_error(self) -> None:
+        session = AgentSession(name="test")
+        ch = FakeChannel()
+        ctx = _StreamCtx()
+
+        import axi.discord_stream as ds
+        original = ds._send_system
+
+        async def fake_send_system(channel: object, text: str) -> None:
+            ch.sent.append(f"*System:* {text}")
+
+        ds._send_system = fake_send_system  # type: ignore[assignment]
+        try:
+            msg = SystemMessage(subtype="block_timeout", data={
+                "data": {
+                    "block_id": "b1",
+                    "block_name": "SlowBlock",
+                    "block_type": "prompt",
+                    "elapsed_ms": 21600123,
+                    "timeout_seconds": 21600,
+                },
+            })
+            await _handle_system_message(session, ch, msg, ctx)  # type: ignore[arg-type]
+            joined = " | ".join(ch.sent)
+            assert "SlowBlock" in joined
+            assert "prompt" in joined
+            assert "21600" in joined
+            assert "timed out" in joined
+        finally:
+            ds._send_system = original
+
 
 class TestFlowchartComplete:
     @pytest.mark.asyncio
