@@ -449,12 +449,18 @@ async def on_message(message: discord.Message) -> None:
             tool_suffix = ""
             if activity.phase == "waiting" and activity.tool_name:
                 tool_suffix = f" (currently {tool_display(activity.tool_name)})"
-            await _interrupt_agent(session)
+            interrupted = await agents.graceful_interrupt(session)
             detail = " Replaced older queued message." if replaced else ""
-            await agents.send_system(
-                channel,
-                f"Agent **{session.name}** is busy — message queued (position {position}). Interrupting current task.{tool_suffix}{detail}",
-            )
+            if interrupted:
+                await agents.send_system(
+                    channel,
+                    f"Agent **{session.name}** is busy — message queued (position {position}). Interrupting current task.{tool_suffix}{detail}",
+                )
+            else:
+                await agents.send_system(
+                    channel,
+                    f"Agent **{session.name}** is busy — message queued (position {position}). Will process after current turn.{tool_suffix}{detail}",
+                )
         result_status = "queued"
     else:
         agents.scheduler.mark_interactive(session.name)

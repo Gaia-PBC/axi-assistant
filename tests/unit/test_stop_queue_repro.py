@@ -196,15 +196,13 @@ async def test_stop_clears_queue_before_interrupt_finishes(session: AgentSession
     author = FakeAuthor(_allowed_user_id())
     channel = FakeTextChannel(12345, "axi-master")
 
-    # Queue the followup first while _interrupt_agent is still the fixture's AsyncMock.
-    # Patching the slow stub before this would also block on_message's own
-    # _interrupt_agent call (main.py:452 fires it whenever a message queues at
-    # a busy agent), causing the test to hang inside on_message.
+    # Queue the followup — on_message uses agents.graceful_interrupt (best-effort,
+    # mocked fast by the fixture). _interrupt_agent is only used by /stop and /skip.
     await session.query_lock.acquire()
     await main.on_message(FakeMessage(40, channel, "queued followup", author))
     assert len(session.message_queue) == 1
 
-    # NOW install the slow stub so /stop's call to _interrupt_agent pauses
+    # Install the slow stub so /stop's call to _interrupt_agent pauses
     # mid-flight, letting us inspect the queue between clear-and-interrupt.
     interrupt_started = asyncio.Event()
     release_interrupt = asyncio.Event()
@@ -269,18 +267,19 @@ async def test_stop_drops_followup_instead_of_running_it(session: AgentSession) 
 
 
 @pytest.mark.asyncio
-async def test_busy_queue_interrupt_is_deduplicated_per_session(session: AgentSession) -> None:
+async def test_busy_queue_each_message_attempts_graceful_interrupt(session: AgentSession) -> None:
     author = FakeAuthor(_allowed_user_id())
     channel = FakeTextChannel(12345, "axi-master")
     calls = 0
     release = asyncio.Event()
 
-    async def _slow_interrupt(_session: AgentSession) -> None:
+    async def _slow_interrupt(_session: AgentSession) -> bool:
         nonlocal calls
         calls += 1
         await release.wait()
+        return True
 
-    main._interrupt_agent = _slow_interrupt  # type: ignore[assignment]
+    agents.graceful_interrupt = _slow_interrupt  # type: ignore[assignment]
 
     await session.query_lock.acquire()
     t1 = asyncio.create_task(main.on_message(FakeMessage(60, channel, "one", author)))
