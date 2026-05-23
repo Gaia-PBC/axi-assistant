@@ -42,7 +42,7 @@
         "type": "prompt",
         "name": "TEST_COMPLETION",
         "position": { "x": 300, "y": 450 },
-        "prompt": "[Automated flowchart step — not a user message.]\n\nDoes the work just completed require manual testing you cannot perform yourself?\n\nProvide your final answer in this output JSON schema:",
+        "prompt": "<sys>\nDoes the work just completed require manual testing you cannot perform yourself?\n\nProvide your final answer in this output JSON schema:\n</sys>",
         "output_schema": {
           "type": "object",
           "properties": {
@@ -64,7 +64,7 @@
         "type": "prompt",
         "name": "WAIT_FOR_USER",
         "position": { "x": 300, "y": 650 },
-        "prompt": "[Automated flowchart step — output goes to the user.]\n\nList the specific changes you just made that require manual testing. For each change, state:\n- What was changed\n- What the user should do to test it (specific steps)\n- What a successful test looks like\n\nBe brief — use bullet points.",
+        "prompt": "<sys>\nYour response goes to the user. List the specific changes you just made that require manual testing. For each change, state:\n- What was changed\n- What the user should do to test it (specific steps)\n- What a successful test looks like\n\nBe brief — use bullet points.\n</sys>",
         "output_schema": null,
         "sound_effect": null
       },
@@ -73,7 +73,7 @@
         "type": "prompt",
         "name": "REPORT_RECORDS",
         "position": { "x": 300, "y": 750 },
-        "prompt": "[Automated flowchart step — not a user message.]\n\nReport what was accomplished for this task and update the relevant records: $5\n\n$3\n\nDo not output any text to the user.",
+        "prompt": "<sys>\nReport what was accomplished for the task in this flowchart run (the user's slash-command arguments are in the <user> block below). Update the relevant records.\n\n$3\n\nDo not output any text to the user.\n</sys>\n\n<user>\n$5\n</user>",
         "output_schema": null,
         "sound_effect": null
       },
@@ -99,7 +99,7 @@
         "type": "prompt",
         "name": "GATHER_NEXT_ACTION",
         "position": { "x": 300, "y": 1050 },
-        "prompt": "[Automated flowchart step — not a user message.]\n\nDetermine the USER's next action — not yours, the human user's. Ground this in your project status records: check for the next-in-line incomplete task.\n\nIf there is a next-in-line task, that IS the user's next action — state it directly. Do not offer alternatives or list other tasks. Do not ask the user to decide.\n\nDo not output any text.\n\nProvide your final answer in this output JSON schema:",
+        "prompt": "<sys>\nDetermine the USER's next action — not yours, the human user's. Ground this in your project status records: check for the next-in-line incomplete task.\n\nIf there is a next-in-line task, that IS the user's next action — state it directly. Do not offer alternatives or list other tasks. Do not ask the user to decide.\n\nDo not output any text.\n\nProvide your final answer in this output JSON schema:\n</sys>",
         "output_schema": {
           "type": "object",
           "properties": {
@@ -114,7 +114,7 @@
         "type": "prompt",
         "name": "SET_STATUS",
         "position": { "x": 300, "y": 1150 },
-        "prompt": "[Automated flowchart step — not a user message.]\n\nBased on the next action you determined, pick the emoji that best represents the **type of to-do** the user has, and call set_channel_status. Do not output any text.\n\nCommon to-do types:\n- 📚 User should read a long response or review a document you produced\n- 🔬 User needs to test something manually that you can't verify yourself\n- 💬 User needs to respond — you asked a question, need approval, or are waiting for direction\n\n**Custom emoji** — if none of the above fit, pick any single emoji that captures the user's to-do type (e.g. 📍 for location scouting, 💰 for budgeting, ✍️ for writing). Use your judgment. Being specific is better than being generic.\n\n**Never use ✅ (checkmark)** — a checkmark is meaningless as a user to-do. It tells the user nothing about what they need to do next.\n\n- ❓ **Last resort only** — you genuinely have no idea what the user wants next and cannot infer it from context, pending tasks, or conversation history. Exhaust other options first.\n\n**Never set ⏳ yourself** — hourglass is applied automatically when you start processing. Setting it manually will conflict with the auto-hourglass system.",
+        "prompt": "<sys>\nBased on the next action you determined, pick the emoji that best represents the **type of to-do** the user has, and call set_channel_status. Do not output any text.\n\nCommon to-do types:\n- 📚 User should read a long response or review a document you produced\n- 🔬 User needs to test something manually that you can't verify yourself\n- 💬 User needs to respond — you asked a question, need approval, or are waiting for direction\n\n**Custom emoji** — if none of the above fit, pick any single emoji that captures the user's to-do type (e.g. 📍 for location scouting, 💰 for budgeting, ✍️ for writing). Use your judgment. Being specific is better than being generic.\n\n**Never use ✅ (checkmark)** — a checkmark is meaningless as a user to-do. It tells the user nothing about what they need to do next.\n\n- ❓ **Last resort only** — you genuinely have no idea what the user wants next and cannot infer it from context, pending tasks, or conversation history. Exhaust other options first.\n\n**Never set ⏳ yourself** — hourglass is applied automatically when you start processing. Setting it manually will conflict with the auto-hourglass system.\n</sys>",
         "output_schema": null,
         "sound_effect": null
       },
