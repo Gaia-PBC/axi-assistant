@@ -1,0 +1,188 @@
+{
+  "id": "ad000010-seed-4000-8000-bulkimport0001",
+  "name": "seed-bulk-import",
+  "description": "Long-running bulk import of USDA Foundation+SR Legacy foods into foodlp's seed pool. Per-food: USDA fetch + rule-based isVegan tag + DB insert. Checkpointable. Default target: 3000. Override via command_args (e.g. command_args='10' for smoke test).",
+  "flowchart": {
+    "blocks": {
+      "b0000001-start-4000-8000-000000000001": {
+        "id": "b0000001-start-4000-8000-000000000001",
+        "type": "start",
+        "name": "START",
+        "position": { "x": 150, "y": 50 }
+      },
+      "b0000002-init-4000-8000-000000000002": {
+        "id": "b0000002-init-4000-8000-000000000002",
+        "type": "prompt",
+        "name": "READ CHECKPOINT",
+        "position": { "x": 150, "y": 150 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nThe first command argument is: $1\n\nDetermine `chosen target`:\n- If the argument value parses as a positive integer, use that integer as `chosen target`.\n- Otherwise (empty string, the unsubstituted placeholder text with a literal dollar sign, or any non-numeric content), set: chosen target = 3000.\n\nDo NOT interpret a numeric value as 'literal text' — if the value is a digit-string like '10' or '3000', it IS a positive integer.\n\nRead checkpoint state from ./seed-import-progress.json in your current working directory. If the file doesn't exist, initialize:\n  {\"completedFdcIds\": [], \"nextOffset\": 0, \"errors\": [], \"target\": <chosen target>}\nand write it. If the file exists, KEEP the file's target — do not overwrite (resume preserves the original run's target).\n\nAlso fetch the USDA API key from foodlp DB:\n  sqlite3 /home/pride/coding-projects/foodlp/data/foodlp.db \"SELECT usda_api_key FROM settings LIMIT 1;\"\n\nIf no API key, abort with error.\n\nReturn:\n- has_more: true if len(completedFdcIds) < target\n- next_offset: current nextOffset value\n- completed_count: len(completedFdcIds)\n- target: target value from checkpoint\n- usda_api_key_present: boolean",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "has_more": { "type": "boolean" },
+            "next_offset": { "type": "integer" },
+            "completed_count": { "type": "integer" },
+            "target": { "type": "integer" },
+            "usda_api_key_present": { "type": "boolean" }
+          },
+          "required": ["has_more", "next_offset", "completed_count", "target", "usda_api_key_present"]
+        },
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000003-hasm-4000-8000-000000000003": {
+        "id": "b0000003-hasm-4000-8000-000000000003",
+        "type": "branch",
+        "name": "HAS MORE?",
+        "position": { "x": 150, "y": 270 },
+        "condition": "has_more"
+      },
+      "b0000004-batch-4000-8000-000000000004": {
+        "id": "b0000004-batch-4000-8000-000000000004",
+        "type": "prompt",
+        "name": "FETCH + IMPORT BATCH",
+        "position": { "x": 150, "y": 370 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nImport the next BATCH of up to 10 USDA Foundation+SR Legacy foods into foodlp. Stop the batch as soon as completed_count reaches target — do not over-import.\n\n=== HARD RULES (must hold every iteration) ===\n1. DO NOT create or edit files in /home/pride/coding-projects/foodlp/{src,tests,scripts,migrations,public,data} or anywhere else in the foodlp repo. The ONLY filesystem writes you may make are: (a) ./seed-import-progress.json in your cwd (the checkpoint), (b) scratch files under $TMPDIR (auto-cleaned). NO helper Python or shell scripts in the foodlp tree.\n2. Do all per-food work via INLINE Bash, sqlite3, curl, and python3 -c '<inline code>'. Heredocs (python3 <<'PY' ... PY) are OK if inline.\n3. DB reads and writes go to /home/pride/coding-projects/foodlp/data/foodlp.db. Use the python3 sqlite3 module (via inline `python3 - <<'PY'...PY` heredoc) for any query or INSERT that uses parameters — sqlite3 CLI does NOT bind `?` to shell positional args, so parameterized queries via CLI silently return empty / mis-insert. The sqlite3 CLI is fine for parameterless reads (e.g. `SELECT usda_api_key FROM settings`). Do not invoke any TypeScript code from src/.\n4. DO NOT use the Agent / Explore / sub-agent tools — this batch must complete via direct Bash + Python tool calls only.\n5. Idempotent: rely on the case-insensitive name unique constraint to skip duplicates.\n\n=== CONTEXT ===\n- USDA API key: get from `sqlite3 /home/pride/coding-projects/foodlp/data/foodlp.db \"SELECT usda_api_key FROM settings LIMIT 1;\"`\n- Foodlp DB: /home/pride/coding-projects/foodlp/data/foodlp.db\n- Checkpoint file: ./seed-import-progress.json in your cwd\n- Current offset (USDA pagination): {{next_offset}} — use pageNumber = next_offset/10 + 1\n- Current completed_count: {{completed_count}} | target: {{target}}\n- Remaining to import: target - completed_count. If remaining < 10, only import `remaining` foods this batch.\n\n=== STEPS ===\n\nSTEP 1 — FETCH USDA FOOD LIST:\nGET https://api.nal.usda.gov/fdc/v1/foods/list?dataType=Foundation,SR%20Legacy&pageSize=10&pageNumber={N}&api_key=<KEY>\n(N = {{next_offset}}/10 + 1)\n\nFor each food returned (cap at min(10, remaining)):\n\nSTEP 2 — SKIP DUPLICATES:\n- If fdcId already in checkpoint.completedFdcIds → skip\n- For name (case-insensitive) dedup, use python3 sqlite3 module — NOT sqlite3 CLI ?-binding. Example:\n    python3 - <<'PY'\n    import sqlite3\n    conn = sqlite3.connect('/home/pride/coding-projects/foodlp/data/foodlp.db')\n    name = 'Tofu, raw'  # substitute the actual name (use a multi-name batch query in practice)\n    row = conn.execute('SELECT 1 FROM foods WHERE LOWER(name)=LOWER(?)', (name,)).fetchone()\n    print('EXISTS' if row else 'NEW')\n    PY\n  If EXISTS → append fdcId to checkpoint.completedFdcIds and skip. For efficiency at batch scale, query all 10 names in one connection rather than 10 separate processes.\n\nSTEP 3 — FETCH FULL DETAIL:\nGET https://api.nal.usda.gov/fdc/v1/food/{fdcId}?api_key=<KEY>\nIf the detail fetch 404s, append {fdcId, name, error: '404 detail'} to checkpoint.errors and continue.\nExtract: description (=name), foodNutrients[] (each has nutrient.name + amount), foodPortions[] (each has portionDescription + gramWeight).\n\nSTEP 4 — MAP USDA NUTRIENT NAMES TO CANONICAL KEYS:\nUse this exact mapping (inline below — do NOT load src/shared/nutrient-mapping.ts). When a USDA nutrient name is in this dict, store the canonical key. Names NOT in the dict are skipped (no fabrication).\n\n  USDA_TO_CANONICAL = {\n    'Energy': 'energy', 'Protein': 'protein', 'Total lipid (fat)': 'total_fat',\n    'Water': 'water', 'Ash': 'ash',\n    'Carbohydrate, by difference': 'carbohydrate', 'Fiber, total dietary': 'fiber_total',\n    'Fiber, soluble': 'fiber_soluble', 'Fiber, insoluble': 'fiber_insoluble',\n    'Sugars, total including NLEA': 'sugars_total', 'Sugars, Total': 'sugars_total',\n    'Glucose': 'glucose', 'Glucose (dextrose)': 'glucose', 'Fructose': 'fructose',\n    'Sucrose': 'sucrose', 'Maltose': 'maltose', 'Galactose': 'galactose', 'Starch': 'starch',\n    'Fatty acids, total saturated': 'saturated_fat',\n    'Fatty acids, total monounsaturated': 'monounsaturated_fat',\n    'Fatty acids, total polyunsaturated': 'polyunsaturated_fat',\n    'Fatty acids, total trans': 'trans_fat',\n    '18:3 n-3 c,c,c (ALA)': 'ala', 'PUFA 18:3': 'ala',\n    '20:5 n-3 (EPA)': 'epa', 'PUFA 20:5 n-3 (EPA)': 'epa',\n    '22:6 n-3 (DHA)': 'dha', 'PUFA 22:6 n-3 (DHA)': 'dha',\n    '18:2 n-6 c,c': 'la', 'PUFA 18:2': 'la',\n    '20:4 n-6': 'aa', 'PUFA 20:4': 'aa',\n    'Tryptophan': 'tryptophan', 'Threonine': 'threonine', 'Isoleucine': 'isoleucine',\n    'Leucine': 'leucine', 'Lysine': 'lysine', 'Methionine': 'methionine',\n    'Phenylalanine': 'phenylalanine', 'Valine': 'valine', 'Histidine': 'histidine',\n    'Alanine': 'alanine', 'Arginine': 'arginine', 'Aspartic acid': 'aspartic_acid',\n    'Glutamic acid': 'glutamic_acid', 'Glycine': 'glycine', 'Proline': 'proline',\n    'Serine': 'serine', 'Tyrosine': 'tyrosine',\n    'Cystine': 'cystine', 'Cysteine': 'cysteine', 'Taurine': 'taurine',\n    'Vitamin A, RAE': 'vitamin_a_rae', 'Retinol': 'retinol',\n    'Carotene, beta': 'beta_carotene', 'Carotene, alpha': 'alpha_carotene',\n    'Cryptoxanthin, beta': 'beta_cryptoxanthin',\n    'Vitamin D (D2 + D3)': 'vitamin_d', 'Vitamin D (D2 + D3), International Units': 'vitamin_d',\n    'Vitamin E (alpha-tocopherol)': 'vitamin_e', 'Vitamin K (phylloquinone)': 'vitamin_k',\n    'Vitamin C, total ascorbic acid': 'vitamin_c', 'Thiamin': 'thiamin', 'Riboflavin': 'riboflavin',\n    'Niacin': 'niacin', 'Pantothenic acid': 'pantothenic_acid', 'Vitamin B-6': 'vitamin_b6',\n    'Folate, total': 'folate', 'Folic acid': 'folate', 'Vitamin B-12': 'vitamin_b12',\n    'Biotin': 'biotin', 'Choline, total': 'choline', 'Betaine': 'betaine',\n    'Calcium, Ca': 'calcium', 'Phosphorus, P': 'phosphorus', 'Magnesium, Mg': 'magnesium',\n    'Sodium, Na': 'sodium', 'Potassium, K': 'potassium',\n    'Iron, Fe': 'iron', 'Zinc, Zn': 'zinc', 'Copper, Cu': 'copper', 'Manganese, Mn': 'manganese',\n    'Selenium, Se': 'selenium', 'Fluoride, F': 'fluoride',\n    'Lycopene': 'lycopene', 'Lutein + zeaxanthin': 'lutein_zeaxanthin',\n    'Tocopherol, beta': 'beta_tocopherol', 'Tocopherol, gamma': 'gamma_tocopherol',\n    'Tocopherol, delta': 'delta_tocopherol',\n    'Campesterol': 'campesterol', 'Stigmasterol': 'stigmasterol', 'Phytosterols': 'phytosterols',\n  }\n\nNutrients USDA doesn't provide (e.g. biotin, choline, iodine, chromium, molybdenum for many foods) will simply be absent — that's OK. Do not invent values. Leave gaps.\n\nSTEP 5 — TAG isVegan:\nLowercase the food name. Two-pass check — NO '!' characters anywhere in either regex. Negative lookaheads contain '!' which bash history expansion mangles inside heredocs; prior runs wasted ~2-3 min/batch on Write/Read/Edit workarounds. Do NOT reintroduce lookaheads — add to vegan_exceptions instead.\n\n  import re\n  vegan_exceptions = r'milk\\s*chocolate|butter\\s*bean|eggplant|hamburger'\n  nonvegan = r'beef|chicken|pork|fish|salmon|tuna|shrimp|crab|lobster|cod|halibut|tilapia|sardine|anchovy|mackerel|herring|trout|catfish|cheese|milk|butter|cream|yogurt|whey|casein|egg|honey|lamb|veal|bacon|ham|sausage|turkey|duck|goose|gelatin|lard|tallow|oyster|clam|mussel|squid|octopus|venison|bison|rabbit|liver|kidney|tripe|caviar|roe|gizzard|brain'\n\n  name_lower = name.lower()\n  if re.search(vegan_exceptions, name_lower):  # 'milk chocolate', 'butter bean', 'eggplant', 'hamburger' → vegan\n      is_vegan = True\n  elif re.search(nonvegan, name_lower):        # any non-vegan substring → not vegan\n      is_vegan = False\n  else:\n      is_vegan = True\n\nSTEP 5.5 — ESTIMATE COST PER 100G IN USD:\nFor each food in the batch, produce a single per-100g cost in USD using your LLM knowledge of typical US conventional (NOT organic) grocery chain prices (Walmart/Target/Trader Joe's range). Round to 2 decimal places.\n\nReasoning bands:\n- Fresh produce: $0.10–$1.50 / 100g\n- Dried staples (rice, oats, dried beans, flour): $0.10–$0.60 / 100g\n- Cooked staples (cooked rice/beans): ~half of dried cost\n- Nuts, seeds: $1.00–$3.00 / 100g\n- Tofu, tempeh, plant milk: $0.30–$0.80 / 100g\n- Pseudo-meats (Beyond, Impossible): $1.50–$3.00 / 100g\n- Animal products (meat, fish, dairy): $0.40–$3.00 / 100g\n- Oils, fats: $0.30–$1.20 / 100g\n- Spices, condiments: $0.50–$5.00 / 100g\n- Supplements: $5–$20 / 100g (pills are dense)\n- Sea vegetables, dried: $5–$15 / 100g\n- Nutritional yeast, vital wheat gluten: $1–$3 / 100g\n\nSource tier = 4 (LLM estimate). Source description = 'LLM estimate from typical US chain pricing (Walmart/Target/Trader Joe\\'s range)'.\n\nSTEP 6 — INSERT INTO DB (python3 sqlite3 module):\nUse python3 with sqlite3 for parameterized inserts — sqlite3 CLI does NOT bind ?. Run ALL inserts for the batch in ONE python3 heredoc with a single connection.txn:\n    python3 - <<'PY'\n    import sqlite3\n    conn = sqlite3.connect('/home/pride/coding-projects/foodlp/data/foodlp.db')\n    cur = conn.cursor()\n    import datetime\n    ts = datetime.datetime.utcnow().isoformat() + 'Z'\n    src = 'LLM estimate from typical US chain pricing (Walmart/Target/Trader Joe\\'s range)'\n    for f in foods_to_insert:  # name, fdc_id, is_vegan, cost_per_100g_usd, nutrients_dict, servings_list\n        cur.execute(\"INSERT INTO foods (name, fdc_id, is_precomputed, is_supplement, is_vegan, calcium_absorption_factor, is_phytate_rich, cost_per_100g_usd, cost_source_tier, cost_source_description, cost_collected_at, created_at, updated_at) VALUES (?, ?, 1, 0, ?, 1.0, 0, ?, 4, ?, ?, datetime('now'), datetime('now'))\", (f['name'], f['fdc_id'], f['is_vegan'], f['cost_per_100g_usd'], src, ts))\n        food_id = cur.lastrowid\n        for nkey, val in f['nutrients'].items():\n            cur.execute(\"INSERT INTO food_nutrients (food_id, nutrient_key, value_per_100g, source_tier, source_description) VALUES (?, ?, ?, 1, 'USDA FDC')\", (food_id, nkey, val))\n        for s in f['servings']:\n            cur.execute(\"INSERT INTO serving_sizes (food_id, description, grams) VALUES (?, ?, ?)\", (food_id, s['description'], s['grams']))\n    conn.commit()\n    PY\n\nOne food_nutrients row per mapped nutrient with a non-null amount. One serving_sizes row per foodPortion that has BOTH portionDescription and gramWeight.\n\nSTEP 7 — UPDATE CHECKPOINT (atomic):\nAppend each successfully-inserted fdcId to completedFdcIds. Append errors as {fdcId, name, error}. After all foods in this batch processed: nextOffset = next_offset + (number of foods FETCHED from list, NOT successfully inserted — pagination advances regardless of dupes/errors). Write checkpoint via temp + rename.\n\nSTEP 8 — REPORT:\nReturn {processed: number of foods successfully INSERTED (not skipped, not errored), errors: count of errors added this batch, completed_count: new total len(completedFdcIds)}.",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "processed": { "type": "integer" },
+            "errors": { "type": "integer" },
+            "completed_count": { "type": "integer" }
+          },
+          "required": ["processed", "errors", "completed_count"]
+        },
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000005-report-4000-8000-000000000005": {
+        "id": "b0000005-report-4000-8000-000000000005",
+        "type": "prompt",
+        "name": "REPORT PROGRESS",
+        "position": { "x": 150, "y": 490 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nReport progress in ONE short line. Compute the percentage yourself (completed_count divided by target, times 100, rounded to 1 decimal). Format:\n\n\"Imported {{completed_count}}/{{target}} (X.X%). Batch: {{processed}} new, {{errors}} errors.\"\n\nReplace X.X with the computed percentage. Do not include any other text.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000006-refresh-4000-8000-000000000006": {
+        "id": "b0000006-refresh-4000-8000-000000000006",
+        "type": "refresh",
+        "name": "REFRESH",
+        "position": { "x": 150, "y": 610 }
+      },
+      "b0000007-done-4000-8000-000000000007": {
+        "id": "b0000007-done-4000-8000-000000000007",
+        "type": "prompt",
+        "name": "FINAL REPORT",
+        "position": { "x": 400, "y": 270 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nThe bulk import is complete. Read ./seed-import-progress.json and report:\n\n- Total imported: {{completed_count}} / {{target}}\n- Errors: count and brief summary (first 5 error entries)\n- Sample of last 5 imported foods (query sqlite3 for last-inserted names ordered by id DESC limit 5)\n\nKeep the report under 200 words.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000008-end-4000-8000-000000000008": {
+        "id": "b0000008-end-4000-8000-000000000008",
+        "type": "end",
+        "name": "DONE",
+        "position": { "x": 400, "y": 390 }
+      }
+    },
+    "connections": [
+      {
+        "id": "c0000001-0000-4000-8000-000000000001",
+        "source_block_id": "b0000001-start-4000-8000-000000000001",
+        "target_block_id": "b0000002-init-4000-8000-000000000002",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000002-0000-4000-8000-000000000002",
+        "source_block_id": "b0000002-init-4000-8000-000000000002",
+        "target_block_id": "b0000003-hasm-4000-8000-000000000003",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000003-0000-4000-8000-000000000003",
+        "source_block_id": "b0000003-hasm-4000-8000-000000000003",
+        "target_block_id": "b0000004-batch-4000-8000-000000000004",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": "more to import"
+      },
+      {
+        "id": "c0000004-0000-4000-8000-000000000004",
+        "source_block_id": "b0000003-hasm-4000-8000-000000000003",
+        "target_block_id": "b0000007-done-4000-8000-000000000007",
+        "source_port": "right",
+        "target_port": "left",
+        "is_true_path": false,
+        "condition": null,
+        "label": "target reached"
+      },
+      {
+        "id": "c0000005-0000-4000-8000-000000000005",
+        "source_block_id": "b0000004-batch-4000-8000-000000000004",
+        "target_block_id": "b0000005-report-4000-8000-000000000005",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000006-0000-4000-8000-000000000006",
+        "source_block_id": "b0000005-report-4000-8000-000000000005",
+        "target_block_id": "b0000006-refresh-4000-8000-000000000006",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000007-0000-4000-8000-000000000007",
+        "source_block_id": "b0000006-refresh-4000-8000-000000000006",
+        "target_block_id": "b0000002-init-4000-8000-000000000002",
+        "source_port": "top",
+        "target_port": "left",
+        "is_true_path": true,
+        "condition": null,
+        "label": "next batch"
+      },
+      {
+        "id": "c0000008-0000-4000-8000-000000000008",
+        "source_block_id": "b0000007-done-4000-8000-000000000007",
+        "target_block_id": "b0000008-end-4000-8000-000000000008",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      }
+    ],
+    "start_block_id": "b0000001-start-4000-8000-000000000001"
+  },
+  "metadata": {
+    "created": "2026-05-17T15:50:00.000000",
+    "modified": "2026-05-23T20:10:00.000000",
+    "version": "1.5",
+    "author": "foodlp agent",
+    "tags": ["foodlp", "seed-import", "long-running"]
+  },
+  "arguments": [
+    {
+      "name": "target",
+      "description": "Target number of foods to import. Defaults to 3000 if omitted."
+    }
+  ]
+}

@@ -1,0 +1,187 @@
+{
+  "id": "ad000020-cost-4000-8000-backfill00001",
+  "name": "cost-backfill",
+  "description": "Long-running backfill of cost_per_100g_usd for foods where it's NULL. Per-food: LLM estimate from typical US grocery chain pricing (Walmart/Target/Trader Joe's range), UPDATE row. Checkpointable. Default target: all NULL-cost foods.",
+  "flowchart": {
+    "blocks": {
+      "b0000001-start-4000-8000-000000000001": {
+        "id": "b0000001-start-4000-8000-000000000001",
+        "type": "start",
+        "name": "START",
+        "position": { "x": 150, "y": 50 }
+      },
+      "b0000002-init-4000-8000-000000000002": {
+        "id": "b0000002-init-4000-8000-000000000002",
+        "type": "prompt",
+        "name": "READ CHECKPOINT",
+        "position": { "x": 150, "y": 150 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nThe first command argument is: $1\n\nDetermine `chosen target`:\n- If the argument value parses as a positive integer, use that integer as `chosen target`.\n- Otherwise (empty string, the unsubstituted placeholder text with a literal dollar sign, or any non-numeric content), set: chosen target = current_null_count + completed_count (process all remaining NULL-cost foods).\n\nDo NOT interpret a numeric value as 'literal text' — if the value is a digit-string like '10' or '500', it IS a positive integer.\n\nRead checkpoint state from ./cost-backfill-progress.json in your cwd. If file doesn't exist, initialize:\n  {\"completed_count\": 0, \"errors\": [], \"target\": <chosen target>}\nand write it. If file exists, KEEP the file's target (don't overwrite) — resume preserves the original run's target.\n\nCount remaining NULL-cost foods in DB:\n  sqlite3 /home/pride/coding-projects/foodlp/data/foodlp.db \"SELECT COUNT(*) FROM foods WHERE cost_per_100g_usd IS NULL;\"\n\nReturn:\n- has_more: true if completed_count < target AND null_count > 0\n- null_count: current count of NULL-cost foods\n- completed_count: from checkpoint\n- target: target value from checkpoint",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "has_more": { "type": "boolean" },
+            "null_count": { "type": "integer" },
+            "completed_count": { "type": "integer" },
+            "target": { "type": "integer" }
+          },
+          "required": ["has_more", "null_count", "completed_count", "target"]
+        },
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000003-hasm-4000-8000-000000000003": {
+        "id": "b0000003-hasm-4000-8000-000000000003",
+        "type": "branch",
+        "name": "HAS MORE?",
+        "position": { "x": 150, "y": 270 },
+        "condition": "has_more"
+      },
+      "b0000004-batch-4000-8000-000000000004": {
+        "id": "b0000004-batch-4000-8000-000000000004",
+        "type": "prompt",
+        "name": "RESEARCH + UPDATE BATCH",
+        "position": { "x": 150, "y": 370 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nEstimate per-100g cost in USD for the next batch of up to 10 NULL-cost foods. Stop at target.\n\n=== HARD RULES (must hold every iteration) ===\n1. DO NOT create or edit files in /home/pride/coding-projects/foodlp/{src,tests,scripts,migrations,public,data} or anywhere else in the foodlp repo. The ONLY filesystem writes you may make are: (a) ./cost-backfill-progress.json in your cwd (the checkpoint), (b) scratch files under $TMPDIR.\n2. Do all per-food work via INLINE Bash, sqlite3, python3 (heredocs OK). No helper script files anywhere.\n3. DB reads and writes use python3 sqlite3 module via inline heredoc for any parameterized query — sqlite3 CLI does NOT bind ? to shell positional args. Parameterless reads via CLI are fine.\n4. DO NOT use the Agent / Explore / sub-agent tools — produce cost estimates directly from your own LLM knowledge of US grocery chain pricing.\n5. Idempotent: a food with non-NULL cost_per_100g_usd already has been processed; do not double-process.\n\n=== CONTEXT ===\n- DB: /home/pride/coding-projects/foodlp/data/foodlp.db\n- Checkpoint: ./cost-backfill-progress.json in cwd\n- Current completed_count: {{completed_count}} | target: {{target}} | null_count: {{null_count}}\n- Remaining in this run: min(target - completed_count, null_count). If 0 → nothing to do this batch.\n\n=== STEPS ===\n\nSTEP 1 — FETCH NEXT BATCH OF NULL-COST FOODS:\nQuery up to 10 foods with NULL cost (smallest id first for stable ordering):\n  python3 - <<'PY'\n  import sqlite3, json\n  conn = sqlite3.connect('/home/pride/coding-projects/foodlp/data/foodlp.db')\n  rows = conn.execute(\"SELECT id, name, is_supplement, is_vegan FROM foods WHERE cost_per_100g_usd IS NULL ORDER BY id LIMIT 10\").fetchall()\n  print(json.dumps([{'id': r[0], 'name': r[1], 'is_supplement': bool(r[2]), 'is_vegan': bool(r[3])} for r in rows]))\n  PY\n\nIf the result is empty, return processed=0, errors=0, completed_count={{completed_count}} and exit early.\n\nSTEP 2 — ESTIMATE PER-100G COST IN USD:\nFor each food, produce a single per-100g cost in USD using your LLM knowledge of typical US conventional (NOT organic) grocery chain prices at Walmart / Target / Trader Joe's / typical mass-market chain. Round to 2 decimal places (0.01 USD precision).\n\nReasoning bands (rough — adjust by specific food):\n- Fresh produce (vegetables, fruits): $0.10–$1.50 / 100g\n- Dried staples (rice, oats, dried beans, flour): $0.10–$0.60 / 100g\n- Cooked staples (cooked rice/beans — usually noted in name): same as dried but ~half cost\n- Nuts, seeds: $1.00–$3.00 / 100g\n- Tofu, tempeh, plant milk: $0.30–$0.80 / 100g\n- Pseudo-meats (Beyond, Impossible, Field Roast): $1.50–$3.00 / 100g\n- Animal products (meat, fish, dairy): $0.40–$3.00 / 100g depending on cut/type\n- Oils, fats: $0.30–$1.20 / 100g\n- Spices, condiments (small-volume): $0.50–$5.00 / 100g\n- Supplements (B12, D3, etc.): expensive per-100g because pills are dense and small (e.g. typical 100ct bottle for $5–$20, pills ~1g each → ~$0.05–$0.20 per pill, ~$5–$20 per 100g pill weight). Compute from typical bottle pricing.\n- Sea vegetables (nori, wakame), dried: $5–$15 / 100g (rare ingredient, sold in small packages)\n- Nutritional yeast, vital wheat gluten: $1–$3 / 100g\n\nIf the food is genuinely obscure (rare regional/ethnic ingredient not in mass-market chains), estimate from comparable items and note in source description.\n\nSTEP 3 — UPDATE DB:\nUse python3 sqlite3 for parameterized UPDATEs (all in one connection/commit):\n  python3 - <<'PY'\n  import sqlite3, datetime\n  conn = sqlite3.connect('/home/pride/coding-projects/foodlp/data/foodlp.db')\n  cur = conn.cursor()\n  ts = datetime.datetime.utcnow().isoformat() + 'Z'\n  src_desc = 'LLM estimate from typical US chain pricing (Walmart/Target/Trader Joe\\'s range)'\n  for f in foods_with_costs:  # list of {id, cost_usd_per_100g}\n      cur.execute(\"UPDATE foods SET cost_per_100g_usd=?, cost_source_tier=4, cost_source_description=?, cost_collected_at=? WHERE id=?\",\n                  (f['cost_usd_per_100g'], src_desc, ts, f['id']))\n  conn.commit()\n  PY\nSource tier = 4 (LLM estimate). When live-chain-scrape or USDA Thrifty Food Plan integration is added later, those would be tier 1 or 2 and supersede tier-4 entries.\n\nSTEP 4 — UPDATE CHECKPOINT (atomic):\nUpdate completed_count += <number successfully updated>. Append errors as {food_id, name, error} for any that failed. Write via temp + rename.\n\nSTEP 5 — REPORT:\nReturn {processed: <updated this batch>, errors: <error count this batch>, completed_count: <new total>}.",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "processed": { "type": "integer" },
+            "errors": { "type": "integer" },
+            "completed_count": { "type": "integer" }
+          },
+          "required": ["processed", "errors", "completed_count"]
+        },
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000005-report-4000-8000-000000000005": {
+        "id": "b0000005-report-4000-8000-000000000005",
+        "type": "prompt",
+        "name": "REPORT PROGRESS",
+        "position": { "x": 150, "y": 490 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nReport progress in ONE short line. Compute the percentage yourself (completed_count divided by target, times 100, rounded to 1 decimal). Format:\n\n\"Cost backfill: {{completed_count}}/{{target}} (X.X%). Batch: {{processed}} priced, {{errors}} errors.\"\n\nReplace X.X with the computed percentage. Do not include any other text.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000006-refresh-4000-8000-000000000006": {
+        "id": "b0000006-refresh-4000-8000-000000000006",
+        "type": "refresh",
+        "name": "REFRESH",
+        "position": { "x": 150, "y": 610 }
+      },
+      "b0000007-done-4000-8000-000000000007": {
+        "id": "b0000007-done-4000-8000-000000000007",
+        "type": "prompt",
+        "name": "FINAL REPORT",
+        "position": { "x": 400, "y": 270 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nThe cost backfill is complete. Read ./cost-backfill-progress.json and report:\n\n- Total priced this run: {{completed_count}} / {{target}}\n- Errors: count + brief summary (first 5 entries)\n- Remaining NULL-cost foods in DB (query foods WHERE cost_per_100g_usd IS NULL)\n- Sample of last 5 foods priced (query sqlite3 for highest 5 ids with cost_collected_at NOT NULL, ordered by cost_collected_at DESC)\n\nKeep the report under 200 words.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000008-end-4000-8000-000000000008": {
+        "id": "b0000008-end-4000-8000-000000000008",
+        "type": "end",
+        "name": "DONE",
+        "position": { "x": 400, "y": 390 }
+      }
+    },
+    "connections": [
+      {
+        "id": "c0000001-0000-4000-8000-000000000001",
+        "source_block_id": "b0000001-start-4000-8000-000000000001",
+        "target_block_id": "b0000002-init-4000-8000-000000000002",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000002-0000-4000-8000-000000000002",
+        "source_block_id": "b0000002-init-4000-8000-000000000002",
+        "target_block_id": "b0000003-hasm-4000-8000-000000000003",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000003-0000-4000-8000-000000000003",
+        "source_block_id": "b0000003-hasm-4000-8000-000000000003",
+        "target_block_id": "b0000004-batch-4000-8000-000000000004",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": "more to price"
+      },
+      {
+        "id": "c0000004-0000-4000-8000-000000000004",
+        "source_block_id": "b0000003-hasm-4000-8000-000000000003",
+        "target_block_id": "b0000007-done-4000-8000-000000000007",
+        "source_port": "right",
+        "target_port": "left",
+        "is_true_path": false,
+        "condition": null,
+        "label": "target reached"
+      },
+      {
+        "id": "c0000005-0000-4000-8000-000000000005",
+        "source_block_id": "b0000004-batch-4000-8000-000000000004",
+        "target_block_id": "b0000005-report-4000-8000-000000000005",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000006-0000-4000-8000-000000000006",
+        "source_block_id": "b0000005-report-4000-8000-000000000005",
+        "target_block_id": "b0000006-refresh-4000-8000-000000000006",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000007-0000-4000-8000-000000000007",
+        "source_block_id": "b0000006-refresh-4000-8000-000000000006",
+        "target_block_id": "b0000002-init-4000-8000-000000000002",
+        "source_port": "top",
+        "target_port": "left",
+        "is_true_path": true,
+        "condition": null,
+        "label": "next batch"
+      },
+      {
+        "id": "c0000008-0000-4000-8000-000000000008",
+        "source_block_id": "b0000007-done-4000-8000-000000000007",
+        "target_block_id": "b0000008-end-4000-8000-000000000008",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      }
+    ],
+    "start_block_id": "b0000001-start-4000-8000-000000000001"
+  },
+  "metadata": {
+    "created": "2026-05-21T01:00:00.000000",
+    "modified": "2026-05-21T09:35:00.000000",
+    "version": "1.1",
+    "author": "foodlp agent",
+    "tags": ["foodlp", "cost-backfill", "long-running"]
+  },
+  "arguments": [
+    {
+      "name": "target",
+      "description": "Number of foods to price this run. Defaults to all NULL-cost foods if omitted."
+    }
+  ]
+}

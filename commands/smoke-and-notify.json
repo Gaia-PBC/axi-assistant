@@ -1,0 +1,99 @@
+{
+  "id": "ad000030-smoke-4000-8000-andnotify00001",
+  "name": "smoke-and-notify",
+  "description": "Generic wrapper for smoke-testing a flowchart at small scale. Runs the inner flowchart via composition (FlowCoder command block), then messages a notify-target agent when done. Pattern: spawn an agent with command='smoke-and-notify' and command_args='<inner_command> <inner_args> <notify_to>'.",
+  "flowchart": {
+    "blocks": {
+      "b0000001-start-4000-8000-000000000001": {
+        "id": "b0000001-start-4000-8000-000000000001",
+        "type": "start",
+        "name": "START",
+        "position": { "x": 150, "y": 50 }
+      },
+      "b0000002-runwrap-4000-8000-00000000002": {
+        "id": "b0000002-runwrap-4000-8000-00000000002",
+        "type": "command",
+        "name": "RUN INNER FLOWCHART",
+        "position": { "x": 150, "y": 150 },
+        "command_name": "$1",
+        "arguments": "$2",
+        "inherit_variables": false,
+        "merge_output": true
+      },
+      "b0000003-notify-4000-8000-00000000003": {
+        "id": "b0000003-notify-4000-8000-00000000003",
+        "type": "prompt",
+        "name": "NOTIFY SPAWNER",
+        "position": { "x": 150, "y": 250 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nThe smoke test of /$1 (args: '$2') has completed. Notify the spawning agent.\n\nCall mcp__axi__axi_send_message with:\n- agent_name: $3\n- sender: <your own agent name — you know it from your system prompt; do NOT default to axi-master>\n- content: A concise summary (under 300 words) of what just happened. Include: (a) what the inner flowchart did across its iterations (drawn from your conversation history); (b) final state — checkpoint counts, error counts, sample output; (c) any HARD RULES violations or unexpected behavior you noticed; (d) explicit recommendation to verify primary sources (DB rows, files, etc.) before scaling.\n\nDo not include any other tool calls or text output.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000004-end-4000-8000-000000000004": {
+        "id": "b0000004-end-4000-8000-000000000004",
+        "type": "end",
+        "name": "DONE",
+        "position": { "x": 150, "y": 350 }
+      }
+    },
+    "connections": [
+      {
+        "id": "c0000001-0000-4000-8000-000000000001",
+        "source_block_id": "b0000001-start-4000-8000-000000000001",
+        "target_block_id": "b0000002-runwrap-4000-8000-00000000002",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000002-0000-4000-8000-000000000002",
+        "source_block_id": "b0000002-runwrap-4000-8000-00000000002",
+        "target_block_id": "b0000003-notify-4000-8000-00000000003",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000003-0000-4000-8000-000000000003",
+        "source_block_id": "b0000003-notify-4000-8000-00000000003",
+        "target_block_id": "b0000004-end-4000-8000-000000000004",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      }
+    ],
+    "start_block_id": "b0000001-start-4000-8000-000000000001"
+  },
+  "metadata": {
+    "created": "2026-05-21T02:25:00.000000",
+    "modified": "2026-05-21T02:25:00.000000",
+    "version": "1.0",
+    "author": "foodlp agent",
+    "tags": ["smoke-test", "wrapper", "generic"]
+  },
+  "arguments": [
+    {
+      "name": "wrapped_command",
+      "description": "Name of the inner flowchart to run (no leading slash). Becomes $1.",
+      "required": true
+    },
+    {
+      "name": "wrapped_args",
+      "description": "Shell-style argument string for the inner flowchart. Becomes $2. Use empty string if no args.",
+      "required": false,
+      "default": ""
+    },
+    {
+      "name": "notify_to",
+      "description": "Name of the agent to message when the inner flowchart finishes. Becomes $3.",
+      "required": true
+    }
+  ]
+}
