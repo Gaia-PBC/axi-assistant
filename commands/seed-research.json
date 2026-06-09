@@ -1,0 +1,145 @@
+{
+  "id": "ad000020-seed-research-4000-8000-nutri00000001",
+  "name": "seed-research",
+  "description": "Per-food nutrition research via a visible prompt block (no Claude Agent SDK). Loops over precomputed foods with nutrition_researched_at IS NULL: USDA tier-1 + multi-source tier-2-4 gap-fill with REAL citations, insert, set marker, refresh.",
+  "arguments": [],
+  "flowchart": {
+    "start_block_id": "b0000001-strt-4000-8000-000000000001",
+    "blocks": {
+      "b0000001-strt-4000-8000-000000000001": {
+        "id": "b0000001-strt-4000-8000-000000000001",
+        "type": "start",
+        "name": "START",
+        "position": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "b0000002-slct-4000-8000-000000000002": {
+        "id": "b0000002-slct-4000-8000-000000000002",
+        "type": "bash",
+        "name": "SELECT NEXT FOOD",
+        "position": {
+          "x": 0,
+          "y": 120
+        },
+        "command": "CKPT=/home/pride/coding-projects/foodlp/data/.seed-research-last; DB=/home/pride/coding-projects/foodlp/data/foodlp.db; ROW=$(sqlite3 \"$DB\" \"SELECT id || '~' || name FROM foods WHERE is_precomputed=1 AND nutrition_researched_at IS NULL ORDER BY id LIMIT 1;\"); if [ -z \"$ROW\" ]; then printf ''; exit 0; fi; NEW_ID=\"${ROW%%~*}\"; LAST=\"\"; if [ -f \"$CKPT\" ]; then LAST=$(cat \"$CKPT\"); fi; if [ \"$NEW_ID\" = \"$LAST\" ]; then printf ''; exit 0; fi; printf '%s' \"$NEW_ID\" > \"$CKPT\"; printf '%s' \"$ROW\"",
+        "capture_output": true,
+        "output_variable": "food_row",
+        "output_type": "string"
+      },
+      "b0000003-brch-4000-8000-000000000003": {
+        "id": "b0000003-brch-4000-8000-000000000003",
+        "type": "branch",
+        "name": "MORE FOODS?",
+        "position": {
+          "x": 0,
+          "y": 240
+        },
+        "condition": "food_row"
+      },
+      "b0000004-rsch-4000-8000-000000000004": {
+        "id": "b0000004-rsch-4000-8000-000000000004",
+        "type": "prompt",
+        "name": "RESEARCH ONE FOOD",
+        "position": {
+          "x": 0,
+          "y": 360
+        },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nYou are researching the complete per-100g nutrition for ONE food and writing it to the foodlp SQLite DB. Work transparently and show your sources.\n\nFOOD TO RESEARCH (format is `id~name`): {{food_row}}\nParse it: the integer before the first `~` is FOOD_ID; the rest is FOOD_NAME.\n\nDB: /home/pride/coding-projects/foodlp/data/foodlp.db\n\n=== HARD RULES (must hold) ===\n1. DO NOT use the Claude Agent SDK or spawn sub-agents. Do the work yourself with your own tools: Bash (curl, sqlite3, python3), WebSearch, WebFetch, Read.\n2. SOURCING LADDER per nutrient (SPEC.md \"Food Data Gathering\"): Tier 1 = USDA FoodData Central; Tier 2 = other national food-composition DBs (Japanese MEXT, EuroFIR, UK CoFID, Canada CNF, AUSNUT); Tier 3 = peer-reviewed studies or manufacturer nutrition labels; Tier 4 = reputable nutrition websites. Use the highest tier available per nutrient.\n3. EVERY non-USDA value (tier 2-4) MUST carry a REAL, resolvable citation — a URL or DOI or a named DB+entry — in source_description. If you cannot find a real source for a nutrient, LEAVE IT OUT. Never invent a value and never write a vague/non-citation source string. Fabrication is the worst possible outcome.\n4. MARK ON ATTEMPT. Set the researched marker (STEP 5) whenever you ran the research steps for this food and reached the insert/mark stage - INCLUDING the case where USDA matched but few or no further sources were found (low yield), and including the case where you ran the searches but found nothing sourceable. 'Ran and found little' still marks; only a genuine inability to run the research at all (a rate-limit or tool error that prevented you from reaching STEP 4-5) leaves the food unmarked.\n5. SANITY BOUNDS. Convert each nutrient value to grams per 100 g of food before inserting; require 0 <= grams <= 100 (a single nutrient cannot exceed the food's own 100 g mass). Microgram values above ~10,000,000 (=10 g) are almost certainly a unit error; 100,000,000 ug (=100 g) is impossible. Cross-check rda.ts: if a per-100g value exceeds ~1000x the nutrient RDA, treat it as a unit mistake (IU vs ug vs mg, or per-serving vs per-100g) and re-derive or SKIP. Per HARD RULE 3, skipping beats writing a wrong value.\n\n=== STEPS ===\nSTEP 1 — USDA TIER-1: Get the API key: `sqlite3 /home/pride/coding-projects/foodlp/data/foodlp.db \"SELECT usda_api_key FROM settings LIMIT 1;\"`. Search USDA FDC for FOOD_NAME (https://api.nal.usda.gov/fdc/v1/foods/search?query=...&api_key=KEY), pick the best generic match, fetch its detail, and record per-100g values for the canonical nutrients.\n\nSTEP 2 — CANONICAL KEYS: Read /home/pride/coding-projects/foodlp/src/shared/nutrients.ts for the exact canonical nutrient keys + units. Map USDA nutrient names to these keys. Read /home/pride/coding-projects/foodlp/src/shared/rda.ts to know which nutrients are RDA-constrained (these are the priority gaps to fill).\n\nSTEP 3 — GAP RESEARCH: For RDA-constrained nutrients MISSING or zero in the USDA data, research them via WebSearch/WebFetch across the tier-2->3->4 ladder. Capture the real citation for each.\n\nSTEP 4 — INSERT (idempotent: deletes existing food_nutrients rows for FOOD_ID first within the same transaction, then re-inserts, so a resume-after-partial-failure replaces prior rows cleanly rather than colliding on the food_nutrients UNIQUE(food_id,nutrient_key) constraint; use the python3 sqlite3 module for parameterized inserts, NOT the sqlite3 CLI with ? placeholders): for FOOD_ID insert one food_nutrients row per nutrient you have a value for:\n    python3 - <<'PY'\n    import sqlite3\n    conn = sqlite3.connect('/home/pride/coding-projects/foodlp/data/foodlp.db')\n    cur = conn.cursor()\n    cur.execute('DELETE FROM food_nutrients WHERE food_id = ?', (FOOD_ID,))\n    rows = [ (FOOD_ID, 'iron', 2.5, 1, 'USDA FDC #169...'), (FOOD_ID, 'iodine', 0.012, 3, 'CoFID 2021, https://...'), ]  # (food_id, nutrient_key, value_per_100g, source_tier, source_description-with-real-citation)\n    for r in rows:\n        cur.execute('INSERT INTO food_nutrients (food_id, nutrient_key, value_per_100g, source_tier, source_description) VALUES (?,?,?,?,?)', r)\n    conn.commit()\n    PY\n  Skip a nutrient entirely rather than insert a fabricated or citation-less value. PROGRAMMATIC SANITY BACKSTOP (per HARD RULE 5): before inserting, using the canonical unit from nutrients.ts, skip any row implying more than 100 g per 100 g of food - i.e. a g-unit value > 100, an mg-unit value > 100000, or a ug-unit value > 100000000. Such a row is a unit error; skip it rather than insert it.\n\nSTEP 5 — MARK RESEARCHED (after STEP 4, whenever this food was attempted and you reached this step - including a low-yield or empty result; see HARD RULE 4. A zero-row insert in STEP 4 still proceeds to mark):\n    python3 - <<'PY'\n    import sqlite3, datetime\n    conn = sqlite3.connect('/home/pride/coding-projects/foodlp/data/foodlp.db')\n    conn.execute(\"UPDATE foods SET nutrition_researched_at=? WHERE id=?\", (datetime.datetime.utcnow().isoformat()+'Z', FOOD_ID))\n    conn.commit()\n    PY\n\nSTEP 6 — REPORT (one short message): FOOD_ID + name, count of nutrients inserted by tier (t1/t2/t3/t4), and 2-3 example values with their real citations so a human can spot-check. If you ran the research but found little or nothing (no USDA match and no other sourceable values), report that and STILL mark it researched (STEP 5) so the pipeline advances past hard-to-source foods - an attempted food is done. ONLY if a rate-limit or tool error prevented you from running the research at all, do NOT mark it; the pipeline's stall detector will then stop the run cleanly for a later resume.",
+        "output_variable": "research_report"
+      },
+      "b0000005-rfsh-4000-8000-000000000005": {
+        "id": "b0000005-rfsh-4000-8000-000000000005",
+        "type": "refresh",
+        "name": "REFRESH",
+        "position": {
+          "x": 0,
+          "y": 480
+        }
+      },
+      "b0000006-end0-4000-8000-000000000006": {
+        "id": "b0000006-end0-4000-8000-000000000006",
+        "type": "end",
+        "name": "DONE",
+        "position": {
+          "x": 200,
+          "y": 360
+        }
+      },
+      "b0000007-clr0-4000-8000-000000000007": {
+        "id": "b0000007-clr0-4000-8000-000000000007",
+        "type": "bash",
+        "name": "CLEAR CHECKPOINT",
+        "position": {
+          "x": 0,
+          "y": 60
+        },
+        "command": "rm -f /home/pride/coding-projects/foodlp/data/.seed-research-last; echo cleared",
+        "capture_output": true,
+        "output_variable": "ckpt_clear",
+        "output_type": "string"
+      }
+    },
+    "connections": [
+      {
+        "source_block_id": "b0000001-strt-4000-8000-000000000001",
+        "target_block_id": "b0000007-clr0-4000-8000-000000000007",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "source_block_id": "b0000002-slct-4000-8000-000000000002",
+        "target_block_id": "b0000003-brch-4000-8000-000000000003",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "source_block_id": "b0000003-brch-4000-8000-000000000003",
+        "target_block_id": "b0000004-rsch-4000-8000-000000000004",
+        "source_port": "true",
+        "target_port": "in",
+        "is_true_path": true,
+        "label": "more foods"
+      },
+      {
+        "source_block_id": "b0000003-brch-4000-8000-000000000003",
+        "target_block_id": "b0000006-end0-4000-8000-000000000006",
+        "source_port": "false",
+        "target_port": "in",
+        "is_true_path": false,
+        "label": "none left"
+      },
+      {
+        "source_block_id": "b0000004-rsch-4000-8000-000000000004",
+        "target_block_id": "b0000005-rfsh-4000-8000-000000000005",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "source_block_id": "b0000005-rfsh-4000-8000-000000000005",
+        "target_block_id": "b0000002-slct-4000-8000-000000000002",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "source_block_id": "b0000007-clr0-4000-8000-000000000007",
+        "target_block_id": "b0000002-slct-4000-8000-000000000002",
+        "source_port": "out",
+        "target_port": "in"
+      }
+    ]
+  },
+  "metadata": {
+    "created": "2026-05-27",
+    "modified": "2026-05-27",
+    "version": "1.0",
+    "author": "foodlp",
+    "tags": [
+      "foodlp",
+      "nutrition",
+      "research",
+      "seed"
+    ]
+  }
+}
