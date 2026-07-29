@@ -70,6 +70,30 @@ class DiscordFrontend:
         if master_ch:
             await audited_channel_send(master_ch, text, operation="frontend.broadcast")
 
+    async def post_file(
+        self, agent_name: str, filename: str, data: bytes, description: str = ""
+    ) -> None:
+        pass  # Will delegate to audited_channel_send + discord.File in Phase 1.5
+
+    async def post_embed(self, agent_name: str, embed_data: dict[str, Any]) -> None:
+        pass  # Will delegate to Discord embed rendering in Phase 4
+
+    async def set_typing(self, agent_name: str, is_typing: bool) -> None:
+        pass  # Will delegate to channel.typing() in Phase 3
+
+    async def set_status(
+        self, agent_name: str, status_text: str, emoji: str | None = None
+    ) -> None:
+        pass  # Will delegate to channels.py status prefix in Phase 5
+
+    async def post_reaction(self, agent_name: str, message_ref: Any, emoji: str) -> None:
+        pass  # Will delegate to message.add_reaction in Phase 2
+
+    async def remove_reaction(
+        self, agent_name: str, message_ref: Any, emoji: str
+    ) -> None:
+        pass  # Will delegate to message.remove_reaction in Phase 2
+
     # --- Agent lifecycle events ---
 
     async def on_wake(self, agent_name: str) -> None:
@@ -86,6 +110,9 @@ class DiscordFrontend:
 
     async def on_session_id(self, agent_name: str, session_id: str) -> None:
         log.debug("Discord: agent '%s' session_id=%s", agent_name, session_id)
+
+    async def on_channel_ready(self, agent_name: str) -> None:
+        log.debug("Discord: agent '%s' channel ready", agent_name)
 
     async def on_idle_reminder(self, agent_name: str, idle_minutes: float) -> None:
         pass  # Handled by existing idle check code
@@ -124,6 +151,19 @@ class DiscordFrontend:
 
     async def update_todo(self, agent_name: str, todos: list[dict[str, Any]]) -> None:
         pass
+
+    async def receive_input(self, agent_name: str) -> str:
+        return ""  # Will delegate to Discord message wait in Phase 4
+
+    async def read_messages(
+        self, agent_name: str, limit: int = 50, before: Any = None
+    ) -> list[dict[str, Any]]:
+        return []  # Will delegate to channel.history in Phase 9
+
+    async def search_messages(
+        self, query: str, agent_name: str | None = None
+    ) -> list[dict[str, Any]]:
+        return []  # Will delegate to discordquery search in Phase 9
 
     # --- Event log integration ---
 
