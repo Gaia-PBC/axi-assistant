@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import uuid
 
 import pytest
@@ -52,7 +53,7 @@ def _recover_after_failure():
 
 def _tmp_sock() -> str:
     """Return a unique temporary socket path."""
-    return f"/tmp/test_bridge_{uuid.uuid4().hex[:8]}.sock"
+    return os.path.join(tempfile.gettempdir(), f"test_bridge_{uuid.uuid4().hex[:8]}.sock")
 
 
 PYTHON = sys.executable
@@ -167,7 +168,7 @@ class TestServerList:
         conn = await _connect(sock)
         try:
             await asyncio.wait_for(
-                conn.send_command("spawn", name="a", cli_args=_slow_cli_script(1, 5), env=dict(os.environ), cwd="/tmp"),
+                conn.send_command("spawn", name="a", cli_args=_slow_cli_script(1, 5), env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=3,
             )
             result = await asyncio.wait_for(conn.send_command("list"), timeout=3)
@@ -191,7 +192,7 @@ class TestServerSpawn:
         conn = await _connect(sock)
         try:
             result = await asyncio.wait_for(
-                conn.send_command("spawn", name="x", cli_args=_slow_cli_script(1, 5), env=dict(os.environ), cwd="/tmp"),
+                conn.send_command("spawn", name="x", cli_args=_slow_cli_script(1, 5), env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=3,
             )
             assert result.ok is True
@@ -208,13 +209,13 @@ class TestServerSpawn:
         try:
             r1 = await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="dup", cli_args=_slow_cli_script(1, 5), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="dup", cli_args=_slow_cli_script(1, 5), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
             r2 = await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="dup", cli_args=_slow_cli_script(1, 5), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="dup", cli_args=_slow_cli_script(1, 5), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -232,7 +233,7 @@ class TestServerSpawn:
         try:
             result = await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="bad", cli_args=["/nonexistent/binary"], env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="bad", cli_args=["/nonexistent/binary"], env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -256,7 +257,7 @@ class TestServerKill:
         try:
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="k", cli_args=_slow_cli_script(100, 1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="k", cli_args=_slow_cli_script(100, 1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -300,7 +301,7 @@ class TestServerInterrupt:
         try:
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="int", cli_args=_slow_cli_script(100, 1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="int", cli_args=_slow_cli_script(100, 1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -342,7 +343,7 @@ class TestServerSubscribeRelay:
         try:
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="sr", cli_args=_slow_cli_script(3, 0.1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="sr", cli_args=_slow_cli_script(3, 0.1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -390,7 +391,7 @@ class TestServerSubscribeRelay:
         conn = await _connect(sock)
         try:
             await asyncio.wait_for(
-                conn.send_command("spawn", name="se", cli_args=_stderr_cli_script(), env=dict(os.environ), cwd="/tmp"),
+                conn.send_command("spawn", name="se", cli_args=_stderr_cli_script(), env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=3,
             )
             q = conn.register_process("se")
@@ -430,7 +431,7 @@ class TestServerStdin:
         conn = await _connect(sock)
         try:
             await asyncio.wait_for(
-                conn.send_command("spawn", name="echo", cli_args=_echo_cli_script(), env=dict(os.environ), cwd="/tmp"),
+                conn.send_command("spawn", name="echo", cli_args=_echo_cli_script(), env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=3,
             )
             q = conn.register_process("echo")
@@ -466,7 +467,7 @@ class TestServerBufferReplay:
             # Spawn an agent that outputs 5 messages quickly
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="buf", cli_args=_slow_cli_script(5, 0.02), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="buf", cli_args=_slow_cli_script(5, 0.02), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -531,7 +532,7 @@ class TestServerBufferReplay:
         try:
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="res", cli_args=_slow_cli_script(100, 1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="res", cli_args=_slow_cli_script(100, 1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -592,13 +593,13 @@ class TestBridgeConnectionDemux:
             # Spawn two agents
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="a1", cli_args=_slow_cli_script(2, 0.1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="a1", cli_args=_slow_cli_script(2, 0.1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="a2", cli_args=_slow_cli_script(2, 0.1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="a2", cli_args=_slow_cli_script(2, 0.1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -676,7 +677,7 @@ class TestBridgeTransportInterception:
             # Spawn a long-running agent
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="rc", cli_args=_slow_cli_script(1, 10), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="rc", cli_args=_slow_cli_script(1, 10), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -715,7 +716,7 @@ class TestBridgeTransportInterception:
         conn = await _connect(sock)
         try:
             await asyncio.wait_for(
-                conn.send_command("spawn", name="nr", cli_args=_echo_cli_script(), env=dict(os.environ), cwd="/tmp"),
+                conn.send_command("spawn", name="nr", cli_args=_echo_cli_script(), env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=3,
             )
 
@@ -756,7 +757,7 @@ class TestBridgeTransportReadMessages:
         try:
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="rd", cli_args=_slow_cli_script(2, 0.1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="rd", cli_args=_slow_cli_script(2, 0.1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -786,7 +787,7 @@ class TestBridgeTransportReadMessages:
         try:
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="ex", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="ex", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -810,7 +811,7 @@ class TestBridgeTransportReadMessages:
         conn = await _connect(sock)
         try:
             await asyncio.wait_for(
-                conn.send_command("spawn", name="sc", cli_args=_stderr_cli_script(), env=dict(os.environ), cwd="/tmp"),
+                conn.send_command("spawn", name="sc", cli_args=_stderr_cli_script(), env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=3,
             )
 
@@ -856,7 +857,7 @@ class TestBridgeTransportLifecycle:
         try:
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="cl", cli_args=_slow_cli_script(100, 1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="cl", cli_args=_slow_cli_script(100, 1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -920,7 +921,7 @@ class TestBridgeTransportStop:
                         "    time.sleep(0.02)\n",
                     ],
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -968,7 +969,7 @@ class TestBridgeTransportStop:
                         "    time.sleep(0.02)\n",
                     ],
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -1013,7 +1014,7 @@ class TestBridgeTransportStop:
                 conn.send_command(
                     "spawn", name="si",
                     cli_args=_slow_cli_script(100, 0.1),
-                    env=dict(os.environ), cwd="/tmp",
+                    env=dict(os.environ), cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -1096,7 +1097,7 @@ class TestEnsureBridge:
 class TestConnectToBridge:
     @pytest.mark.asyncio
     async def test_returns_none_when_no_bridge(self):
-        conn = await connect_to_bridge("/tmp/nonexistent_bridge.sock")
+        conn = await connect_to_bridge(os.path.join(tempfile.gettempdir(), "nonexistent_bridge.sock"))
         assert conn is None
 
 
@@ -1148,7 +1149,7 @@ class TestClientReconnection:
             # Spawn agent that emits 10 messages quickly
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="rc", cli_args=_slow_cli_script(10, 0.02), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="rc", cli_args=_slow_cli_script(10, 0.02), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1216,7 +1217,7 @@ class TestExitDuringDisconnect:
             # Spawn a short-lived agent
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="de", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="de", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1319,7 +1320,7 @@ class TestSendToClientFailure:
             # Spawn a slow agent
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="wf", cli_args=_slow_cli_script(20, 0.05), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="wf", cli_args=_slow_cli_script(20, 0.05), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1367,7 +1368,7 @@ class TestKillEscalation:
             # Spawn a long-running agent
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="ke", cli_args=_slow_cli_script(1000, 0.1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="ke", cli_args=_slow_cli_script(1000, 0.1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1391,7 +1392,7 @@ class TestKillEscalation:
             # Spawn a fast-exiting agent
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="ae", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="ae", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1441,7 +1442,7 @@ class TestStdinEdgeCases:
             # Spawn a fast-exiting agent
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="ex", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="ex", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1475,7 +1476,7 @@ class TestBufferReplayOrder:
             # Spawn agent that emits numbered messages
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="ord", cli_args=_slow_cli_script(5, 0.02), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="ord", cli_args=_slow_cli_script(5, 0.02), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1537,7 +1538,7 @@ class TestSubscribeToExited:
             # Spawn fast-exiting agent
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="se", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="se", cli_args=_slow_cli_script(1, 0), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1610,7 +1611,7 @@ def _mcp_cli_args() -> tuple[list[str], dict, str]:
             sdk={"test_utils": {"type": "sdk", "tools": [{"name": "ping", "description": "Return pong", "inputSchema": {"type": "object", "properties": {}, "required": []}}]}},
         ),
     )
-    return cfg.to_cli_args(), cfg.to_env(), "/tmp"
+    return cfg.to_cli_args(), cfg.to_env(), tempfile.gettempdir()
 
 
 class TestMcpBridgeSpawn:
@@ -1663,7 +1664,7 @@ class TestMcpBridgeSpawn:
 
             # Spawn through the bridge
             result = await asyncio.wait_for(
-                conn1.send_command("spawn", name="mcp_rc", cli_args=cli_args, env=dict(os.environ), cwd="/tmp"),
+                conn1.send_command("spawn", name="mcp_rc", cli_args=cli_args, env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=10,
             )
             assert result.ok is True
@@ -1764,7 +1765,7 @@ class TestAgentSurvivesReconnect:
                     name="poller",
                     cli_args=self._polling_cli_script(trigger, poll_interval=0.2, timeout=30),
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -1929,7 +1930,7 @@ class TestReconnectScenarios:
             # Spawn agent that sleeps 3s then emits "done"
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="silent", cli_args=_silent_then_done_script(3), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="silent", cli_args=_silent_then_done_script(3), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -1990,7 +1991,7 @@ class TestReconnectScenarios:
                     name="burst",
                     cli_args=_burst_then_wait_script(10, 0.05, 3),
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -2059,7 +2060,7 @@ class TestReconnectScenarios:
         try:
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="idle", cli_args=_multi_turn_script(), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="idle", cli_args=_multi_turn_script(), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2115,7 +2116,7 @@ class TestReconnectScenarios:
             # Spawn agent that emits 3 messages quickly then exits
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="short", cli_args=_slow_cli_script(3, 0.05), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="short", cli_args=_slow_cli_script(3, 0.05), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2166,7 +2167,7 @@ class TestReconnectScenarios:
         try:
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="crash", cli_args=_exit_with_code_script(7), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="crash", cli_args=_exit_with_code_script(7), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2209,7 +2210,7 @@ class TestReconnectScenarios:
             for name in ("alpha", "beta"):
                 await asyncio.wait_for(
                     conn1.send_command(
-                        "spawn", name=name, cli_args=_slow_cli_script(30, 0.2), env=dict(os.environ), cwd="/tmp"
+                        "spawn", name=name, cli_args=_slow_cli_script(30, 0.2), env=dict(os.environ), cwd=tempfile.gettempdir()
                     ),
                     timeout=3,
                 )
@@ -2260,21 +2261,21 @@ class TestReconnectScenarios:
             # "active": long-running, will have buffered output
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="active", cli_args=_slow_cli_script(50, 0.2), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="active", cli_args=_slow_cli_script(50, 0.2), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
             # "done": exits quickly
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="done", cli_args=_slow_cli_script(2, 0.05), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="done", cli_args=_slow_cli_script(2, 0.05), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
             # "silent": runs long but produces no output yet
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="silent", cli_args=_silent_then_done_script(10), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="silent", cli_args=_silent_then_done_script(10), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2319,7 +2320,7 @@ class TestReconnectScenarios:
             conns.append(conn)
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="multi", cli_args=_slow_cli_script(100, 0.1), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="multi", cli_args=_slow_cli_script(100, 0.1), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2371,7 +2372,7 @@ class TestReconnectScenarios:
             n_msgs = 50
             await asyncio.wait_for(
                 conn1.send_command(
-                    "spawn", name="burst", cli_args=_slow_cli_script(n_msgs, 0.01), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="burst", cli_args=_slow_cli_script(n_msgs, 0.01), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2438,7 +2439,7 @@ class TestIdleField:
         try:
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="fresh", cli_args=_slow_cli_script(1, 10), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="fresh", cli_args=_slow_cli_script(1, 10), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2457,7 +2458,7 @@ class TestIdleField:
             # multi_turn: emits "ready", then waits for stdin
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="turn", cli_args=_multi_turn_script(), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="turn", cli_args=_multi_turn_script(), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2504,7 +2505,7 @@ class TestIdleField:
                 "print(json.dumps({'type':'done'}), flush=True)\n",
             ]
             await asyncio.wait_for(
-                conn.send_command("spawn", name="slow", cli_args=script, env=dict(os.environ), cwd="/tmp"),
+                conn.send_command("spawn", name="slow", cli_args=script, env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=3,
             )
             q = conn.register_process("slow")
@@ -2541,7 +2542,7 @@ class TestIdleField:
         try:
             await asyncio.wait_for(
                 conn.send_command(
-                    "spawn", name="sub", cli_args=_slow_cli_script(1, 10), env=dict(os.environ), cwd="/tmp"
+                    "spawn", name="sub", cli_args=_slow_cli_script(1, 10), env=dict(os.environ), cwd=tempfile.gettempdir()
                 ),
                 timeout=3,
             )
@@ -2571,7 +2572,7 @@ class TestIdleField:
                 "print(json.dumps({'type':'done'}), flush=True)\n",
             ]
             await asyncio.wait_for(
-                conn1.send_command("spawn", name="persist", cli_args=script, env=dict(os.environ), cwd="/tmp"),
+                conn1.send_command("spawn", name="persist", cli_args=script, env=dict(os.environ), cwd=tempfile.gettempdir()),
                 timeout=3,
             )
             q = conn1.register_process("persist")
@@ -2634,7 +2635,7 @@ class TestUnlimitedAgentSpawning:
                         name=f"agent-{i}",
                         cli_args=_slow_cli_script(1, 10),
                         env=dict(os.environ),
-                        cwd="/tmp",
+                        cwd=tempfile.gettempdir(),
                     ),
                     timeout=3,
                 )
@@ -2839,7 +2840,7 @@ class TestFlowcoderBridgeIntegration:
                     name="agent-x:flowcoder",
                     cli_args=_slow_cli_script(1, 5),
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -2865,7 +2866,7 @@ class TestFlowcoderBridgeIntegration:
                     name=name,
                     cli_args=_mock_flowcoder_engine_script(),
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -2911,7 +2912,7 @@ class TestFlowcoderBridgeIntegration:
                     name=name,
                     cli_args=_slow_flowcoder_engine_script(5, 0.3),
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -2981,7 +2982,7 @@ class TestFlowcoderBridgeIntegration:
                     name="agent-x",
                     cli_args=_slow_cli_script(1, 10),
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -2994,7 +2995,7 @@ class TestFlowcoderBridgeIntegration:
                     name="agent-x:flowcoder",
                     cli_args=_slow_cli_script(1, 10),
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
@@ -3022,7 +3023,7 @@ class TestFlowcoderBridgeIntegration:
                     name=name,
                     cli_args=_mock_flowcoder_engine_script(),
                     env=dict(os.environ),
-                    cwd="/tmp",
+                    cwd=tempfile.gettempdir(),
                 ),
                 timeout=3,
             )
