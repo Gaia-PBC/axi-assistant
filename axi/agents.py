@@ -25,6 +25,7 @@ import httpx
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claudewire import BridgeTransport
 from claudewire.events import as_stream
+from claudewire.permissions import Allow, Deny
 from claudewire.session import disconnect_client, get_stdio_logger
 from discord import TextChannel
 from opentelemetry import context as otel_context
@@ -150,6 +151,47 @@ def _get_router() -> FrontendRouter:
 
     assert hub_wiring.router is not None
     return hub_wiring.router
+
+
+async def _plan_approval_via_router(
+    session: AgentSession, tool_input: dict[str, Any]
+) -> Allow | Deny:
+    """Bridge permission callback to router.request_plan_approval."""
+    plan_content = (tool_input.get("plan") or "").strip() or None
+    if not plan_content:
+        plan_content = _read_latest_plan_file(cwd=session.cwd)
+
+    result = await _get_router().request_plan_approval(
+        session.name, plan_content or "", session,
+    )
+
+    if result.approved:
+        if session.plan_mode:
+            session.plan_mode = False
+            if session.client:
+                try:
+                    await session.client.set_permission_mode("default")
+                    log.info("Agent '%s' permission mode reset to default after plan approval", session.name)
+                except Exception:
+                    log.exception("Failed to reset permission mode for '%s'", session.name)
+        return Allow()
+    else:
+        return Deny(message=result.message or "User rejected the plan.")
+
+
+async def _ask_question_via_router(
+    session: AgentSession, tool_input: dict[str, Any]
+) -> Allow | Deny:
+    """Bridge permission callback to router.ask_question."""
+    questions = tool_input.get("questions", [])
+    if not questions:
+        return Allow()
+
+    answers = await _get_router().ask_question(session.name, questions, session)
+
+    updated = dict(tool_input)
+    updated["answers"] = answers
+    return Allow(updated_input=updated)
 
 
 # ---------------------------------------------------------------------------
@@ -794,8 +836,8 @@ def make_cwd_permission_callback(allowed_cwd: str, session: AgentSession | None 
     ]
 
     if session is not None:
-        policies.append(plan_approval_policy(lambda ti: _handle_exit_plan_mode(session, ti)))
-        policies.append(ask_user_policy(lambda ti: _handle_ask_user_question(session, ti)))
+        policies.append(plan_approval_policy(lambda ti: _plan_approval_via_router(session, ti)))
+        policies.append(ask_user_policy(lambda ti: _ask_question_via_router(session, ti)))
 
     # Egress filter: block reads of sensitive files
     from axi.egress_filter import is_path_blocked
