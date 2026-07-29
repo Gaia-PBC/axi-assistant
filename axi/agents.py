@@ -597,52 +597,16 @@ async def remove_reaction(message: discord.Message | None, emoji: str) -> None:
 # Image attachment support
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-_MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB per image
-
 
 async def extract_message_content(message: discord.Message) -> MessageContent:
-    """Extract text and image content from a Discord message."""
-    # Discord long-message: blank content with an attached message.txt
-    if not message.content.strip() and message.attachments:
-        for a in message.attachments:
-            if a.filename == "message.txt" and a.size <= 100_000:
-                try:
-                    data = await a.read()
-                    text = data.decode("utf-8")
-                    log.debug("Read long message from message.txt (%d chars)", len(text))
-                    message.content = text
-                    break
-                except Exception:
-                    log.warning("Failed to read message.txt attachment", exc_info=True)
+    """Extract text and image content from a Discord message.
 
-    ts_prefix = message.created_at.strftime("[%Y-%m-%d %H:%M:%S UTC] ")
-
-    image_attachments = [
-        a
-        for a in message.attachments
-        if a.content_type
-        and a.content_type.split(";")[0].strip() in _SUPPORTED_IMAGE_TYPES
-        and a.size <= _MAX_IMAGE_SIZE
-    ]
-
-    if not image_attachments:
-        return ts_prefix + message.content
-
-    blocks: list[ContentBlock] = []
-    blocks.append({"type": "text", "text": ts_prefix + (message.content or "")})
-
-    for attachment in image_attachments:
-        try:
-            data = await attachment.read()
-            b64 = base64.b64encode(data).decode("utf-8")
-            mime = (attachment.content_type or "application/octet-stream").split(";")[0].strip()
-            blocks.append({"type": "image", "data": b64, "mimeType": mime})
-            log.debug("Attached image: %s (%s, %d bytes)", attachment.filename, mime, len(data))
-        except Exception:
-            log.warning("Failed to download attachment %s", attachment.filename, exc_info=True)
-
-    return blocks or message.content
+    Delegates to DiscordFrontend.extract_content().
+    """
+    fe = _get_router().get("discord")
+    if fe is not None:
+        return await fe.extract_content(message)
+    return message.content
 
 
 def content_summary(content: MessageContent) -> str:
