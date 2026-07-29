@@ -98,7 +98,10 @@ class DiscordFrontend:
     async def set_status(
         self, agent_name: str, status_text: str, emoji: str | None = None
     ) -> None:
-        pass  # Will delegate to channels.py status prefix in Phase 5
+        from axi.channels import schedule_status_update, set_status_override
+
+        set_status_override(agent_name, emoji)
+        schedule_status_update()
 
     async def post_reaction(self, agent_name: str, message_ref: Any, emoji: str) -> None:
         if message_ref is None:
@@ -129,10 +132,52 @@ class DiscordFrontend:
         log.debug("Discord: agent '%s' slept", agent_name)
 
     async def on_spawn(self, agent_name: str, session: Any) -> None:
-        log.info("Discord: agent '%s' spawned", agent_name)
+        from axi.axi_types import discord_state
+        from axi.channels import (
+            ensure_agent_channel,
+            format_channel_topic,
+            strip_status_prefix,
+        )
+
+        channel = await ensure_agent_channel(agent_name, cwd=session.cwd)
+        ds = discord_state(session)
+        ds.channel_id = channel.id
+
+        if isinstance(session.system_prompt, dict):
+            append_text = session.system_prompt.get("append")
+            if isinstance(append_text, str):
+                session.system_prompt["append"] = (
+                    append_text.replace("{channel_id}", str(channel.id))
+                    .replace("{channel_name}", strip_status_prefix(channel.name))
+                    .replace("{guild_id}", str(channel.guild.id))
+                    .replace("{guild_name}", channel.guild.name)
+                )
+
+        desired_topic = format_channel_topic(
+            session.cwd,
+            session.session_id,
+            getattr(session, "system_prompt_hash", None),
+            agent_type=session.agent_type,
+        )
+        if channel.topic != desired_topic:
+            log.info("Updating topic on #%s: %r -> %r", channel.name, channel.topic, desired_topic)
+
+            async def _update_topic(ch: Any, topic: str) -> None:
+                try:
+                    await ch.edit(topic=topic)
+                except Exception:
+                    log.warning("Failed to update topic on #%s", ch.name, exc_info=True)
+
+            import asyncio
+            asyncio.get_running_loop().create_task(_update_topic(channel, desired_topic))
+
+        log.info("Discord: agent '%s' spawned, channel=#%s (id=%d)", agent_name, channel.name, channel.id)
 
     async def on_kill(self, agent_name: str, session_id: str | None) -> None:
-        log.info("Discord: agent '%s' killed", agent_name)
+        from axi.channels import move_channel_to_killed
+
+        await move_channel_to_killed(agent_name)
+        log.info("Discord: agent '%s' killed (channel moved to Killed)", agent_name)
 
     async def on_session_id(self, agent_name: str, session_id: str) -> None:
         log.debug("Discord: agent '%s' session_id=%s", agent_name, session_id)
