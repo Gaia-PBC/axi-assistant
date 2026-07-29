@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from axi import config
 from agenthub.frontend import PlanApprovalResult
 
 if TYPE_CHECKING:
@@ -175,20 +176,131 @@ class DiscordFrontend:
             self._stream_renderers.pop(agent_name, None)
 
     # --- Interactive gates ---
-    # Not yet called through the FrontendRouter — plan approval and questions
-    # still flow through the permission callback system in agents.py.
-    # These stubs exist for protocol compliance; they'll be wired when
-    # permission handling migrates to the frontend.
 
     async def request_plan_approval(
         self, agent_name: str, plan_content: str, session: Any
     ) -> PlanApprovalResult:
-        return PlanApprovalResult(approved=True)
+        import asyncio
+
+        from axi.axi_types import discord_state
+        from axi.channels import schedule_status_update
+
+        ds = discord_state(session)
+        if ds.channel_id is None:
+            return PlanApprovalResult(approved=True)
+
+        channel_id = ds.channel_id
+        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+        header = f"\U0001f4cb **Plan from {agent_name}** — waiting for approval"
+
+        try:
+            if plan_content:
+                await config.discord_client.send_file(
+                    channel_id, "plan.txt", plan_content.encode("utf-8"), content=header,
+                )
+            else:
+                await config.discord_client.send_message(
+                    channel_id,
+                    f"{header}\n\n*(Plan file not found — the agent should have described the plan in its messages above.)*",
+                )
+
+            resp = await config.discord_client.send_message(
+                channel_id,
+                f"React with ✅ to approve or ❌ to reject, or type feedback to revise the plan. {mentions}",
+            )
+            approval_msg_id = resp["id"]
+            for emoji in ("✅", "❌"):
+                await config.discord_client.add_reaction(channel_id, approval_msg_id, emoji)
+            ds.plan_approval_message_id = int(approval_msg_id)
+        except Exception:
+            log.exception("request_plan_approval: failed to post plan for '%s'", agent_name)
+            return PlanApprovalResult(approved=False, message="Could not post plan to Discord for approval.")
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        ds.plan_approval_future = future  # type: ignore[assignment]
+        schedule_status_update()
+
+        try:
+            result = await future
+        finally:
+            ds.plan_approval_future = None
+            ds.plan_approval_message_id = None
+            schedule_status_update()
+
+        remove_emoji = "❌" if result.get("approved") else "✅"
+        try:
+            await config.discord_client.remove_reaction(channel_id, approval_msg_id, remove_emoji)
+        except Exception:
+            log.debug("Failed to remove reaction from plan approval message")
+
+        if result.get("approved"):
+            log.info("Agent '%s' plan approved", agent_name)
+            return PlanApprovalResult(approved=True)
+        else:
+            message = result.get("message", "User rejected the plan.")
+            log.info("Agent '%s' plan rejected: %s", agent_name, message)
+            return PlanApprovalResult(approved=False, message=message if isinstance(message, str) else str(message))
 
     async def ask_question(
         self, agent_name: str, questions: list[dict[str, Any]], session: Any
     ) -> dict[str, str]:
-        return {}
+        import asyncio
+
+        from axi.axi_types import discord_state
+        from axi.discord_ui import _format_question_for_discord, _NUMBER_EMOJI
+
+        ds = discord_state(session)
+        if ds.channel_id is None:
+            return {}
+
+        channel_id = ds.channel_id
+        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+        loop = asyncio.get_running_loop()
+        answers: dict[str, str] = {}
+
+        try:
+            await config.discord_client.send_message(
+                channel_id, f"❓ **{agent_name}** is asking you a question {mentions}",
+            )
+        except Exception:
+            log.exception("ask_question: failed to post header for '%s'", agent_name)
+            return {}
+
+        for i, q in enumerate(questions):
+            try:
+                formatted = _format_question_for_discord(q, i, len(questions))
+                msg = await config.discord_client.send_message(channel_id, formatted)
+                msg_id = int(msg["id"])
+            except Exception:
+                log.exception("ask_question: failed to post question %d for '%s'", i, agent_name)
+                return answers
+
+            options = q.get("options", [])
+            for j in range(min(len(options), len(_NUMBER_EMOJI))):
+                try:
+                    await config.discord_client.add_reaction(channel_id, msg_id, _NUMBER_EMOJI[j])
+                except Exception:
+                    log.debug("Failed to add reaction %d to question message", j + 1)
+
+            ds.question_message_id = msg_id
+            ds.question_data = q
+
+            future: asyncio.Future[str] = loop.create_future()
+            ds.question_future = future
+
+            try:
+                answer = await future
+            finally:
+                ds.question_future = None
+                ds.question_message_id = None
+                ds.question_data = None
+
+            if not answer:
+                break
+            answers[q.get("question", "")] = answer
+
+        return answers
 
     async def update_todo(self, agent_name: str, todos: list[dict[str, Any]]) -> None:
         pass
