@@ -99,12 +99,24 @@ class DiscordFrontend:
         pass  # Will delegate to channels.py status prefix in Phase 5
 
     async def post_reaction(self, agent_name: str, message_ref: Any, emoji: str) -> None:
-        pass  # Will delegate to message.add_reaction in Phase 2
+        if message_ref is None:
+            return
+        try:
+            await message_ref.add_reaction(emoji)
+            log.info("Reaction +%s on message %s", emoji, message_ref.id)
+        except Exception as exc:
+            log.warning("Reaction +%s failed on message %s: %s", emoji, message_ref.id, exc)
 
     async def remove_reaction(
         self, agent_name: str, message_ref: Any, emoji: str
     ) -> None:
-        pass  # Will delegate to message.remove_reaction in Phase 2
+        if message_ref is None:
+            return
+        try:
+            await message_ref.remove_reaction(emoji, self._bot.user)
+            log.info("Reaction -%s on message %s", emoji, message_ref.id)
+        except Exception as exc:
+            log.warning("Reaction -%s failed on message %s: %s", emoji, message_ref.id, exc)
 
     # --- Agent lifecycle events ---
 
