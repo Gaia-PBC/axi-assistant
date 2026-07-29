@@ -73,7 +73,19 @@ class DiscordFrontend:
     async def post_file(
         self, agent_name: str, filename: str, data: bytes, description: str = ""
     ) -> None:
-        pass  # Will delegate to audited_channel_send + discord.File in Phase 1.5
+        import io
+
+        import discord
+
+        from axi.channels import get_agent_channel
+        from axi.discord_wire import audited_channel_send
+
+        channel = await get_agent_channel(agent_name)
+        if channel:
+            file = discord.File(io.BytesIO(data), filename=filename)
+            await audited_channel_send(
+                channel, description, file=file, operation="frontend.post_file"
+            )
 
     async def post_embed(self, agent_name: str, embed_data: dict[str, Any]) -> None:
         pass  # Will delegate to Discord embed rendering in Phase 4
