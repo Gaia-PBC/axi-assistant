@@ -359,48 +359,17 @@ async def on_message(message: discord.Message) -> None:
         )
         return
 
-    ds = discord_state(session)
-
     # --- Text command handling ---
     if message.content.strip().startswith("/"):
         handled = await _handle_text_command(message, session, agent_name)
         if handled:
             return
 
-    # --- Plan approval gate ---
-    if ds.plan_approval_future is not None and not ds.plan_approval_future.done():
-        raw = content.strip() if isinstance(content, str) else ""
-        text = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]\s*", "", raw).strip().lower()
-        if text in ("approve", "approved", "yes", "y", "lgtm", "go", "proceed", "ok"):
-            ds.plan_approval_future.set_result({"approved": True, "message": ""})
-            await agents.add_reaction(message, "✅")
-            await agents.send_system(channel, "Plan approved — agent resuming implementation.")
-        elif text in ("reject", "rejected", "no", "n", "cancel", "stop"):
-            ds.plan_approval_future.set_result(
-                {"approved": False, "message": "User rejected the plan. Please revise."}
-            )
-            await agents.add_reaction(message, "❌")
-            await agents.send_system(channel, "Plan rejected — agent will revise.")
-        else:
-            feedback = content if isinstance(content, str) else str(content)
-            ds.plan_approval_future.set_result(
-                {
-                    "approved": False,
-                    "message": f"User wants changes to the plan: {feedback}",
-                }
-            )
-            await agents.add_reaction(message, "📝")
-            await agents.send_system(channel, "Feedback received — agent will revise the plan.")
-        return
+    # --- Plan approval / question gates (resolved by DiscordFrontend) ---
+    from axi.hub_wiring import router as _fe_router
 
-    # --- AskUserQuestion gate (text reply) ---
-    if ds.question_future is not None and not ds.question_future.done():
-        raw = content.strip() if isinstance(content, str) else str(content)
-        raw = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]\s*", "", raw).strip()
-        q = ds.question_data or {}
-        answer = agents.parse_question_answer(raw, q)
-        ds.question_future.set_result(answer)
-        await agents.add_reaction(message, "\u2705")
+    discord_fe = _fe_router.get("discord") if _fe_router else None
+    if discord_fe and await discord_fe.try_resolve_gate(agent_name, content, message):
         return
 
     # --- Centralized message processing via Axi hub wrapper ---

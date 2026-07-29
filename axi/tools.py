@@ -986,7 +986,7 @@ async def set_channel_status(args: McpArgs) -> McpResult:
     if not caller:
         return {"content": [{"type": "text", "text": "Error: could not determine calling agent."}], "is_error": True}
 
-    from agenthub.hub_wiring import router
+    from axi.hub_wiring import router
 
     if emoji:
         await router.set_status(caller, "", emoji)
@@ -1010,7 +1010,7 @@ async def clear_channel_status(args: McpArgs) -> McpResult:
     if not caller:
         return {"content": [{"type": "text", "text": "Error: could not determine calling agent."}], "is_error": True}
 
-    from agenthub.hub_wiring import router
+    from axi.hub_wiring import router
 
     await router.set_status(caller, "", None)
     return {"content": [{"type": "text", "text": "Custom status cleared. Channel will revert to auto-detected status."}]}

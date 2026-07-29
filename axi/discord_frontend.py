@@ -363,6 +363,104 @@ class DiscordFrontend:
     ) -> list[dict[str, Any]]:
         return []  # Will delegate to discordquery search in Phase 9
 
+    # --- Inbound message processing ---
+
+    _SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+    _MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+    async def extract_content(self, message: Any) -> Any:
+        """Extract text + image content from a Discord message."""
+        import base64
+
+        if not message.content.strip() and message.attachments:
+            for a in message.attachments:
+                if a.filename == "message.txt" and a.size <= 100_000:
+                    try:
+                        data = await a.read()
+                        message.content = data.decode("utf-8")
+                        break
+                    except Exception:
+                        log.warning("Failed to read message.txt attachment", exc_info=True)
+
+        ts_prefix = message.created_at.strftime("[%Y-%m-%d %H:%M:%S UTC] ")
+
+        image_attachments = [
+            a
+            for a in message.attachments
+            if a.content_type
+            and a.content_type.split(";")[0].strip() in self._SUPPORTED_IMAGE_TYPES
+            and a.size <= self._MAX_IMAGE_SIZE
+        ]
+
+        if not image_attachments:
+            return ts_prefix + message.content
+
+        blocks: list[dict[str, Any]] = []
+        blocks.append({"type": "text", "text": ts_prefix + (message.content or "")})
+
+        for attachment in image_attachments:
+            try:
+                data = await attachment.read()
+                b64 = base64.b64encode(data).decode("utf-8")
+                mime = (attachment.content_type or "application/octet-stream").split(";")[0].strip()
+                blocks.append({"type": "image", "data": b64, "mimeType": mime})
+            except Exception:
+                log.warning("Failed to download attachment %s", attachment.filename, exc_info=True)
+
+        return blocks or message.content
+
+    async def try_resolve_gate(
+        self, agent_name: str, content: Any, message: Any
+    ) -> bool:
+        """Check if a pending gate (plan approval or question) consumes this message.
+
+        Returns True if the message was consumed by a gate, False otherwise.
+        """
+        import re
+
+        from axi.axi_types import discord_state
+
+        from axi import agents as _agents_mod
+
+        session = _agents_mod.agents.get(agent_name)
+        if session is None:
+            return False
+
+        ds = discord_state(session)
+
+        # Plan approval gate
+        if ds.plan_approval_future is not None and not ds.plan_approval_future.done():
+            raw = content.strip() if isinstance(content, str) else ""
+            text = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]\s*", "", raw).strip().lower()
+            if text in ("approve", "approved", "yes", "y", "lgtm", "go", "proceed", "ok"):
+                ds.plan_approval_future.set_result({"approved": True, "message": ""})
+                await self.post_reaction(agent_name, message, "✅")
+                await self.post_system(agent_name, "Plan approved — agent resuming implementation.")
+            elif text in ("reject", "rejected", "no", "n", "cancel", "stop"):
+                ds.plan_approval_future.set_result({"approved": False, "message": "User rejected the plan. Please revise."})
+                await self.post_reaction(agent_name, message, "❌")
+                await self.post_system(agent_name, "Plan rejected — agent will revise.")
+            else:
+                feedback = content if isinstance(content, str) else str(content)
+                ds.plan_approval_future.set_result({"approved": False, "message": f"User wants changes to the plan: {feedback}"})
+                await self.post_reaction(agent_name, message, "\U0001f4dd")
+                await self.post_system(agent_name, "Feedback received — agent will revise the plan.")
+            return True
+
+        # Question gate
+        if ds.question_future is not None and not ds.question_future.done():
+            from axi.discord_ui import parse_question_answer
+
+            raw = content.strip() if isinstance(content, str) else str(content)
+            raw = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]\s*", "", raw).strip()
+            q = ds.question_data or {}
+            answer = parse_question_answer(raw, q)
+            ds.question_future.set_result(answer)
+            await self.post_reaction(agent_name, message, "✅")
+            return True
+
+        return False
+
     # --- Event log integration ---
 
     async def on_log_event(self, event: LogEvent) -> None:
