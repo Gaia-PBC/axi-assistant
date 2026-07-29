@@ -58,22 +58,16 @@ from axi.channels import (
     parse_channel_topic as _parse_channel_topic,
 )
 
-# Re-exports from discord_stream (extracted Phase 0a) — keeps existing imports working
+# Re-exports from discord_stream — legacy functions still used by main.py slash commands.
+# Phase 3 cutover moved process_message to _stream_via_router / _retry_stream_via_router.
+# These re-exports will be removed when main.py migrates to the router path (Phase 8).
 from axi.discord_stream import (  # noqa: F401
-    _cancel_typing,
     _compact_start_times,
-    _handle_system_message,
-    _live_edit_finalize,
-    _live_edit_tick,
-    _LiveEditState,
     _pending_compact,
     _retry_discord_503,
     _self_compacting,
-    _StreamCtx,
-    _update_activity,
     extract_tool_preview,
     interrupt_session,
-    stream_response_to_channel,
     stream_with_retry,
 )
 
@@ -2478,7 +2472,6 @@ __all__ = [
     "sleep_agent",
     "spawn_agent",
     "split_message",
-    "stream_response_to_channel",
     "stream_with_retry",
     "wake_agent",
     "wake_or_queue",
