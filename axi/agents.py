@@ -124,6 +124,7 @@ if TYPE_CHECKING:
     from discord.ext.commands import Bot
 
     from agenthub import AgentHub
+    from agenthub.frontend_router import FrontendRouter
     from procmux import ProcmuxConnection
 
 log = logging.getLogger("axi")
@@ -148,6 +149,14 @@ channel_to_agent: dict[int, str] = {}  # channel_id -> agent_name
 # Active trace IDs — maps agent name → trace tag string (e.g. "[trace=abc123...]")
 # Set when process_message starts its span, cleared when done.
 _active_trace_ids: dict[str, str] = {}
+
+
+def _get_router() -> FrontendRouter:
+    from axi import hub_wiring
+
+    assert hub_wiring.router is not None
+    return hub_wiring.router
+
 
 # ---------------------------------------------------------------------------
 # FlowCoder auto-wrap — optionally routes normal messages through a flowchart
@@ -826,22 +835,11 @@ def make_cwd_permission_callback(allowed_cwd: str, session: AgentSession | None 
 
 async def _handle_rate_limit(error_text: str, session: AgentSession, channel: TextChannel) -> None:
     """Handle a rate limit error: set global state, notify all agent channels."""
-    assert _bot is not None
-    bot_ref = _bot
+    router = _get_router()
 
     async def _broadcast(msg_text: str) -> None:
-        notified_channels: set[int] = set()
         for agent_session in agents.values():
-            ads = discord_state(agent_session)
-            if not ads.channel_id:
-                continue
-            ch = bot_ref.get_channel(ads.channel_id)
-            if isinstance(ch, TextChannel) and ch.id not in notified_channels:
-                notified_channels.add(ch.id)
-                try:
-                    await send_system(ch, msg_text)
-                except Exception:
-                    log.warning("Failed to notify channel %s about rate limit", ch.id)
+            await router.post_system(agent_session.name, msg_text)
 
     def _schedule_expiry(delay: float) -> None:
         fire_and_forget(notify_rate_limit_expired(delay, get_master_channel, send_system))
@@ -856,9 +854,7 @@ async def _handle_rate_limit(error_text: str, session: AgentSession, channel: Te
 
 async def _notify_agent_channel(agent_name: str, message: str) -> None:
     """Notify an agent's Discord channel with a system message."""
-    channel = await get_agent_channel(agent_name)
-    if channel:
-        await send_system(channel, message)
+    await _get_router().post_system(agent_name, message)
 
 
 def make_shutdown_coordinator(
@@ -890,9 +886,7 @@ def init_shutdown_coordinator() -> None:
     assert _bot is not None
 
     async def _send_goodbye() -> None:
-        master_ch = await get_master_channel()
-        if master_ch:
-            await audited_channel_send(master_ch, "*System:* Shutting down — see you soon!", operation="shutdown.goodbye")
+        await _get_router().broadcast("*System:* Shutting down — see you soon!")
 
     bot_ref = _bot
 
@@ -1141,14 +1135,14 @@ async def wake_or_queue(
         # Swap ⏳ → 📨 to indicate "queued, will process later"
         await remove_reaction(orig_message, "\u23f3")
         await add_reaction(orig_message, "\U0001f4e8")
-        await send_system(channel, f"\u23f3 All {awake} agent slots busy. Message queued (position {position}).")
+        await _get_router().post_system(session.name, f"\u23f3 All {awake} agent slots busy. Message queued (position {position}).")
         return False
     except Exception:
         log.exception("Failed to wake agent '%s'", session.name)
         await remove_reaction(orig_message, "\u23f3")
         await add_reaction(orig_message, "\u274c")
-        await send_system(
-            channel, f"Failed to wake agent **{session.name}**. Try `/kill-agent {session.name}` and respawn."
+        await _get_router().post_system(
+            session.name, f"Failed to wake agent **{session.name}**. Try `/kill-agent {session.name}` and respawn."
         )
         return False
 
@@ -1428,11 +1422,11 @@ async def handle_query_timeout(session: AgentSession, channel: TextChannel) -> N
     new_session = await _rebuild_session(session.name, session_id=old_session_id)
 
     if old_session_id:
-        await send_system(
-            channel, f"Agent **{new_session.name}** timed out and was recovered (sleeping). Context preserved."
+        await _get_router().post_system(
+            new_session.name, f"Agent **{new_session.name}** timed out and was recovered (sleeping). Context preserved."
         )
     else:
-        await send_system(channel, f"Agent **{new_session.name}** timed out and was reset (sleeping). Context lost.")
+        await _get_router().post_system(new_session.name, f"Agent **{new_session.name}** timed out and was reset (sleeping). Context lost.")
 
 
 # ---------------------------------------------------------------------------
@@ -1456,11 +1450,9 @@ async def _maybe_compact(session: AgentSession, channel: TextChannel) -> None:
         usage_pct * 100, cmd[:80],
     )
 
-    await audited_channel_send(
-        channel,
+    await _get_router().post_system(
+        session.name,
         f"\U0001f504 Context at {usage_pct:.0%} ({pre_tokens:,} tokens) — compacting...",
-        retry_fn=_retry_discord_503,
-        operation="context.compacting",
     )
     _self_compacting.add(session.name)
     _compact_start_times[session.name] = time.monotonic()
@@ -1603,9 +1595,7 @@ async def reclaim_agent_name(name: str) -> None:
     session = agents[name]
     await sleep_agent(session, force=True)
     agents.pop(name, None)
-    channel = await get_agent_channel(name)
-    if channel:
-        await send_system(channel, f"Recycled previous **{name}** session for new scheduled run.")
+    await _get_router().post_system(name, f"Recycled previous **{name}** session for new scheduled run.")
 
 
 async def spawn_agent(
@@ -1652,11 +1642,11 @@ async def spawn_agent(
 
         agent_label = "flowcoder" if agent_type == "flowcoder" else "claude code"
         if resume:
-            await send_system(
-                channel, f"Resuming **{agent_label}** agent **{name}** (session `{resume[:8]}\u2026`) in `{cwd}`..."
+            await _get_router().post_system(
+                name, f"Resuming **{agent_label}** agent **{name}** (session `{resume[:8]}\u2026`) in `{cwd}`..."
             )
         else:
-            await send_system(channel, f"Spawning **{agent_label}** agent **{name}** in `{cwd}`...")
+            await _get_router().post_system(name, f"Spawning **{agent_label}** agent **{name}** in `{cwd}`...")
         mcp_servers = _build_mcp_servers(name, cwd, extra_mcp_servers=extra_mcp_servers)
 
         mcp_names = list(extra_mcp_servers.keys()) if extra_mcp_servers else None
@@ -1729,7 +1719,7 @@ async def spawn_agent(
             fire_and_forget(_update_topic(channel, desired_topic))
 
         if not initial_prompt:
-            await send_system(channel, f"**{agent_label.title()}** agent **{name}** is ready (sleeping).")
+            await _get_router().post_system(name, f"**{agent_label.title()}** agent **{name}** is ready (sleeping).")
             return session
 
         fire_and_forget(run_initial_prompt(session, initial_prompt, channel))
@@ -1801,8 +1791,8 @@ async def run_initial_prompt(session: AgentSession, prompt: MessageContent, chan
                         log.info("Concurrency limit hit for '%s' initial prompt \u2014 queuing", session.name)
                         session.message_queue.append((prompt, channel, None))
                         awake = count_awake_agents()
-                        await send_system(
-                            channel,
+                        await _get_router().post_system(
+                            session.name,
                             f"\u23f3 All {awake} agent slots are busy. Initial prompt queued \u2014 will run when a slot opens.",
                         )
                         return
@@ -1813,7 +1803,7 @@ async def run_initial_prompt(session: AgentSession, prompt: MessageContent, chan
                         if stderr_lines:
                             stderr_text = "\n".join(stderr_lines[-20:])  # last 20 lines
                             log.error("Stderr from failed agent '%s':\n%s", session.name, stderr_text)
-                        await send_system(channel, f"Failed to wake agent **{session.name}**.")
+                        await _get_router().post_system(session.name, f"Failed to wake agent **{session.name}**.")
                         return
 
                 session.last_activity = datetime.now(UTC)
@@ -1821,7 +1811,7 @@ async def run_initial_prompt(session: AgentSession, prompt: MessageContent, chan
                 drain_sdk_buffer(session)
 
                 prompt_text = prompt if isinstance(prompt, str) else str(prompt)
-                await send_long(channel, f"*System:* \U0001f4dd **Initial prompt:**\n{prompt_text}")
+                await _get_router().post_system(session.name, f"\U0001f4dd **Initial prompt:**\n{prompt_text}")
 
                 if session.agent_log:
                     session.agent_log.info("PROMPT: %s", content_summary(prompt))
@@ -1832,17 +1822,17 @@ async def run_initial_prompt(session: AgentSession, prompt: MessageContent, chan
                     session.last_activity = datetime.now(UTC)
                 except RuntimeError as e:
                     log.warning("Handler error for '%s' initial prompt: %s", session.name, e)
-                    await send_system(channel, f"Error: {e}")
+                    await _get_router().post_system(session.name, f"Error: {e}")
                 finally:
                     session.activity = ActivityState(phase="idle")
 
             log.debug("Initial prompt completed for '%s'", session.name)
-            await send_system(channel, f"Agent **{session.name}** finished initial task. {_user_mentions()}")
+            await _get_router().post_system(session.name, f"Agent **{session.name}** finished initial task. {_user_mentions()}")
 
         except Exception:
             log.exception("Error running initial prompt for agent '%s'", session.name)
-            await send_system(
-                channel, f"Agent **{session.name}** encountered an error during initial task. {_user_mentions()}"
+            await _get_router().post_system(
+                session.name, f"Agent **{session.name}** encountered an error during initial task. {_user_mentions()}"
             )
 
         if scheduler.should_yield(session.name):
@@ -1888,7 +1878,7 @@ async def process_message_queue(session: AgentSession) -> None:
         await remove_reaction(orig_message, "\U0001f4e8")
         preview = content_summary(raw_content)
         remaining_str = f" ({remaining} more in queue)" if remaining > 0 else ""
-        await send_system(channel, f"Processing queued message{remaining_str}:\n> {preview}")
+        await _get_router().post_system(session.name, f"Processing queued message{remaining_str}:\n> {preview}")
 
         async with session.query_lock:
             if not is_awake(session):
@@ -1897,16 +1887,16 @@ async def process_message_queue(session: AgentSession) -> None:
                 except Exception:
                     log.exception("Failed to wake agent '%s' for queued message", session.name)
                     await add_reaction(orig_message, "\u274c")
-                    await send_system(
-                        channel,
+                    await _get_router().post_system(
+                        session.name,
                         f"Failed to wake agent **{session.name}** \u2014 dropping queued message.",
                     )
                     while session.message_queue:
                         _, ch, dropped_msg, *_ = session.message_queue.popleft()
                         await remove_reaction(dropped_msg, "\U0001f4e8")
                         await add_reaction(dropped_msg, "\u274c")
-                        await send_system(
-                            ch,
+                        await _get_router().post_system(
+                            session.name,
                             f"Failed to wake agent **{session.name}** \u2014 dropping queued message.",
                         )
                     return
@@ -1925,12 +1915,12 @@ async def process_message_queue(session: AgentSession) -> None:
                     e,
                 )
                 await add_reaction(orig_message, "\u274c")
-                await send_system(channel, str(e))
+                await _get_router().post_system(session.name, str(e))
             except Exception:
                 log.exception("Error processing queued message for '%s'", session.name)
                 await add_reaction(orig_message, "\u274c")
-                await send_system(
-                    channel,
+                await _get_router().post_system(
+                    session.name,
                     f"Error processing queued message for **{session.name}**.",
                 )
             finally:
@@ -1963,8 +1953,8 @@ async def deliver_inter_agent_message(
     if channel is None:
         return f"No Discord channel found for agent '{target_session.name}'"
 
-    await send_system(
-        channel,
+    await _get_router().post_system(
+        target_session.name,
         f"\U0001f4e8 **Message from {sender_name}:**\n> {content}",
     )
 
@@ -2017,8 +2007,8 @@ async def _process_inter_agent_prompt(
                         "Concurrency limit hit for '%s' inter-agent message \u2014 queuing",
                         session.name,
                     )
-                    await send_system(
-                        channel,
+                    await _get_router().post_system(
+                        session.name,
                         f"\u23f3 All {awake} agent slots busy. Inter-agent message queued.",
                     )
                     return
@@ -2027,8 +2017,8 @@ async def _process_inter_agent_prompt(
                         "Failed to wake agent '%s' for inter-agent message",
                         session.name,
                     )
-                    await send_system(
-                        channel,
+                    await _get_router().post_system(
+                        session.name,
                         f"Failed to wake agent **{session.name}** for inter-agent message.",
                     )
                     return
@@ -2044,14 +2034,14 @@ async def _process_inter_agent_prompt(
                     session.name,
                     e,
                 )
-                await send_system(channel, str(e))
+                await _get_router().post_system(session.name, str(e))
             except Exception:
                 log.exception(
                     "Error processing inter-agent message for '%s'",
                     session.name,
                 )
-                await send_system(
-                    channel,
+                await _get_router().post_system(
+                    session.name,
                     f"Error processing inter-agent message for **{session.name}**.",
                 )
             finally:
@@ -2234,7 +2224,7 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
                 channel = await get_agent_channel(session.name)
                 if channel:
                     log.info("RECONNECT_DRAIN[%s] draining output (replayed=%d)", session.name, replayed)
-                    await send_system(channel, "*(reconnected after restart \u2014 resuming output)*")
+                    await _get_router().post_system(session.name, "*(reconnected after restart \u2014 resuming output)*")
                     try:
                         async with asyncio.timeout(config.QUERY_TIMEOUT):
                             await stream_response_to_channel(session, channel)
@@ -2250,9 +2240,7 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
                     replayed,
                 )
             elif cli_status == "running":
-                channel = await get_agent_channel(session.name)
-                if channel:
-                    await send_system(channel, "*(reconnected after restart)*")
+                await _get_router().post_system(session.name, "*(reconnected after restart)*")
                 log.info("Agent '%s' reconnected idle (between turns)", session.name)
 
             log.info("Reconnect complete for '%s'", session.name)
@@ -2339,9 +2327,7 @@ __all__ = [
     "restart_agent",
     "run_initial_prompt",
     "schedule_last_fired",
-    "send_long",
     "send_prompt_to_agent",
-    "send_system",
     "send_to_exceptions",
     "session_usage",
     "set_utils_mcp_server",
