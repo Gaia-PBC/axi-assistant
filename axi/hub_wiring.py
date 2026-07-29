@@ -24,8 +24,6 @@ from axi import config
 from axi.discord_frontend import DiscordFrontend
 
 if TYPE_CHECKING:
-    from discord.ext.commands import Bot
-
     from agenthub.types import AgentSession
 
 log = logging.getLogger("axi")
@@ -46,9 +44,11 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
 
     selected_model = session.model or config.get_model()
     resolved_model, resolved_env = config.get_model_runtime(selected_model)
+    minflow_data_dir = os.environ.get("MINFLOW_DATA_DIR") or os.path.expanduser("~/.config/minflow")
     base_env = {
         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "100",
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "MINFLOW_DATA_DIR": minflow_data_dir,
         "PATH": os.path.join(config.BOT_DIR, "bin") + ":" + os.environ.get("PATH", ""),
     }
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
@@ -83,7 +83,7 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
             config.AXI_USER_DATA,
             config.BOT_WORKTREES_DIR,
             os.path.expanduser("~/.config/axi"),
-            os.path.expanduser("~/.config/minflow"),
+            minflow_data_dir,
             os.path.expanduser("~/.cache/uv"),
             *session.extra_write_dirs,
         ],
@@ -155,7 +155,7 @@ router: FrontendRouter | None = None
 
 
 def create_hub(
-    bot: Bot,
+    bot: Any,
     sessions: dict[str, Any],
 ) -> AgentHub:
     """Create and configure the rewritten AgentHub.
