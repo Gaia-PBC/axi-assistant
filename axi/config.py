@@ -530,11 +530,14 @@ COMBINED_CATEGORY_NAME = os.environ.get("AXI_COMBINED_CATEGORY_NAME", AXI_CATEGO
 # These live in axi.discord_config now.  Re-exported here so existing
 # ``config.DISCORD_TOKEN`` / ``config.discord_client`` etc. keep working.
 
-from axi.discord_config import (  # noqa: E402, F401
-    CHANNEL_SORT_BY_RECENCY,
-    CHANNEL_STATUS_ENABLED,
-    DISCORD_GUILD_ID,
-    DISCORD_TOKEN,
-    discord_client,
-    intents,
-)
+try:
+    from axi.discord_config import (  # noqa: E402, F401
+        CHANNEL_SORT_BY_RECENCY,
+        CHANNEL_STATUS_ENABLED,
+        DISCORD_GUILD_ID,
+        DISCORD_TOKEN,
+        discord_client,
+        intents,
+    )
+except ImportError:
+    pass
