@@ -75,6 +75,30 @@ class FrontendRouter:
     async def broadcast(self, text: str) -> None:
         await self._broadcast("broadcast", text)
 
+    async def post_file(
+        self, agent_name: str, filename: str, data: bytes, description: str = ""
+    ) -> None:
+        await self._broadcast("post_file", agent_name, filename, data, description)
+
+    async def post_embed(self, agent_name: str, embed_data: dict[str, Any]) -> None:
+        await self._broadcast("post_embed", agent_name, embed_data)
+
+    async def set_typing(self, agent_name: str, is_typing: bool) -> None:
+        await self._broadcast("set_typing", agent_name, is_typing)
+
+    async def set_status(
+        self, agent_name: str, status_text: str, emoji: str | None = None
+    ) -> None:
+        await self._broadcast("set_status", agent_name, status_text, emoji)
+
+    async def post_reaction(self, agent_name: str, message_ref: Any, emoji: str) -> None:
+        await self._broadcast("post_reaction", agent_name, message_ref, emoji)
+
+    async def remove_reaction(
+        self, agent_name: str, message_ref: Any, emoji: str
+    ) -> None:
+        await self._broadcast("remove_reaction", agent_name, message_ref, emoji)
+
     async def on_wake(self, agent_name: str) -> None:
         await self._broadcast("on_wake", agent_name)
 
@@ -89,6 +113,9 @@ class FrontendRouter:
 
     async def on_session_id(self, agent_name: str, session_id: str) -> None:
         await self._broadcast("on_session_id", agent_name, session_id)
+
+    async def on_channel_ready(self, agent_name: str) -> None:
+        await self._broadcast("on_channel_ready", agent_name)
 
     async def on_idle_reminder(self, agent_name: str, idle_minutes: float) -> None:
         await self._broadcast("on_idle_reminder", agent_name, idle_minutes)
@@ -113,6 +140,22 @@ class FrontendRouter:
 
     async def update_todo(self, agent_name: str, todos: list[dict[str, Any]]) -> None:
         await self._broadcast("update_todo", agent_name, todos)
+
+    async def receive_input(self, agent_name: str) -> str:
+        result = await self._first_response("receive_input", agent_name)
+        return result if result is not None else ""
+
+    async def read_messages(
+        self, agent_name: str, limit: int = 50, before: Any = None
+    ) -> list[dict[str, Any]]:
+        result = await self._first_response("read_messages", agent_name, limit, before)
+        return result or []
+
+    async def search_messages(
+        self, query: str, agent_name: str | None = None
+    ) -> list[dict[str, Any]]:
+        result = await self._first_response("search_messages", query, agent_name)
+        return result or []
 
     async def on_log_event(self, event: LogEvent) -> None:
         await self._broadcast("on_log_event", event)
