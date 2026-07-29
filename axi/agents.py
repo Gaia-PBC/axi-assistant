@@ -1119,12 +1119,13 @@ async def wake_or_queue(
     on success or replaced with 📨/❌ on failure.
     """
     # Immediate feedback — user sees we received the message
-    await add_reaction(orig_message, "\u23f3")
+    router = _get_router()
+    await router.post_reaction(session.name, orig_message, "\u23f3")
 
     try:
         await wake_agent(session)
         # Woke successfully — remove the waiting indicator
-        await remove_reaction(orig_message, "\u23f3")
+        await router.remove_reaction(session.name, orig_message, "\u23f3")
         return True
     except ConcurrencyLimitError:
         session.message_queue.append((content, channel, orig_message))
@@ -1132,15 +1133,15 @@ async def wake_or_queue(
         awake = count_awake_agents()
         log.debug("Concurrency limit hit for '%s', queuing message (position %d)", session.name, position)
         # Swap ⏳ → 📨 to indicate "queued, will process later"
-        await remove_reaction(orig_message, "\u23f3")
-        await add_reaction(orig_message, "\U0001f4e8")
-        await _get_router().post_system(session.name, f"\u23f3 All {awake} agent slots busy. Message queued (position {position}).")
+        await router.remove_reaction(session.name, orig_message, "\u23f3")
+        await router.post_reaction(session.name, orig_message, "\U0001f4e8")
+        await router.post_system(session.name, f"\u23f3 All {awake} agent slots busy. Message queued (position {position}).")
         return False
     except Exception:
         log.exception("Failed to wake agent '%s'", session.name)
-        await remove_reaction(orig_message, "\u23f3")
-        await add_reaction(orig_message, "\u274c")
-        await _get_router().post_system(
+        await router.remove_reaction(session.name, orig_message, "\u23f3")
+        await router.post_reaction(session.name, orig_message, "\u274c")
+        await router.post_system(
             session.name, f"Failed to wake agent **{session.name}**. Try `/kill-agent {session.name}` and respawn."
         )
         return False
@@ -1869,6 +1870,7 @@ async def process_message_queue(session: AgentSession) -> None:
             log.info("Scheduler yield: '%s' deferring %d queued messages", session.name, len(session.message_queue))
             await sleep_agent(session)
             return
+        router = _get_router()
         content, channel, orig_message, *rest = session.message_queue.popleft()
         observe_agent_message_event("queue_dequeued")
         raw_content = rest[0] if rest else content
@@ -1877,7 +1879,7 @@ async def process_message_queue(session: AgentSession) -> None:
         log.debug("Processing queued message for '%s' (%d remaining)", session.name, remaining)
         if session.agent_log:
             session.agent_log.info("QUEUED_MSG: %s", content_summary(raw_content))
-        await remove_reaction(orig_message, "\U0001f4e8")
+        await router.remove_reaction(session.name, orig_message, "\U0001f4e8")
         preview = content_summary(raw_content)
         remaining_str = f" ({remaining} more in queue)" if remaining > 0 else ""
         await _get_router().post_system(session.name, f"Processing queued message{remaining_str}:\n> {preview}")
@@ -1888,15 +1890,15 @@ async def process_message_queue(session: AgentSession) -> None:
                     await wake_agent(session)
                 except Exception:
                     log.exception("Failed to wake agent '%s' for queued message", session.name)
-                    await add_reaction(orig_message, "\u274c")
+                    await router.post_reaction(session.name, orig_message, "\u274c")
                     await _get_router().post_system(
                         session.name,
                         f"Failed to wake agent **{session.name}** \u2014 dropping queued message.",
                     )
                     while session.message_queue:
                         _, ch, dropped_msg, *_ = session.message_queue.popleft()
-                        await remove_reaction(dropped_msg, "\U0001f4e8")
-                        await add_reaction(dropped_msg, "\u274c")
+                        await router.remove_reaction(session.name, dropped_msg, "\U0001f4e8")
+                        await router.post_reaction(session.name, dropped_msg, "\u274c")
                         await _get_router().post_system(
                             session.name,
                             f"Failed to wake agent **{session.name}** \u2014 dropping queued message.",
@@ -1906,9 +1908,9 @@ async def process_message_queue(session: AgentSession) -> None:
             _reset_session_activity(session)
             try:
                 await process_message(session, content, channel)
-                await add_reaction(orig_message, "\u2705")
+                await router.post_reaction(session.name, orig_message, "\u2705")
             except TimeoutError:
-                await add_reaction(orig_message, "\u23f3")
+                await router.post_reaction(session.name, orig_message, "\u23f3")
                 await handle_query_timeout(session, channel)
             except RuntimeError as e:
                 log.warning(
@@ -1916,11 +1918,11 @@ async def process_message_queue(session: AgentSession) -> None:
                     session.name,
                     e,
                 )
-                await add_reaction(orig_message, "\u274c")
+                await router.post_reaction(session.name, orig_message, "\u274c")
                 await _get_router().post_system(session.name, str(e))
             except Exception:
                 log.exception("Error processing queued message for '%s'", session.name)
-                await add_reaction(orig_message, "\u274c")
+                await router.post_reaction(session.name, orig_message, "\u274c")
                 await _get_router().post_system(
                     session.name,
                     f"Error processing queued message for **{session.name}**.",
