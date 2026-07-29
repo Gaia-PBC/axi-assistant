@@ -1038,6 +1038,11 @@ async def sleep_agent(session: AgentSession, *, force: bool = False) -> None:
     schedule_status_update()
 
 
+async def move_channel_to_killed(agent_name: str) -> None:
+    """Move agent channel to Killed category via the frontend router."""
+    await _get_router().on_kill(agent_name, session_id=None)
+
+
 async def graceful_interrupt(session: AgentSession) -> bool:
     """Gracefully interrupt the current turn without killing the CLI process."""
     if session.client is None:
@@ -1817,17 +1822,6 @@ async def spawn_agent(
         set_agent_context(name)
         set_trigger("spawn", detail=f"type={agent_type}")
 
-        normalized = namespaced_channel_name(name)
-        _channels_mod.bot_creating_channels.add(normalized)
-        channel = await ensure_agent_channel(name, cwd=cwd)
-
-        agent_label = "flowcoder" if agent_type == "flowcoder" else "claude code"
-        if resume:
-            await _get_router().post_system(
-                name, f"Resuming **{agent_label}** agent **{name}** (session `{resume[:8]}\u2026`) in `{cwd}`..."
-            )
-        else:
-            await _get_router().post_system(name, f"Spawning **{agent_label}** agent **{name}** in `{cwd}`...")
         mcp_servers = _build_mcp_servers(name, cwd, extra_mcp_servers=extra_mcp_servers)
 
         mcp_names = list(extra_mcp_servers.keys()) if extra_mcp_servers else None
@@ -1840,8 +1834,6 @@ async def spawn_agent(
         merged_excluded = list(excluded_commands or []) + ext_excluded
         merged_write_dirs = list(write_dirs or []) + ext_write_dirs
 
-        # Pre-create custom write dirs so the sandbox can actually use them
-        # (mkdir inside the sandbox fails because the parent dir isn't writable)
         for d in merged_write_dirs:
             os.makedirs(d, exist_ok=True)
 
@@ -1861,48 +1853,38 @@ async def spawn_agent(
             model=model,
         )
         session.session_id = resume
-        discord_state(session).channel_id = channel.id
 
-        # Late-substitute channel info into system prompt (not available at build time)
-        if isinstance(session.system_prompt, dict):
-            append_text = session.system_prompt.get("append")
-            if isinstance(append_text, str):
-                session.system_prompt["append"] = (
-                    append_text.replace("{channel_id}", str(channel.id))
-                    .replace("{channel_name}", _channels_mod.strip_status_prefix(channel.name))
-                    .replace("{guild_id}", str(channel.guild.id))
-                    .replace("{guild_name}", channel.guild.name)
-                )
+        # Frontend creates channel, sets channel_id, substitutes prompt placeholders
+        normalized = normalize_channel_name(name)
+        _channels_mod.bot_creating_channels.add(normalized)
+        router = _get_router()
+        await router.on_spawn(name, session)
+
+        agent_label = "flowcoder" if agent_type == "flowcoder" else "claude code"
+        if resume:
+            await router.post_system(
+                name, f"Resuming **{agent_label}** agent **{name}** (session `{resume[:8]}\u2026`) in `{cwd}`..."
+            )
+        else:
+            await router.post_system(name, f"Spawning **{agent_label}** agent **{name}** in `{cwd}`...")
 
         agents[name] = session
 
         # Persist agent config for restart reconstruction
+        from axi.extensions import DEFAULT_EXTENSIONS
         resolved_ext = list(extensions) if extensions is not None else list(DEFAULT_EXTENSIONS)
         _save_agent_config(name, mcp_names, extensions=resolved_ext, model=model)
-        channel_to_agent[channel.id] = name
+        channel_id = discord_state(session).channel_id
+        if channel_id:
+            channel_to_agent[channel_id] = name
         _channels_mod.bot_creating_channels.discard(normalized)
         log.info("Agent '%s' registered (type=%s, cwd=%s, resume=%s)", name, agent_type, cwd, resume)
 
-        # Update channel topic — fire-and-forget to avoid blocking on Discord's
-        # strict channel-edit rate limit (2 per 10 min).  A category move during
-        # kill/respawn already consumes the budget, so a synchronous topic edit
-        # would stall spawn_agent and prevent the initial prompt from launching.
-        desired_topic = format_channel_topic(cwd, resume, session.system_prompt_hash, agent_type=agent_type)
-        if channel.topic != desired_topic:
-            log.info("Updating topic on #%s: %r -> %r", channel.name, channel.topic, desired_topic)
-
-            async def _update_topic(ch: Any, topic: str) -> None:
-                try:
-                    await ch.edit(topic=topic)
-                except Exception:
-                    log.warning("Failed to update topic on #%s", ch.name, exc_info=True)
-
-            fire_and_forget(_update_topic(channel, desired_topic))
-
         if not initial_prompt:
-            await _get_router().post_system(name, f"**{agent_label.title()}** agent **{name}** is ready (sleeping).")
+            await router.post_system(name, f"**{agent_label.title()}** agent **{name}** is ready (sleeping).")
             return session
 
+        channel = await get_agent_channel(name)
         fire_and_forget(run_initial_prompt(session, initial_prompt, channel))
         return session
 
