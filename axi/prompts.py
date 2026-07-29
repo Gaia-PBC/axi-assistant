@@ -13,17 +13,12 @@ __all__ = [
 ]
 
 import hashlib
-import io
 import logging
 import os
 import re
 from typing import TYPE_CHECKING
 
-import discord
-from discord import TextChannel
-
 from axi import config
-from axi.discord_wire import audited_channel_send
 from axi.extensions import DEFAULT_EXTENSIONS, extension_prompt_text
 
 if TYPE_CHECKING:
@@ -202,27 +197,36 @@ def make_spawned_agent_system_prompt(
 
 
 # ---------------------------------------------------------------------------
-# Discord visibility for system prompts
+# System prompt visibility (frontend-agnostic)
 # ---------------------------------------------------------------------------
 
 
+def _get_router():
+    from axi import hub_wiring
+
+    assert hub_wiring.router is not None
+    return hub_wiring.router
+
+
 async def post_system_prompt_to_channel(
-    channel: TextChannel,
+    agent_name: str,
     system_prompt: SystemPromptPreset | str | None,
     *,
     is_resume: bool = False,
     prompt_changed: bool = False,
     session_id: str | None = None,
 ) -> None:
-    """Post the system prompt as a file attachment to the agent's Discord channel.
+    """Post the system prompt to the agent's frontend channel.
 
     On resume with no prompt change, posts a brief note.
     On resume with prompt change, posts the full updated prompt.
-    On new sessions, posts the appended system prompt as an .md file attachment.
+    On new sessions, posts the system prompt as an .md file attachment.
     """
+    router = _get_router()
+
     if is_resume and not prompt_changed:
         sid_display = f"`{session_id[:8]}…`" if session_id else "unknown"
-        await audited_channel_send(channel, f"*System:* 📋 Resumed session {sid_display}", operation="system_prompt.resume")
+        await router.post_system(agent_name, f"*System:* 📋 Resumed session {sid_display}")
         return
 
     if isinstance(system_prompt, dict):
@@ -235,22 +239,12 @@ async def post_system_prompt_to_channel(
         return
 
     line_count = len(prompt_text.splitlines())
-    file = discord.File(
-        io.BytesIO(prompt_text.encode("utf-8")),
-        filename="system-prompt.md",
-    )
     sid_suffix = f" — session `{session_id[:8]}…`" if session_id else ""
     if prompt_changed:
-        await audited_channel_send(
-            channel,
-            f"*System:* 📋 **System prompt updated** — {label} ({line_count} lines){sid_suffix}",
-            file=file,
-            operation="system_prompt.post",
-        )
+        description = f"*System:* 📋 **System prompt updated** — {label} ({line_count} lines){sid_suffix}"
     else:
-        await audited_channel_send(
-            channel,
-            f"*System:* 📋 {label} ({line_count} lines){sid_suffix}",
-            file=file,
-            operation="system_prompt.post",
-        )
+        description = f"*System:* 📋 {label} ({line_count} lines){sid_suffix}"
+
+    await router.post_file(
+        agent_name, "system-prompt.md", prompt_text.encode("utf-8"), description
+    )

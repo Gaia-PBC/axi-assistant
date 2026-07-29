@@ -1083,26 +1083,24 @@ async def wake_agent(session: AgentSession) -> None:
             )
         session.system_prompt_hash = current_hash
 
-    # Post system prompt to Discord on first wake
+    # Post system prompt to frontend on first wake
     ds = discord_state(session)
     if not ds.system_prompt_posted and ds.channel_id:
         ds.system_prompt_posted = True
-        channel = _bot.get_channel(ds.channel_id)
-        if channel and isinstance(channel, TextChannel):
-            try:
-                await post_system_prompt_to_channel(
-                    channel,
-                    session.system_prompt,
-                    is_resume=bool(resume_id),
-                    prompt_changed=prompt_changed,
-                    session_id=session.session_id or resume_id,
-                )
-            except Exception:
-                log.warning(
-                    "Failed to post system prompt to Discord for '%s'",
-                    session.name,
-                    exc_info=True,
-                )
+        try:
+            await post_system_prompt_to_channel(
+                session.name,
+                session.system_prompt,
+                is_resume=bool(resume_id),
+                prompt_changed=prompt_changed,
+                session_id=session.session_id or resume_id,
+            )
+        except Exception:
+            log.warning(
+                "Failed to post system prompt for '%s'",
+                session.name,
+                exc_info=True,
+            )
 
     await _post_model_warning(session)
 
@@ -2245,21 +2243,19 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
 
             log.info("Reconnect complete for '%s'", session.name)
 
-            # Post system prompt to Discord for visibility (same as wake_agent)
+            # Post system prompt to frontend for visibility (same as wake_agent)
             ds = discord_state(session)
             if not ds.system_prompt_posted and ds.channel_id:
                 ds.system_prompt_posted = True
-                prompt_channel = _bot.get_channel(ds.channel_id)
-                if prompt_channel and isinstance(prompt_channel, TextChannel):
-                    try:
-                        await post_system_prompt_to_channel(
-                            prompt_channel,
-                            session.system_prompt,
-                            is_resume=True,
-                            session_id=session.session_id,
-                        )
-                    except Exception:
-                        log.warning("Failed to post system prompt for '%s'", session.name, exc_info=True)
+                try:
+                    await post_system_prompt_to_channel(
+                        session.name,
+                        session.system_prompt,
+                        is_resume=True,
+                        session_id=session.session_id,
+                    )
+                except Exception:
+                    log.warning("Failed to post system prompt for '%s'", session.name, exc_info=True)
 
     except Exception:
         log.exception("Failed to reconnect agent '%s'", session.name)
