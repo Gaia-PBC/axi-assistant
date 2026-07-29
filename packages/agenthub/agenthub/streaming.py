@@ -524,6 +524,8 @@ def _extract_tool_preview(tool_name: str, raw_json: str) -> str | None:
     """Try to extract a useful preview from partial tool input JSON."""
     try:
         data = json.loads(raw_json)
+        if not isinstance(data, dict):
+            return None
         if tool_name == "Bash":
             return data.get("command", "")[:100]
         elif tool_name in ("Read", "Write", "Edit"):

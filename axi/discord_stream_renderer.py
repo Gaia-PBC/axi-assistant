@@ -242,7 +242,11 @@ class DiscordStreamRenderer:
     # --- Todo ---
 
     async def _on_todo_update(self, event: TodoUpdate) -> None:
-        log.debug("RENDER[%s] todo_update: %d items", self._agent_name, len(event.todos))
+        from axi.discord_ui import format_todo_list, _save_todo_items
+
+        _save_todo_items(self._agent_name, event.todos)
+        body = f"**Todo List**\n{format_todo_list(event.todos)}"
+        await self._send_system(body)
 
     # --- Query result ---
 

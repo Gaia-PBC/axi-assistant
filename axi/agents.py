@@ -1407,6 +1407,149 @@ async def _post_model_warning(session: AgentSession) -> None:
 # Functions are re-exported at the top of this module for backwards compat.
 # ---------------------------------------------------------------------------
 
+_STALL_WARN_SECS = 300
+
+
+async def _stall_watchdog(
+    session_name: str,
+    t_last_event: list[float],
+    done: asyncio.Event,
+) -> None:
+    while not done.is_set():
+        try:
+            await asyncio.wait_for(done.wait(), timeout=_STALL_WARN_SECS)
+            return
+        except TimeoutError:
+            pass
+        elapsed = time.monotonic() - t_last_event[0]
+        if elapsed >= _STALL_WARN_SECS:
+            log.warning(
+                "Stream stall for '%s': no event in %dm%02ds",
+                session_name,
+                int(elapsed) // 60,
+                int(elapsed) % 60,
+            )
+
+
+async def _stream_via_router(session: AgentSession) -> str | None:
+    """Consume stream via frontend-agnostic consumer, broadcast through FrontendRouter.
+
+    Returns None on success, or an error string for retry.
+    Replaces discord_stream.stream_response_to_channel.
+    """
+    from agenthub.stream_types import StreamKilled, TransientError
+    from agenthub.streaming import stream_response
+    from axi.discord_stream import _streaming_agent
+
+    router = _get_router()
+    sa_token = _streaming_agent.set(session.name)
+    t_last_event_ref = [time.monotonic()]
+    stall_done = asyncio.Event()
+    watchdog = asyncio.create_task(_stall_watchdog(session.name, t_last_event_ref, stall_done))
+
+    error: str | None = None
+    got_kill = False
+
+    try:
+        async for event in stream_response(
+            session,
+            self_compacting_names=_self_compacting,
+            compact_start_times=_compact_start_times,
+            pending_compact=_pending_compact,
+        ):
+            t_last_event_ref[0] = time.monotonic()
+            drain_stderr(session)
+            await router.on_stream_event(session.name, event)
+
+            if isinstance(event, TransientError):
+                error = event.error_type
+            elif isinstance(event, StreamKilled):
+                got_kill = True
+    finally:
+        stall_done.set()
+        watchdog.cancel()
+        _streaming_agent.reset(sa_token)
+
+    drain_stderr(session)
+
+    if got_kill:
+        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+        await _get_router().post_message(session.name, mentions)
+        await sleep_agent(session, force=True)
+        return None
+
+    if error is None:
+        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+        await _get_router().post_message(session.name, mentions)
+
+    return error
+
+
+async def _retry_stream_via_router(session: AgentSession) -> bool:
+    """Stream response with retry on transient errors. Returns True on success.
+
+    Replaces discord_stream.stream_with_retry.
+    """
+    with _tracer.start_as_current_span("stream_with_retry", attributes={"agent.name": session.name}) as span:
+        log.info("RETRY_ENTER[%s] starting initial stream", session.name)
+        error = await _stream_via_router(session)
+        if error is None:
+            log.info("RETRY_EXIT[%s] first attempt succeeded", session.name)
+            span.set_attribute("retry.attempts", 1)
+            return True
+
+        log.warning("RETRY_TRIGGERED[%s] error=%s — will retry", session.name, error)
+        router = _get_router()
+        for attempt in range(2, config.API_ERROR_MAX_RETRIES + 1):
+            delay = config.API_ERROR_BASE_DELAY * (2 ** (attempt - 2))
+            log.warning(
+                "Agent '%s' transient error '%s', retrying in %ds (attempt %d/%d)",
+                session.name, error, delay, attempt, config.API_ERROR_MAX_RETRIES,
+            )
+            await router.post_system(
+                session.name,
+                f"⚠️ API error, retrying in {delay}s... (attempt {attempt}/{config.API_ERROR_MAX_RETRIES})",
+            )
+            await asyncio.sleep(delay)
+
+            if session.client is None:
+                log.warning(
+                    "RETRY_ABORT[%s] client=None after %ds delay — agent killed during retry; bailing out",
+                    session.name, delay,
+                )
+                await router.post_system(
+                    session.name,
+                    f"⚠️ Agent **{session.name}** was killed mid-retry; send another message to continue.",
+                )
+                span.set_attribute("retry.aborted", True)
+                return False
+
+            try:
+                get_stdio_logger(session.name, config.LOG_DIR).debug(
+                    ">>> STDIN  %s", json.dumps({"type": "retry", "content": "Continue from where you left off."})
+                )
+                await session.client.query(as_stream("Continue from where you left off."))
+            except Exception:
+                log.exception("Agent '%s' retry query failed", session.name)
+                continue
+
+            error = await _stream_via_router(session)
+            if error is None:
+                span.set_attribute("retry.attempts", attempt)
+                return True
+
+        log.error(
+            "Agent '%s' transient error persisted after %d retries",
+            session.name, config.API_ERROR_MAX_RETRIES,
+        )
+        await router.post_system(
+            session.name,
+            f"❌ API error persisted after {config.API_ERROR_MAX_RETRIES} retries. Try again later.",
+        )
+        span.set_attribute("retry.exhausted", True)
+        span.set_status(trace.StatusCode.ERROR, "retries exhausted")
+        return False
+
 
 async def handle_query_timeout(session: AgentSession, channel: TextChannel) -> None:
     """Handle a query timeout by killing the CLI and rebuilding the session."""
@@ -1458,7 +1601,7 @@ async def _maybe_compact(session: AgentSession, channel: TextChannel) -> None:
     session.compacting = True
     try:
         await session.client.query(as_stream(cmd))
-        await stream_with_retry(session, channel)
+        await _retry_stream_via_router(session)
     finally:
         _self_compacting.discard(session.name)
         session.compacting = False
@@ -1517,6 +1660,7 @@ async def process_message(session: AgentSession, content: MessageContent, channe
                 # updated token counts. Brief yield lets the stderr thread process it.
                 await asyncio.sleep(0.3)
                 # Show deferred compact result now that we have fresh post_tokens
+                router = _get_router()
                 pending = _pending_compact.pop(session.name, None)
                 if pending:
                     post_tokens = session.context_tokens
@@ -1525,17 +1669,16 @@ async def process_message(session: AgentSession, content: MessageContent, channe
                     if post_tokens > 0 and post_tokens != pre_tokens:
                         saved = int(pre_tokens - post_tokens)
                         pct = post_tokens / session.context_window if session.context_window else 0
-                        await _retry_discord_503(
-                            channel.send,
+                        await router.post_system(
+                            session.name,
                             f"\U0001f504 Compacted in {elapsed:.1f}s: {pre_tokens:,} \u2192 {post_tokens:,} tokens "
                             f"({saved:,} freed, {pct:.0%} used) \u2014 resuming",
                         )
                     else:
-                        await _retry_discord_503(
-                            channel.send,
+                        await router.post_system(
+                            session.name,
                             f"\U0001f504 Compacted in {elapsed:.1f}s ({pre_tokens:,} tokens) \u2014 resuming",
                         )
-                    # Auto-resume after compaction
                     _reset_session_activity(session)
                     resume_msg = "Continue from where you left off."
                     get_stdio_logger(session.name, config.LOG_DIR).debug(
@@ -1543,10 +1686,9 @@ async def process_message(session: AgentSession, content: MessageContent, channe
                     )
                     await session.client.query(as_stream(resume_msg))
                     await asyncio.sleep(0.3)
-                    await stream_with_retry(session, channel)
+                    await _retry_stream_via_router(session)
                     await _maybe_compact(session, channel)
-                await stream_with_retry(session, channel)
-                # Axi-owned auto-compact: trigger after response if context is near full
+                await _retry_stream_via_router(session)
                 await _maybe_compact(session, channel)
         except TimeoutError:
             await handle_query_timeout(session, channel)
@@ -2221,17 +2363,15 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
                 # needs to be consumed. After subscribe, live output flows into the
                 # queue alongside any replayed messages.
                 session.bridge_busy = True
-                channel = await get_agent_channel(session.name)
-                if channel:
-                    log.info("RECONNECT_DRAIN[%s] draining output (replayed=%d)", session.name, replayed)
-                    await _get_router().post_system(session.name, "*(reconnected after restart \u2014 resuming output)*")
-                    try:
-                        async with asyncio.timeout(config.QUERY_TIMEOUT):
-                            await stream_response_to_channel(session, channel)
-                    except TimeoutError:
-                        log.warning("Drain timeout for '%s' \u2014 continuing", session.name)
-                    except Exception:
-                        log.exception("Error draining buffered output for '%s'", session.name)
+                log.info("RECONNECT_DRAIN[%s] draining output (replayed=%d)", session.name, replayed)
+                await _get_router().post_system(session.name, "*(reconnected after restart \u2014 resuming output)*")
+                try:
+                    async with asyncio.timeout(config.QUERY_TIMEOUT):
+                        await _stream_via_router(session)
+                except TimeoutError:
+                    log.warning("Drain timeout for '%s' \u2014 continuing", session.name)
+                except Exception:
+                    log.exception("Error draining buffered output for '%s'", session.name)
                 session.bridge_busy = False
                 session.last_activity = datetime.now(UTC)
                 log.info(
