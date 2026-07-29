@@ -31,6 +31,7 @@ class DiscordFrontend:
 
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
+        self._stream_renderers: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
@@ -155,7 +156,23 @@ class DiscordFrontend:
     # --- Stream rendering ---
 
     async def on_stream_event(self, agent_name: str, event: StreamOutput) -> None:
-        pass  # Stream rendering uses existing discord_stream.py path for now
+        from agenthub.stream_types import StreamEnd, StreamStart
+        from axi.channels import get_agent_channel
+        from axi.discord_stream_renderer import DiscordStreamRenderer
+
+        if isinstance(event, StreamStart):
+            channel = await get_agent_channel(agent_name)
+            if channel:
+                self._stream_renderers[agent_name] = DiscordStreamRenderer(
+                    agent_name, channel, self._bot,
+                )
+
+        renderer = self._stream_renderers.get(agent_name)
+        if renderer:
+            await renderer.handle(event)
+
+        if isinstance(event, StreamEnd):
+            self._stream_renderers.pop(agent_name, None)
 
     # --- Interactive gates ---
     # Not yet called through the FrontendRouter — plan approval and questions
