@@ -30,7 +30,7 @@ from discord.ext.commands import Bot
 from opentelemetry import trace
 
 from axi import agents, channels, config, scheduler, tools, worktrees
-from axi.axi_types import ActivityState, AgentSession, ConcurrencyLimitError, discord_state, tool_display
+from axi.axi_types import ActivityState, AgentSession, discord_state, tool_display
 from axi.discord_wire import (
     audited_channel_send,
     audited_interaction_followup_send,
@@ -380,17 +380,19 @@ async def on_message(message: discord.Message) -> None:
         msg_id,
         agents.is_processing(session),
         session.reconnecting,
-        len(session.message_queue),
+        len(session.state.queued_turns),
         session.query_lock.locked(),
     )
 
     raw_content = content
-    content = agents.wrap_content_with_flowchart(content, session)
+    # B1 (Phase 7.2): the live turn is driven by the hub. submit_user_message wakes the
+    # agent, drives the turn (AxiTurnHooks preserve flowchart wrap / compaction / tracing /
+    # drains), streams to the frontend, then sleeps and drains its own queued_turns.
+    # Flowchart wrapping now happens in AxiTurnHooks.transform_content — pass raw content.
 
-    if agents.hub and agents.hub.shutdown_requested:
-        await agents.send_system(channel, "Bot is restarting — not accepting new messages.")
-        result_status = "shutdown"
-    elif session.reconnecting:
+    if session.reconnecting:
+        # Procmux reconnect replays session.message_queue via the legacy path
+        # (retired in Phase 7.4/7.5); keep the enqueue here for now.
         observe_agent_message_event("queue_enqueued_reconnecting")
         session.message_queue.append((content, channel, message, raw_content))
         position = len(session.message_queue)
@@ -399,68 +401,55 @@ async def on_message(message: discord.Message) -> None:
             f"Agent **{session.name}** is reconnecting — message queued (position {position}).",
         )
         result_status = "queued_reconnecting"
-    elif session.query_lock.locked():
+    else:
+        # axi-master keep-latest dedup: if busy with an already-queued turn, drop the
+        # previously queued one (and its 📨) before enqueuing the newer message.
+        busy = session.state.current_turn is not None
         replaced = 0
-        if session.name == "axi-master":
-            replaced = await _replace_latest_queued_user_message(session, content, channel, message, raw_content)
-        else:
-            session.message_queue.append((content, channel, message, raw_content))
-        observe_agent_message_event("queue_enqueued_busy")
-        position = len(session.message_queue)
-        if session.compacting:
+        if busy and session.name == "axi-master" and session.state.queued_turns:
+            dropped = session.state.queued_turns.pop()
+            dropped_msg = (dropped.metadata or {}).get("discord_message")
+            if dropped_msg is not None:
+                await agents.remove_reaction(dropped_msg, "📨")
+            replaced = 1
+
+        result = await agents.hub.submit_user_message(
+            session.name,
+            content,
+            metadata={"discord_message": message, "channel_id": channel.id, "raw_content": raw_content},
+        )
+
+        if result.status == "started":
+            result_status = "processed"
+        elif result.status == "queued":
+            observe_agent_message_event("queue_enqueued_busy")
+            position = result.position
             detail = " Replaced older queued message." if replaced else ""
-            await agents.send_system(
-                channel,
-                f"🔄 Agent **{session.name}** is compacting context — message queued (position {position}). Will process after compaction completes.{detail}",
-            )
-        else:
-            activity = session.activity
-            tool_suffix = ""
-            if activity.phase == "waiting" and activity.tool_name:
-                tool_suffix = f" (currently {tool_display(activity.tool_name)})"
-            interrupted = await agents.graceful_interrupt(session)
-            detail = " Replaced older queued message." if replaced else ""
-            if interrupted:
+            if session.compacting:
                 await agents.send_system(
                     channel,
-                    f"Agent **{session.name}** is busy — message queued (position {position}). Interrupting current task.{tool_suffix}{detail}",
+                    f"🔄 Agent **{session.name}** is compacting context — message queued (position {position}). Will process after compaction completes.{detail}",
                 )
             else:
-                await agents.send_system(
-                    channel,
-                    f"Agent **{session.name}** is busy — message queued (position {position}). Will process after current turn.{tool_suffix}{detail}",
-                )
-        result_status = "queued"
-    else:
-        agents.scheduler.mark_interactive(session.name)
-        async with session.query_lock:
-            ready = True
-            if not agents.is_awake(session):
-                try:
-                    await agents.wake_agent(session)
-                except ConcurrencyLimitError:
-                    observe_agent_message_event("queue_enqueued_slot_wait")
-                    session.message_queue.append((content, channel, message, raw_content))
-                    awake = agents.count_awake_agents()
+                activity = session.activity
+                tool_suffix = ""
+                if activity.phase == "waiting" and activity.tool_name:
+                    tool_suffix = f" (currently {tool_display(activity.tool_name)})"
+                interrupted = await agents.graceful_interrupt(session)
+                if interrupted:
                     await agents.send_system(
                         channel,
-                        f"⏳ All {awake} agent slots busy. Message queued — will run when a slot opens.",
+                        f"Agent **{session.name}** is busy — message queued (position {position}). Interrupting current task.{tool_suffix}{detail}",
                     )
-                    result_status = "queued"
-                    ready = False
-                except Exception:
-                    log.exception("Failed to wake agent '%s' for user message", session.name)
-                    await agents.send_system(channel, f"Failed to wake agent **{session.name}**.")
-                    result_status = "error"
-                    ready = False
-            if ready:
-                try:
-                    await agents.process_message(session, content, channel)
-                    result_status = "processed"
-                except RuntimeError as e:
-                    log.warning("Runtime error for '%s': %s", session.name, e)
-                    await agents.send_system(channel, str(e))
-                    result_status = "error"
+                else:
+                    await agents.send_system(
+                        channel,
+                        f"Agent **{session.name}** is busy — message queued (position {position}). Will process after current turn.{tool_suffix}{detail}",
+                    )
+            result_status = "queued"
+        else:  # "shutdown"
+            await agents.send_system(channel, "Bot is restarting — not accepting new messages.")
+            result_status = "shutdown"
 
     _RESULT_REACTIONS = {
         "processed": "✅",
@@ -472,13 +461,7 @@ async def on_message(message: discord.Message) -> None:
     if result_status != "shutdown":
         await agents.add_reaction(message, reaction)
 
-    if result_status == "processed":
-        if scheduler.should_yield(session.name):
-            log.info("Scheduler yield: '%s' sleeping after user message", session.name)
-            await agents.sleep_agent(session)
-        else:
-            await agents.process_message_queue(session)
-
+    # Sleep and queue draining are owned by the hub's turn loop now.
     await bot.process_commands(message)
 
 
@@ -1135,7 +1118,7 @@ def _format_agent_status(name: str, session: AgentSession) -> str:
             if since_last > 30:
                 lines.append(f"No stream events for {agents.format_time_remaining(since_last)} (may be running a long tool)")
 
-    queue_size = len(session.message_queue)
+    queue_size = len(session.state.queued_turns)
     if queue_size > 0:
         lines.append(f"Queued messages: {queue_size}")
 
@@ -1196,7 +1179,7 @@ async def _show_all_agents_status(interaction: discord.Interaction) -> None:
     lines: list[str] = []
     for name, session in agents.agents.items():
         status = _agent_state_summary(session)
-        queue = len(session.message_queue)
+        queue = len(session.state.queued_turns)
         queue_str = f" | {queue} queued" if queue > 0 else ""
         lines.append(f"- **{name}**: {status}{queue_str}")
 
@@ -1486,11 +1469,16 @@ async def stop_agent(interaction: discord.Interaction, agent_name: str | None = 
             ds.question_message_id = None
 
         cleared = 0
-        session.state.stop_requested = True
-        while session.message_queue:
-            _, _, dropped_msg, *_ = session.message_queue.popleft()
-            await agents.remove_reaction(dropped_msg, "📨")
+        for turn in list(session.state.queued_turns):
+            dropped_msg = (turn.metadata or {}).get("discord_message")
+            if dropped_msg is not None:
+                await agents.remove_reaction(dropped_msg, "📨")
             cleared += 1
+        if agents.hub is not None:
+            await agents.hub.request_stop(session.name, clear_queue=True)
+        else:
+            session.state.stop_requested = True
+            session.state.queued_turns.clear()
 
         await _interrupt_agent(session)
 
@@ -1528,7 +1516,7 @@ async def skip_agent(interaction: discord.Interaction, agent_name: str | None = 
         attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag},
     ).end()
 
-    queued = len(session.message_queue)
+    queued = len(session.state.queued_turns)
     activity = session.activity
     tool_suffix = ""
     if activity.phase == "waiting" and activity.tool_name:
@@ -1745,7 +1733,7 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
         return True
 
     if cmd == "skip":
-        if session.client is None or not session.query_lock.locked():
+        if session.client is None or session.state.current_turn is None:
             await agents.send_system(channel, f"Agent **{agent_name}** is not busy.")
             return True
 
@@ -1756,7 +1744,7 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
                 tool_suffix = f" (was {tool_display(activity.tool_name)})"
 
             await _interrupt_agent(session)
-            queued = len(session.message_queue)
+            queued = len(session.state.queued_turns)
             if queued:
                 noun = "message" if queued == 1 else "messages"
                 msg = (
@@ -1772,7 +1760,7 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
         return True
 
     if cmd == "stop":
-        if session.client is None or not session.query_lock.locked():
+        if session.client is None or session.state.current_turn is None:
             await agents.send_system(channel, f"Agent **{agent_name}** is not busy.")
             return True
 
@@ -1795,12 +1783,18 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
                 ds.question_data = None
                 ds.question_message_id = None
 
+            # Clear queued turns via the hub (Phase 7.2) and drop their 📨 reactions.
             cleared = 0
-            session.state.stop_requested = True
-            while session.message_queue:
-                _, _, dropped_msg, *_ = session.message_queue.popleft()
-                await agents.remove_reaction(dropped_msg, "📨")
+            for turn in list(session.state.queued_turns):
+                dropped_msg = (turn.metadata or {}).get("discord_message")
+                if dropped_msg is not None:
+                    await agents.remove_reaction(dropped_msg, "📨")
                 cleared += 1
+            if agents.hub is not None:
+                await agents.hub.request_stop(session.name, clear_queue=True)
+            else:
+                session.state.stop_requested = True
+                session.state.queued_turns.clear()
 
             await _interrupt_agent(session)
 
