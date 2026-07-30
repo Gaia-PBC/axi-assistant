@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from axi.agents import (
+from axi.discord_stream import (
     _live_edit_finalize,
     _live_edit_tick,
     _LiveEditState,
