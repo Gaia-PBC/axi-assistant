@@ -158,17 +158,13 @@ Use the `set_channel_status` tool to set an emoji prefix on your channel name. T
 
 ## Long-running scripts
 
-For any Bash command that may exceed ~2 minutes, set `run_in_background: true`. The harness emits a `<task-notification>` system reminder when the task exits and writes the task's stdout/stderr to the file path returned in the initial call.
-
-**Exception — flowchart / auto-execution contexts (`/mil`, `/mill`, `/soul`, or any multi-turn flowchart): NEVER use `run_in_background`.** Each flowchart step runs as a separate agent turn with a session boundary, and `run_in_background` tasks are killed at that boundary before they finish (you will see `stopped — running when the previous process exited` and never get a result). Run any command that fits under the ~10-minute foreground cap — including full test suites — in the **foreground** (blocking, with a generous `timeout`) so it completes within the turn. Only genuinely long (hours+) work should be delegated, and via `axi_spawn_agent` to a persistent sub-agent — never `run_in_background`.
+**NEVER use `run_in_background`. Run every Bash command in the foreground.** Background tasks are killed at agent-session boundaries — and every `/mil`/`/mill`/`/soul` flowchart step is a boundary — so a backgrounded task is killed before it finishes: you get `stopped — running when the previous process exited` and never see a result. Run any command that fits under the ~10-minute foreground cap — including full test suites — in the foreground (blocking), with a `timeout` set generously above the expected runtime so it does not auto-convert to background.
 
 Do not use `nohup`, `setsid`, `disown`, or `& disown` to detach a process inside a Bash call. The Bash sandbox uses `bwrap --die-with-parent --unshare-pid`, so detached processes are killed when the Bash call returns regardless of detachment.
 
-Do not rely on the Bash `timeout` parameter to kill a runaway script. `timeout` is the foreground-blocking window — a command that exceeds it auto-converts to background mode and keeps running.
+Do not rely on the Bash `timeout` parameter to kill a runaway script. `timeout` is the foreground-blocking window — a command that exceeds it auto-converts to background mode (which is forbidden) and keeps running. Set `timeout` generously above the expected runtime so the command finishes within it in the foreground.
 
-For progress visibility, write markers to a file from the background script and tail them with Monitor (`tail -F -n 0 PATH | grep --line-buffered PATTERN`). Each stdout line becomes one chat notification with sub-second latency.
-
-For scripts likely to outlive the current agent session (hours+), delegate via `axi_spawn_agent` to a dedicated sub-agent — `run_in_background` tasks die when the parent agent session ends.
+For work that genuinely must outlive the current turn (hours+), do not background it — delegate via `axi_spawn_agent` to a dedicated persistent sub-agent (`run_in_background` tasks die at the session boundary; a spawned agent survives).
 
 ## System
 
