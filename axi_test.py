@@ -32,6 +32,9 @@ from axi.worktrees import (
     cleanup_stale as _cleanup_stale,
 )
 from axi.worktrees import (
+    create_worktree as _create_worktree,
+)
+from axi.worktrees import (
     execute_merge as _execute_merge,
 )
 from axi.worktrees import (
@@ -401,7 +404,7 @@ def _write_env(
         f"SCHEDULE_TIMEZONE={defaults.get('schedule_timezone', 'UTC')}\n"
         f"DEFAULT_CWD={instance_path}\n"
         f"AXI_USER_DATA={data_path}\n"
-        f"HTTP_API_HOST=0.0.0.0\n"
+        f"HTTP_API_HOST=127.0.0.1\n"
         f"HTTP_API_PORT=8787\n"
         f"DAY_BOUNDARY_HOUR={defaults.get('day_boundary_hour', '0')}\n"
         f"AXI_MODEL=haiku\n"
@@ -586,6 +589,19 @@ def cmd_up(args: argparse.Namespace) -> None:
         rs_binary = os.path.join(instance_path, "axi-rs", "target", profile, "axi")
     else:
         _install_py_unit()
+
+    # Ensure the instance has a code worktree to run from — the systemd unit's
+    # WorkingDirectory is ~/axi-tests/<name>, which must contain the axi package
+    # (else the service crash-loops with ModuleNotFoundError: axi). create_worktree
+    # is idempotent: it reuses an existing worktree (e.g. the current agent's own)
+    # or creates a new branch off the current HEAD.
+    if _create_worktree(name, source_repo=REPO_DIR) is None:
+        print(
+            f"Error: could not create/reuse a git worktree for '{name}' at {instance_path}. "
+            "The service cannot start without one.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     guild_name = _try_reserve(config, name, instance_path, args.guild, mode)
 
