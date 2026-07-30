@@ -22,6 +22,7 @@ from agenthub import AgentHub
 from agenthub.frontend_router import FrontendRouter
 from axi import config
 from axi.discord_frontend import DiscordFrontend
+from axi.turn_hooks import AxiTurnHooks
 
 if TYPE_CHECKING:
     from agenthub.types import AgentSession
@@ -178,6 +179,7 @@ def create_hub(
         query_timeout=config.QUERY_TIMEOUT,
         usage_history_path=config.USAGE_HISTORY_PATH,
         rate_limit_history_path=config.RATE_LIMIT_HISTORY_PATH,
+        turn_hooks=AxiTurnHooks(),
     )
 
     # Share the same sessions dict — gradual migration
