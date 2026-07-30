@@ -1579,8 +1579,12 @@ async def handle_query_timeout(session: AgentSession, channel: TextChannel) -> N
 # Axi-owned auto-compact
 # ---------------------------------------------------------------------------
 
-async def _maybe_compact(session: AgentSession, channel: TextChannel) -> None:
-    """Trigger manual compaction with custom instructions if context is getting full."""
+async def _maybe_compact(session: AgentSession, channel: TextChannel | None = None) -> None:
+    """Trigger manual compaction with custom instructions if context is getting full.
+
+    ``channel`` is unused (posting goes through the FrontendRouter) and optional so
+    the hub turn hooks (Phase 7) can call this without a Discord channel object.
+    """
     if session.context_tokens <= 0 or session.context_window <= 0:
         return
     usage_pct = session.context_tokens / session.context_window

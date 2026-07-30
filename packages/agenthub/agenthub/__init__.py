@@ -9,6 +9,7 @@ from agenthub.runtime import AgentHub
 from agenthub.stream_types import StreamOutput
 from agenthub.streaming import receive_response_safe, stream_response
 from agenthub.tasks import BackgroundTaskSet
+from agenthub.turn_hooks import TurnHooks
 from agenthub.types import (
     AgentSession,
     ConcurrencyLimitError,
@@ -40,6 +41,7 @@ __all__ = [
     "StopResult",
     "StreamOutput",
     "SubmissionResult",
+    "TurnHooks",
     "TurnKind",
     "TurnOutcome",
     "TurnRequest",
