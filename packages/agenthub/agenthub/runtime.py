@@ -24,6 +24,7 @@ from agenthub.session_events import (
 )
 from agenthub.streaming import stream_response
 from agenthub.tasks import BackgroundTaskSet
+from agenthub.turn_hooks import TurnHooks
 from agenthub.types import (
     AgentSession,
     LifecycleState,
@@ -53,6 +54,7 @@ class AgentHub:
         rate_limit_history_path: str | None = None,
         log_dir: str | None = None,
         stream_factory: Any = stream_response,
+        turn_hooks: TurnHooks | None = None,
     ) -> None:
         self.frontends = list(frontends or [])
         self.sessions: dict[str, AgentSession] = {}
@@ -74,6 +76,7 @@ class AgentHub:
         self.tasks = BackgroundTaskSet()
         self.log_dir = log_dir
         self.stream_factory = stream_factory
+        self.turn_hooks = turn_hooks if turn_hooks is not None else TurnHooks()
         self.shutdown_requested = False
 
     async def spawn_agent(
@@ -254,8 +257,13 @@ class AgentHub:
 
     async def _run_turn_with_timeout(self, session: AgentSession, turn: Any) -> TurnOutcome:
         async with asyncio.timeout(self.query_timeout):
-            await session.client.query(turn.content)
-            return await self._consume_stream(session, turn.turn_id)
+            async with self.turn_hooks.turn_scope(session, turn):
+                await self.turn_hooks.before_turn(session, turn)
+                content = await self.turn_hooks.transform_content(session, turn.content)
+                await session.client.query(content)
+                outcome = await self._consume_stream(session, turn.turn_id)
+                await self.turn_hooks.after_turn(session, turn, outcome)
+                return outcome
 
     async def _handle_turn_timeout(self, session: AgentSession) -> None:
         await self._emit_log(session, "error", f"turn timed out after {self.query_timeout}s")
