@@ -407,15 +407,176 @@ class DiscordFrontend:
     async def receive_input(self, agent_name: str) -> str:
         return ""  # Will delegate to Discord message wait in Phase 4
 
+    # --- Discord-specific helpers ---
+
+    _DISCORD_EPOCH_MS = 1420070400000
+    _MCP_TEXT_MAX_BYTES = 50 * 1024
+
+    def _resolve_snowflake(self, value: str) -> int:
+        from datetime import UTC, datetime
+
+        if value.isdigit():
+            return int(value)
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        ms = int(dt.timestamp() * 1000)
+        return (ms - self._DISCORD_EPOCH_MS) << 22
+
+    async def _resolve_channel_id(self, channel_arg: str) -> str:
+        if channel_arg.isdigit():
+            return channel_arg
+        if ":" in channel_arg:
+            guild_id_str, channel_name = channel_arg.split(":", 1)
+            if guild_id_str.isdigit():
+                ch = await config.discord_client.find_channel(int(guild_id_str), channel_name)
+                if ch:
+                    return str(ch["id"])
+                raise ValueError(f"No text channel named '{channel_name}' in guild {guild_id_str}")
+        ch = await config.discord_client.find_channel(config.DISCORD_GUILD_ID, channel_arg)
+        if ch:
+            return str(ch["id"])
+        raise ValueError(f"'{channel_arg}' is not a valid channel ID, guild_id:channel_name pair, or channel name in the home guild")
+
+    async def _agent_channel_id(self, agent_name: str) -> str | None:
+        from axi.channels import get_agent_channel
+
+        channel = await get_agent_channel(agent_name)
+        return str(channel.id) if channel else None
+
+    # --- Message history ---
+
     async def read_messages(
-        self, agent_name: str, limit: int = 50, before: Any = None
+        self, agent_name: str, limit: int = 50, before: Any = None,
+        after: Any = None, channel_ref: Any = None,
     ) -> list[dict[str, Any]]:
-        return []  # Will delegate to channel.history in Phase 9
+        if channel_ref:
+            channel_id = await self._resolve_channel_id(str(channel_ref))
+        else:
+            channel_id = await self._agent_channel_id(agent_name)
+        if not channel_id:
+            return []
+        params: dict[str, Any] = {}
+        if before:
+            params["before"] = self._resolve_snowflake(str(before))
+        if after:
+            params["after"] = self._resolve_snowflake(str(after))
+        use_after = "after" in params
+        all_messages: list[dict[str, Any]] = []
+        collected = 0
+        while collected < limit:
+            batch_size = min(100, limit - collected)
+            batch = await config.discord_client.get_messages(channel_id, limit=batch_size, **params)
+            if not batch:
+                break
+            all_messages.extend(batch)
+            collected += len(batch)
+            if len(batch) < batch_size:
+                break
+            if use_after:
+                params["after"] = batch[-1]["id"]
+            else:
+                params["before"] = batch[-1]["id"]
+        if not use_after:
+            all_messages.reverse()
+        result = []
+        for msg in all_messages:
+            result.append({
+                "author": msg.get("author", {}).get("username", "unknown"),
+                "content": msg.get("content", ""),
+                "timestamp": msg.get("timestamp", ""),
+                "id": msg.get("id", ""),
+                "channel_id": channel_id,
+            })
+        return result
 
     async def search_messages(
-        self, query: str, agent_name: str | None = None
+        self, query: str, agent_name: str | None = None,
+        limit: int = 25, channel_ref: Any = None,
     ) -> list[dict[str, Any]]:
-        return []  # Will delegate to discordquery search in Phase 9
+        guild_id = str(config.DISCORD_GUILD_ID)
+        params: dict[str, Any] = {"content": query}
+        if channel_ref:
+            params["channel_id"] = await self._resolve_channel_id(str(channel_ref))
+        elif agent_name:
+            ch_id = await self._agent_channel_id(agent_name)
+            if ch_id:
+                params["channel_id"] = ch_id
+        params["sort_by"] = "timestamp"
+        params["sort_order"] = "desc"
+        results: list[dict[str, Any]] = []
+        offset = 0
+        while len(results) < limit:
+            params["limit"] = min(25, limit - len(results))
+            params["offset"] = offset
+            data = await config.discord_client.get(f"/guilds/{guild_id}/messages/search", params)
+            message_groups = data.get("messages", [])
+            if not message_groups:
+                break
+            for group in message_groups:
+                for msg in group:
+                    if msg.get("hit"):
+                        results.append({
+                            "author": msg.get("author", {}).get("username", "unknown"),
+                            "content": msg.get("content", ""),
+                            "timestamp": msg.get("timestamp", ""),
+                            "id": msg.get("id", ""),
+                            "channel_id": msg.get("channel_id", ""),
+                        })
+                        break
+            total = data.get("total_results", 0)
+            offset += 25
+            if offset >= total or offset >= 9975:
+                break
+        return results[:limit]
+
+    async def wait_for_message(
+        self, agent_name: str, timeout: float = 120,
+        after: Any = None, channel_ref: Any = None,
+    ) -> list[dict[str, Any]]:
+        import asyncio
+        import time
+
+        if channel_ref:
+            channel_id = await self._resolve_channel_id(str(channel_ref))
+        else:
+            channel_id = await self._agent_channel_id(agent_name)
+        if not channel_id:
+            return []
+        poll_interval = 2.0
+        if not after:
+            msgs = await config.discord_client.get_messages(channel_id, limit=1)
+            if not msgs:
+                return []
+            after = msgs[0]["id"]
+        after_id = str(after)
+        deadline = time.monotonic() + timeout
+        cursor = after_id
+        while time.monotonic() < deadline:
+            messages = await config.discord_client.get_messages(channel_id, limit=100, after=after_id)
+            if messages:
+                cursor = messages[0]["id"]
+                matching = []
+                for msg in reversed(messages):
+                    content = msg.get("content", "")
+                    if content.startswith("*System:*"):
+                        continue
+                    matching.append({
+                        "author": msg.get("author", {}).get("username", "unknown"),
+                        "content": content,
+                        "timestamp": msg.get("timestamp", ""),
+                        "id": msg.get("id", ""),
+                        "channel_id": channel_id,
+                        "cursor": cursor,
+                    })
+                if matching:
+                    return matching
+                after_id = cursor
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(poll_interval, remaining))
+        return []
 
     # --- Inbound message processing ---
 

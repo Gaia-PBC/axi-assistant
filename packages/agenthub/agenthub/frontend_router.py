@@ -150,15 +150,30 @@ class FrontendRouter:
         return result if result is not None else ""
 
     async def read_messages(
-        self, agent_name: str, limit: int = 50, before: Any = None
+        self, agent_name: str, limit: int = 50, before: Any = None,
+        after: Any = None, channel_ref: Any = None,
     ) -> list[dict[str, Any]]:
-        result = await self._first_response("read_messages", agent_name, limit, before)
+        result = await self._first_response(
+            "read_messages", agent_name, limit, before, after, channel_ref,
+        )
         return result or []
 
     async def search_messages(
-        self, query: str, agent_name: str | None = None
+        self, query: str, agent_name: str | None = None,
+        limit: int = 25, channel_ref: Any = None,
     ) -> list[dict[str, Any]]:
-        result = await self._first_response("search_messages", query, agent_name)
+        result = await self._first_response(
+            "search_messages", query, agent_name, limit, channel_ref,
+        )
+        return result or []
+
+    async def wait_for_message(
+        self, agent_name: str, timeout: float = 120,
+        after: Any = None, channel_ref: Any = None,
+    ) -> list[dict[str, Any]]:
+        result = await self._first_response(
+            "wait_for_message", agent_name, timeout, after, channel_ref,
+        )
         return result or []
 
     async def on_log_event(self, event: LogEvent) -> None:

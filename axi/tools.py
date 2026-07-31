@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import subprocess
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import arrow
@@ -29,26 +28,15 @@ from axi import agents, channels, config, worktrees
 from axi.discord_stream import get_streaming_agent
 from axi.log_context import set_agent_context, set_trigger
 
-# Max byte size for MCP tool text results.  The Claude CLI hangs when a single
-# MCP result exceeds the 64 KB Linux pipe buffer default.  50 KB leaves margin.
 _MCP_TEXT_MAX_BYTES = 50 * 1024
 
 
 def _truncate_mcp_text(text: str, total_messages: int) -> str:
-    """Truncate MCP result text to stay under the pipe-buffer-safe limit.
-
-    Cuts from the *oldest* (top) end so the most recent messages survive,
-    and prepends a notice telling the model to paginate for the rest.
-    """
     encoded = text.encode()
     if len(encoded) <= _MCP_TEXT_MAX_BYTES:
         return text
-    # Reserve space for the notice header (max ~120 bytes).
     body_budget = _MCP_TEXT_MAX_BYTES - 256
-    # Keep the tail (newest messages).  Decode with replace to avoid
-    # splitting mid-codepoint.
     kept = encoded[-body_budget:].decode("utf-8", errors="replace")
-    # Snap to the first complete line
     newline = kept.find("\n")
     if newline != -1:
         kept = kept[newline + 1:]
@@ -56,41 +44,15 @@ def _truncate_mcp_text(text: str, total_messages: int) -> str:
     notice = f"[Truncated: showing {kept_lines} of {total_messages} messages. Use 'before' parameter to paginate for older messages.]\n"
     return notice + kept
 
-# Discord snowflake epoch (2015-01-01T00:00:00Z in milliseconds)
-_DISCORD_EPOCH_MS = 1420070400000
+
+def _get_router():
+    from axi.hub_wiring import router
+    return router
 
 
-def _resolve_snowflake(value: str) -> int:
-    """Parse a value as either a snowflake ID or ISO datetime, returning a snowflake."""
-    if value.isdigit():
-        return int(value)
-    dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    ms = int(dt.timestamp() * 1000)
-    return (ms - _DISCORD_EPOCH_MS) << 22
+def _get_caller() -> str | None:
+    return get_streaming_agent()
 
-
-async def _resolve_channel(channel_arg: str) -> str:
-    """Resolve a channel argument to a channel ID.
-
-    Accepts a raw channel ID, guild_id:channel_name (e.g. '123456789:general'),
-    or a bare channel name (resolved against the bot's home guild).
-    """
-    if channel_arg.isdigit():
-        return channel_arg
-    if ":" in channel_arg:
-        guild_id_str, channel_name = channel_arg.split(":", 1)
-        if guild_id_str.isdigit():
-            ch = await config.discord_client.find_channel(int(guild_id_str), channel_name)
-            if ch:
-                return str(ch["id"])
-            raise ValueError(f"No text channel named '{channel_name}' in guild {guild_id_str}")
-    # Bare channel name — resolve against the bot's home guild
-    ch = await config.discord_client.find_channel(config.DISCORD_GUILD_ID, channel_arg)
-    if ch:
-        return str(ch["id"])
-    raise ValueError(f"'{channel_arg}' is not a valid channel ID, guild_id:channel_name pair, or channel name in the home guild")
 
 if TYPE_CHECKING:
     from axi.axi_types import McpArgs, McpResult
@@ -637,56 +599,54 @@ async def get_date_and_time(args: McpArgs) -> McpResult:
 
 
 @tool(
-    "discord_send_file",
-    "Send a file as a Discord message attachment to your own channel or another channel. "
-    "If channel_id is omitted, the file is sent to your own agent channel.",
+    "post_file",
+    "Send a file as a message attachment to your own channel or another agent's channel. "
+    "If no target is specified, the file is sent to your own agent channel.",
     {
         "type": "object",
         "properties": {
-            "channel_id": {
-                "type": "string",
-                "description": "The Discord channel ID. Omit to send to your own channel.",
-            },
             "file_path": {"type": "string", "description": "Absolute path to the file to upload"},
             "content": {"type": "string", "description": "Optional text message to include with the file"},
+            "agent_name": {
+                "type": "string",
+                "description": "Target agent name. Omit to send to your own channel.",
+            },
+            "channel_id": {
+                "type": "string",
+                "description": "Target channel ID (backward compat). Prefer agent_name.",
+            },
         },
         "required": ["file_path"],
     },
 )
-async def discord_send_file(args: McpArgs) -> McpResult:
+async def post_file(args: McpArgs) -> McpResult:
     from axi.egress_filter import is_path_blocked
 
     file_path = args["file_path"]
-    _tracer.start_span("tool.discord_send_file", attributes={"file.path": file_path}).end()
+    _tracer.start_span("tool.post_file", attributes={"file.path": file_path}).end()
 
     if is_path_blocked(file_path):
         return {"content": [{"type": "text", "text": f"Access denied: uploading {file_path} is blocked (sensitive file)"}], "is_error": True}
 
-    content = args.get("content", "")
-    channel_id = args.get("channel_id")
-    if not channel_id:
-        # Auto-resolve: identify the calling agent via the streaming ContextVar,
-        # then look up its channel.  Iterating channel_to_agent + query_lock is
-        # non-deterministic when multiple agents stream concurrently.
-        caller = get_streaming_agent()
-        if caller:
-            for ch_id, name in agents.channel_to_agent.items():
-                if name == caller:
-                    channel_id = str(ch_id)
-                    break
-    if not channel_id:
-        return {
-            "content": [{"type": "text", "text": "Error: could not determine channel. Provide channel_id explicitly."}],
-            "is_error": True,
-        }
     if not os.path.isfile(file_path):
         return {"content": [{"type": "text", "text": f"Error: file not found: {file_path}"}], "is_error": True}
+
+    target = args.get("agent_name") or _get_caller()
+    channel_ref = args.get("channel_id")
+    if not target and not channel_ref:
+        return {
+            "content": [{"type": "text", "text": "Error: could not determine target. Provide agent_name or channel_id."}],
+            "is_error": True,
+        }
+
+    description = args.get("content", "")
     filename = os.path.basename(file_path)
     try:
         with open(file_path, "rb") as f:
             file_data = f.read()
-        msg = await config.discord_client.send_file(channel_id, filename, file_data, content=content or None)
-        return {"content": [{"type": "text", "text": f"File '{filename}' sent (msg id: {msg['id']})"}]}
+        router = _get_router()
+        await router.post_file(target or "", filename, file_data, description)
+        return {"content": [{"type": "text", "text": f"File '{filename}' sent."}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
 
@@ -698,7 +658,8 @@ async def discord_send_file(args: McpArgs) -> McpResult:
 
 @tool(
     "discord_list_guilds",
-    "List Discord guilds (servers) the bot is a member of. Returns guild id and name.",
+    "List Discord guilds (servers) the bot is a member of. Returns guild id and name. "
+    "Discord-only — not available with non-Discord frontends.",
     {"type": "object", "properties": {}, "required": []},
 )
 async def discord_list_guilds(args: McpArgs) -> McpResult:
@@ -713,7 +674,8 @@ async def discord_list_guilds(args: McpArgs) -> McpResult:
 
 @tool(
     "discord_list_channels",
-    "List text channels in a Discord guild/server. Returns channel id, name, and category.",
+    "List text channels in a Discord guild/server. Returns channel id, name, and category. "
+    "Discord-only — not available with non-Discord frontends.",
     {
         "type": "object",
         "properties": {
@@ -732,161 +694,134 @@ async def discord_list_channels(args: McpArgs) -> McpResult:
         return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
 
 
+# ---------------------------------------------------------------------------
+# Frontend-agnostic communication tools (routed through FrontendRouter)
+# ---------------------------------------------------------------------------
+
+
 @tool(
-    "discord_read_messages",
-    "Read recent messages from a Discord channel. Returns formatted message history.",
+    "read_messages",
+    "Read recent messages from a channel. Returns formatted message history.",
     {
         "type": "object",
         "properties": {
-            "channel_id": {"type": "string", "description": "Channel ID, or guild_id:channel_name (e.g. '123456789:general')"},
-            "limit": {"type": "integer", "description": "Number of messages to fetch (default 20, max 500)"},
+            "channel_id": {"type": "string", "description": "Channel ID or guild_id:channel_name (backward compat). Prefer agent_name."},
+            "agent_name": {"type": "string", "description": "Read messages from this agent's channel. Omit to read your own."},
+            "limit": {"type": "integer", "description": "Number of messages to fetch (default 20, max 200)"},
             "before": {
                 "type": "string",
-                "description": "Fetch messages before this point (Discord snowflake ID or ISO datetime like 2026-04-07T08:00:00+00:00)",
+                "description": "Fetch messages before this point (message ID or ISO datetime)",
             },
             "after": {
                 "type": "string",
-                "description": "Fetch messages after this point (Discord snowflake ID or ISO datetime like 2026-04-07T08:00:00+00:00)",
+                "description": "Fetch messages after this point (message ID or ISO datetime)",
             },
         },
-        "required": ["channel_id"],
+        "required": [],
     },
 )
-async def discord_read_messages(args: McpArgs) -> McpResult:
+async def read_messages(args: McpArgs) -> McpResult:
     limit = min(args.get("limit", 20), 200)
     before_raw = args.get("before")
     after_raw = args.get("after")
+    target = args.get("agent_name") or _get_caller() or ""
+    channel_ref = args.get("channel_id")
+    _tracer.start_span("tool.read_messages", attributes={"agent": target, "limit": limit}).end()
     try:
-        channel_id = await _resolve_channel(args["channel_id"])
-    except ValueError as e:
-        return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
-    _tracer.start_span("tool.discord_read_messages", attributes={"discord.channel_id": channel_id, "limit": limit}).end()
-    try:
-        params: dict[str, Any] = {}
-        if before_raw:
-            params["before"] = _resolve_snowflake(before_raw)
-        if after_raw:
-            params["after"] = _resolve_snowflake(after_raw)
-        use_after = "after" in params
-        all_messages: list[dict[str, Any]] = []
-        collected = 0
-        while collected < limit:
-            batch_size = min(100, limit - collected)
-            batch = await config.discord_client.get_messages(channel_id, limit=batch_size, **params)
-            if not batch:
-                break
-            all_messages.extend(batch)
-            collected += len(batch)
-            if len(batch) < batch_size:
-                break
-            if use_after:
-                params["after"] = batch[-1]["id"]
-            else:
-                params["before"] = batch[-1]["id"]
-        # Reverse to chronological order (API returns newest-first without after)
-        if not use_after:
-            all_messages.reverse()
-        formatted: list[str] = []
-        for msg in all_messages:
-            author = msg.get("author", {}).get("username", "unknown")
+        router = _get_router()
+        messages = await router.read_messages(
+            target, limit, before=before_raw, after=after_raw, channel_ref=channel_ref,
+        )
+        if not messages:
+            return {"content": [{"type": "text", "text": "No messages found."}]}
+        formatted = []
+        for msg in messages:
+            ts = msg.get("timestamp", "")
+            author = msg.get("author", "unknown")
             content = msg.get("content", "")
-            timestamp = msg.get("timestamp", "")
-            formatted.append(f"[{timestamp}] {author}: {content}")
+            formatted.append(f"[{ts}] {author}: {content}")
         text = "\n".join(formatted)
-        text = _truncate_mcp_text(text, len(all_messages))
+        text = _truncate_mcp_text(text, len(messages))
         return {"content": [{"type": "text", "text": text}]}
-    except ValueError as e:
-        return {"content": [{"type": "text", "text": f"Error parsing before/after: {e}"}], "is_error": True}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
 
 
 @tool(
-    "discord_send_message",
-    "Send a message to a Discord channel OTHER than your own. Your text responses are automatically delivered to your own channel — do NOT use this tool for that. This tool is only for cross-channel messaging. "
-    "To communicate with other agents, use axi_send_message instead — it goes through the agent's message handler and can wake sleeping agents. discord_send_message only posts raw text to Discord.",
+    "post_message",
+    "Send a message to a channel OTHER than your own. Your text responses are automatically "
+    "delivered to your own channel — do NOT use this tool for that. This tool is only for "
+    "cross-channel messaging. To communicate with other agents, use axi_send_message instead "
+    "— it goes through the agent's message handler and can wake sleeping agents.",
     {
         "type": "object",
         "properties": {
-            "channel_id": {"type": "string", "description": "Channel ID, or guild_id:channel_name (e.g. '123456789:general')"},
+            "channel_id": {"type": "string", "description": "Channel ID or guild_id:channel_name (backward compat). Prefer agent_name."},
+            "agent_name": {"type": "string", "description": "Target agent whose channel to post in."},
             "content": {"type": "string", "description": "The message content to send"},
         },
-        "required": ["channel_id", "content"],
+        "required": ["content"],
     },
 )
-async def discord_send_message(args: McpArgs) -> McpResult:
+async def post_message(args: McpArgs) -> McpResult:
     content = args["content"]
+    target = args.get("agent_name") or ""
+    channel_ref = args.get("channel_id")
+    if not target and channel_ref:
+        try:
+            ch_id_int = int(channel_ref)
+            resolved = agents.channel_to_agent.get(ch_id_int)
+            if resolved:
+                target = resolved
+        except (ValueError, TypeError):
+            pass
+    if not target and not channel_ref:
+        return {"content": [{"type": "text", "text": "Error: provide agent_name or channel_id."}], "is_error": True}
+    _tracer.start_span("tool.post_message", attributes={"agent": target}).end()
     try:
-        channel_id = await _resolve_channel(args["channel_id"])
-    except ValueError as e:
-        return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
-    _tracer.start_span("tool.discord_send_message", attributes={"discord.channel_id": channel_id}).end()
-    try:
-        msg = await config.discord_client.send_message(channel_id, content)
-        return {"content": [{"type": "text", "text": f"Message sent (id: {msg['id']})"}]}
+        router = _get_router()
+        await router.post_message(target, content)
+        return {"content": [{"type": "text", "text": "Message sent."}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
 
 
 @tool(
-    "discord_search_messages",
-    "Search messages across a Discord guild using Discord's native full-text search. "
-    "Searches the entire guild history, not just recent messages.",
+    "search_messages",
+    "Search messages across channels using full-text search. "
+    "Searches the entire history, not just recent messages.",
     {
         "type": "object",
         "properties": {
-            "guild_id": {"type": "string", "description": "The Discord guild (server) ID to search. Defaults to the bot's home guild if omitted."},
-            "query": {"type": "string", "description": "Search text (Discord full-text search)"},
-            "channel_id": {"type": "string", "description": "Limit search to this channel (ID or guild_id:channel_name, optional)"},
-            "author_id": {"type": "string", "description": "Filter by author user ID (optional)"},
+            "query": {"type": "string", "description": "Search text (full-text search)"},
+            "agent_name": {"type": "string", "description": "Limit search to this agent's channel (optional)"},
+            "channel_id": {"type": "string", "description": "Limit search to this channel ID (backward compat, optional)"},
             "limit": {"type": "integer", "description": "Max results to return (default 25, max 100)"},
-            "sort_by": {"type": "string", "description": "Sort by 'timestamp' or 'relevance' (default 'timestamp')", "enum": ["timestamp", "relevance"]},
-            "sort_order": {"type": "string", "description": "Sort order 'asc' or 'desc' (default 'desc')", "enum": ["asc", "desc"]},
         },
         "required": ["query"],
     },
 )
-async def discord_search_messages(args: McpArgs) -> McpResult:
-    guild_id = args.get("guild_id") or str(config.DISCORD_GUILD_ID)
+async def search_messages(args: McpArgs) -> McpResult:
     query = args["query"]
     limit = min(args.get("limit", 25), 100)
-    _tracer.start_span("tool.discord_search_messages", attributes={"discord.guild_id": guild_id, "query": query}).end()
+    target = args.get("agent_name")
+    channel_ref = args.get("channel_id")
+    _tracer.start_span("tool.search_messages", attributes={"query": query}).end()
     try:
-        params: dict[str, Any] = {"content": query}
-        channel_filter_raw = args.get("channel_id")
-        if channel_filter_raw:
-            params["channel_id"] = await _resolve_channel(channel_filter_raw)
-        if args.get("author_id"):
-            params["author_id"] = args["author_id"]
-        params["sort_by"] = args.get("sort_by", "timestamp")
-        params["sort_order"] = args.get("sort_order", "desc")
-
-        results: list[str] = []
-        offset = 0
-        while len(results) < limit:
-            params["limit"] = min(25, limit - len(results))
-            params["offset"] = offset
-            data = await config.discord_client.get(f"/guilds/{guild_id}/messages/search", params)
-            message_groups = data.get("messages", [])
-            if not message_groups:
-                break
-            for group in message_groups:
-                for msg in group:
-                    if msg.get("hit"):
-                        ts = msg.get("timestamp", "")
-                        ch_id = msg.get("channel_id", "")
-                        author = msg.get("author", {}).get("username", "unknown")
-                        content = msg.get("content", "")
-                        results.append(f"[{ts}] #{ch_id} {author}: {content}")
-                        break
-            total = data.get("total_results", 0)
-            offset += 25
-            if offset >= total or offset >= 9975:
-                break
-
+        router = _get_router()
+        results = await router.search_messages(
+            query, agent_name=target, limit=limit, channel_ref=channel_ref,
+        )
         if not results:
             return {"content": [{"type": "text", "text": "No messages found."}]}
-        text = "\n".join(results[:limit])
+        formatted = []
+        for msg in results:
+            ts = msg.get("timestamp", "")
+            ch_id = msg.get("channel_id", "")
+            author = msg.get("author", "unknown")
+            content = msg.get("content", "")
+            formatted.append(f"[{ts}] #{ch_id} {author}: {content}")
+        text = "\n".join(formatted)
         text = _truncate_mcp_text(text, len(results))
         return {"content": [{"type": "text", "text": text}]}
     except Exception as e:
@@ -894,61 +829,47 @@ async def discord_search_messages(args: McpArgs) -> McpResult:
 
 
 @tool(
-    "discord_wait_for_message",
-    "Poll a Discord channel and wait for a new message to appear after a given message ID. "
+    "wait_for_message",
+    "Poll a channel and wait for a new message to appear. "
     "Returns when a non-system message arrives. Useful for test automation.",
     {
         "type": "object",
         "properties": {
-            "channel_id": {"type": "string", "description": "Channel to watch (ID or guild_id:channel_name)"},
+            "channel_id": {"type": "string", "description": "Channel to watch (ID or guild_id:channel_name). Prefer agent_name."},
+            "agent_name": {"type": "string", "description": "Agent whose channel to watch."},
             "after": {
                 "type": "string",
                 "description": "Wait for messages after this message ID. If omitted, uses the latest message as baseline.",
             },
             "timeout": {"type": "number", "description": "Max seconds to wait (default 120, max 300)"},
         },
-        "required": ["channel_id"],
+        "required": [],
     },
 )
-async def discord_wait_for_message(args: McpArgs) -> McpResult:
+async def wait_for_message(args: McpArgs) -> McpResult:
     timeout = min(args.get("timeout", 120), 300)
     after_id = args.get("after")
-    poll_interval = 2.0
+    target = args.get("agent_name") or _get_caller() or ""
+    channel_ref = args.get("channel_id")
+    if not target and not channel_ref:
+        return {"content": [{"type": "text", "text": "Error: provide agent_name or channel_id."}], "is_error": True}
+    _tracer.start_span("tool.wait_for_message", attributes={"agent": target}).end()
     try:
-        channel_id = await _resolve_channel(args["channel_id"])
-        _tracer.start_span("tool.discord_wait_for_message", attributes={"discord.channel_id": channel_id}).end()
-        if not after_id:
-            msgs = await config.discord_client.get_messages(channel_id, limit=1)
-            if not msgs:
-                return {"content": [{"type": "text", "text": "Error: Channel has no messages."}], "is_error": True}
-            after_id = msgs[0]["id"]
-        import time
-        deadline = time.monotonic() + timeout
-        cursor = after_id
-        while time.monotonic() < deadline:
-            messages = await config.discord_client.get_messages(channel_id, limit=100, after=after_id)
-            if messages:
-                cursor = messages[0]["id"]
-                matching = []
-                for msg in reversed(messages):
-                    content = msg.get("content", "")
-                    if content.startswith("*System:*"):
-                        continue
-                    matching.append(msg)
-                if matching:
-                    formatted = []
-                    for msg in matching:
-                        ts = msg.get("timestamp", "")
-                        author = msg.get("author", {}).get("username", "unknown")
-                        formatted.append(f"[{ts}] {author}: {msg.get('content', '')}")
-                    formatted.append(f"cursor: {cursor}")
-                    return {"content": [{"type": "text", "text": "\n".join(formatted)}]}
-                after_id = cursor
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            await asyncio.sleep(min(poll_interval, remaining))
-        return {"content": [{"type": "text", "text": f"Timed out after {timeout}s waiting for message. cursor: {cursor}"}]}
+        router = _get_router()
+        messages = await router.wait_for_message(
+            target, timeout=timeout, after=after_id, channel_ref=channel_ref,
+        )
+        if not messages:
+            return {"content": [{"type": "text", "text": f"Timed out after {timeout}s waiting for message."}]}
+        formatted = []
+        for msg in messages:
+            ts = msg.get("timestamp", "")
+            author = msg.get("author", "unknown")
+            formatted.append(f"[{ts}] {author}: {msg.get('content', '')}")
+        cursor = messages[-1].get("cursor") or messages[-1].get("id", "")
+        if cursor:
+            formatted.append(f"cursor: {cursor}")
+        return {"content": [{"type": "text", "text": "\n".join(formatted)}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
 
@@ -959,8 +880,8 @@ async def discord_wait_for_message(args: McpArgs) -> McpResult:
 
 
 @tool(
-    "set_channel_status",
-    "Set the user's to-do type emoji on your Discord channel name. "
+    "set_status",
+    "Set the user's to-do type emoji on your agent channel. "
     "The emoji represents what type of action the user needs to take next. "
     "Pass an empty string to clear.",
     {
@@ -980,9 +901,9 @@ async def discord_wait_for_message(args: McpArgs) -> McpResult:
         "required": ["emoji"],
     },
 )
-async def set_channel_status(args: McpArgs) -> McpResult:
+async def set_status(args: McpArgs) -> McpResult:
     emoji = args.get("emoji", "").strip()
-    _tracer.start_span("tool.set_channel_status", attributes={"emoji": emoji}).end()
+    _tracer.start_span("tool.set_status", attributes={"emoji": emoji}).end()
     if not config.CHANNEL_STATUS_ENABLED:
         return {"content": [{"type": "text", "text": "Channel status prefixes are not enabled."}]}
 
@@ -1001,12 +922,12 @@ async def set_channel_status(args: McpArgs) -> McpResult:
 
 
 @tool(
-    "clear_channel_status",
-    "Clear your custom channel status and revert to auto-detected status.",
+    "clear_status",
+    "Clear your custom status and revert to auto-detected status.",
     {"type": "object", "properties": {}, "required": []},
 )
-async def clear_channel_status(args: McpArgs) -> McpResult:
-    _tracer.start_span("tool.clear_channel_status").end()
+async def clear_status(args: McpArgs) -> McpResult:
+    _tracer.start_span("tool.clear_status").end()
     if not config.CHANNEL_STATUS_ENABLED:
         return {"content": [{"type": "text", "text": "Channel status prefixes are not enabled."}]}
 
@@ -1021,7 +942,7 @@ async def clear_channel_status(args: McpArgs) -> McpResult:
 
 
 @tool(
-    "discord_toggle_plan_mode",
+    "toggle_plan_mode",
     "Toggle plan mode on an agent. When plan mode is ON, the agent plans "
     "before implementing. When OFF, the agent executes normally. "
     "Returns the new plan mode state.",
@@ -1036,9 +957,9 @@ async def clear_channel_status(args: McpArgs) -> McpResult:
         "required": ["agent_name"],
     },
 )
-async def discord_toggle_plan_mode(args: McpArgs) -> McpResult:
+async def toggle_plan_mode(args: McpArgs) -> McpResult:
     agent_name = args.get("agent_name", "").strip()
-    _tracer.start_span("tool.discord_toggle_plan_mode", attributes={"agent.name": agent_name}).end()
+    _tracer.start_span("tool.toggle_plan_mode", attributes={"agent.name": agent_name}).end()
 
     if not agent_name:
         return {"content": [{"type": "text", "text": "Error: agent_name is required."}], "is_error": True}
@@ -1071,37 +992,43 @@ async def discord_toggle_plan_mode(args: McpArgs) -> McpResult:
 # MCP server assembly
 # ---------------------------------------------------------------------------
 
-# Utility tools (shared by all agents)
+# Utility tools (shared by all agents) — includes frontend-agnostic communication tools
 utils_mcp_server = create_sdk_mcp_server(
     name="utils",
     version="1.0.0",
-    tools=[get_date_and_time, discord_send_file, set_channel_status, clear_channel_status, discord_toggle_plan_mode],
+    tools=[
+        get_date_and_time,
+        post_file,
+        set_status,
+        clear_status,
+        toggle_plan_mode,
+        read_messages,
+        post_message,
+        search_messages,
+        wait_for_message,
+    ],
 )
 
 # Spawned agents get spawn+kill+restart-agent (no bot restart — they tell the parent)
 axi_mcp_server = create_sdk_mcp_server(
     name="axi",
     version="1.0.0",
-    tools=[axi_spawn_agent, axi_kill_agent, axi_send_message],  # axi_restart_agent removed (buggy)
+    tools=[axi_spawn_agent, axi_kill_agent, axi_send_message],
 )
 
 # Master agent gets the full set including bot restart + send_message
 axi_master_mcp_server = create_sdk_mcp_server(
     name="axi",
     version="1.0.0",
-    tools=[axi_spawn_agent, axi_kill_agent, axi_send_message],  # axi_restart_agent removed (buggy)
+    tools=[axi_spawn_agent, axi_kill_agent, axi_send_message],
 )
 
-# Discord REST tools for cross-server messaging and queries
+# Discord-only tools (guild/channel listing — only available when Discord frontend is active)
 discord_mcp_server = create_sdk_mcp_server(
     name="discord",
     version="1.0.0",
     tools=[
         discord_list_guilds,
         discord_list_channels,
-        discord_read_messages,
-        discord_send_message,
-        discord_search_messages,
-        discord_wait_for_message,
     ],
 )
