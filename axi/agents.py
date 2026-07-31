@@ -1073,42 +1073,11 @@ async def wake_agent(session: AgentSession) -> None:
                 scheduler.release_slot(session.name)
                 raise
 
-    # --- Discord-specific post-wake logic ---
-
-    # Prompt change detection
-    prompt_changed = False
-    if resume_id and session.system_prompt is not None:
-        current_hash = compute_prompt_hash(session.system_prompt)
-        if session.system_prompt_hash is not None and current_hash != session.system_prompt_hash:
-            prompt_changed = True
-            log.info(
-                "System prompt changed for '%s' (old=%s, new=%s)",
-                session.name,
-                session.system_prompt_hash,
-                current_hash,
-            )
-        session.system_prompt_hash = current_hash
-
-    # Post system prompt to frontend on first wake
-    ds = discord_state(session)
-    if not ds.system_prompt_posted and ds.channel_id:
-        ds.system_prompt_posted = True
-        try:
-            await post_system_prompt_to_channel(
-                session.name,
-                session.system_prompt,
-                is_resume=bool(resume_id),
-                prompt_changed=prompt_changed,
-                session_id=session.session_id or resume_id,
-            )
-        except Exception:
-            log.warning(
-                "Failed to post system prompt for '%s'",
-                session.name,
-                exc_info=True,
-            )
-
-    await _post_model_warning(session)
+    # Post-wake logic (prompt-change detection, system-prompt posting, model
+    # warning) now lives in the frontend's on_wake handler (7.4a). Broadcast it so
+    # legacy wakes get it too; the hub's _ensure_awake broadcasts on_wake for
+    # hub-driven wakes. resume_id is still consumed by the resume-fallback above.
+    await _get_router().on_wake(session.name)
 
 
 async def wake_or_queue(
