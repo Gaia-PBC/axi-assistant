@@ -1304,9 +1304,8 @@ async def kill_agent(interaction: discord.Interaction, agent_name: str | None = 
         else:
             await agents.send_system(agent_ch, f"Agent **{agent_name}** moved to Killed.")
 
-    agents.agents.pop(agent_name, None)
-    await agents.sleep_agent(session, force=True)
-    await agents.move_channel_to_killed(agent_name)
+    # 7.4c: hub.remove_agent does sleep + on_kill (move-to-Killed) + registry pop.
+    await agents.hub.remove_agent(agent_name)
 
     if session_id:
         await audited_interaction_followup_send(
@@ -1678,7 +1677,7 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
         async with session.query_lock:
             if not agents.is_awake(session):
                 try:
-                    await agents.wake_agent(session)
+                    await agents.hub.wake(session.name)
                 except Exception:
                     log.exception("Failed to wake agent '%s'", agent_name)
                     await agents.send_system(channel, f"Failed to wake agent **{agent_name}**.")
@@ -1725,7 +1724,7 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
 
         async def _run_flowchart() -> None:
             if not agents.is_awake(session):
-                await agents.wake_agent(session)
+                await agents.hub.wake(session.name)
             async with session.query_lock:
                 await agents.process_message(session, slash_content, channel)
 
@@ -1833,7 +1832,7 @@ async def _run_agent_sdk_command(interaction: discord.Interaction, agent_name: s
     async with session.query_lock:
         if not agents.is_awake(session):
             try:
-                await agents.wake_agent(session)
+                await agents.hub.wake(session.name)
             except Exception:
                 log.exception("Failed to wake agent '%s'", agent_name)
                 await audited_interaction_followup_send(interaction,f"Failed to wake agent **{agent_name}**.")
@@ -1952,7 +1951,7 @@ async def build_user_profile_cmd(interaction: discord.Interaction, agent_name: s
     async with session.query_lock:
         if session.client is None:
             try:
-                await agents.wake_agent(session)
+                await agents.hub.wake(session.name)
             except Exception:
                 log.exception("Failed to wake agent '%s'", agent_name)
                 await audited_interaction_followup_send(interaction,f"Failed to wake agent **{agent_name}**.")
@@ -2049,7 +2048,7 @@ async def build_music_preferences_cmd(interaction: discord.Interaction, agent_na
     async with session.query_lock:
         if session.client is None:
             try:
-                await agents.wake_agent(session)
+                await agents.hub.wake(session.name)
             except Exception:
                 log.exception("Failed to wake agent '%s'", agent_name)
                 await audited_interaction_followup_send(interaction,f"Failed to wake agent **{agent_name}**.")
@@ -2158,7 +2157,7 @@ async def flowchart_cmd(interaction: discord.Interaction, name: str, args: str |
 
     async def _run_flowchart() -> None:
         if not agents.is_awake(session):
-            await agents.wake_agent(session)
+            await agents.hub.wake(session.name)
         async with session.query_lock:
             await agents.process_message(session, slash_content, ch)
 
