@@ -360,3 +360,26 @@ async def test_plain_slash_stop_is_normalized_and_clears_queue(session: AgentSes
     assert len(session.state.queued_turns) == 0
     agents.process_message.assert_not_awaited()
     agents.send_system.assert_any_await(channel, "Interrupt signal sent to **axi-master**. Cleared 1 queued message.")
+
+
+@pytest.mark.asyncio
+async def test_flowchart_command_drives_via_hub(session: AgentSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 7.5a: /flowchart drives the turn through hub.submit_user_message, not process_message."""
+    from agenthub.types import SubmissionResult
+
+    session.agent_type = "flowcoder"
+    monkeypatch.setattr(config, "FLOWCODER_ENABLED", True)
+    submit = AsyncMock(return_value=SubmissionResult(status="started", turn_id="t1"))
+    monkeypatch.setattr(agents.hub, "submit_user_message", submit)
+
+    author = FakeAuthor(_allowed_user_id())
+    channel = FakeTextChannel(12345, "axi-master")
+    msg = FakeMessage(70, channel, "/flowchart soul do-thing", author)
+
+    handled = await main._handle_text_command(msg, session, session.name)
+
+    assert handled is True
+    submit.assert_awaited_once()
+    assert submit.call_args.args[0] == session.name
+    assert submit.call_args.args[1] == "/soul do-thing"  # slash_content, hub-driven
+    agents.process_message.assert_not_awaited()  # legacy path not used

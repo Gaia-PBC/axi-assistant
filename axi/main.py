@@ -1729,13 +1729,11 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
 
         slash_content = f"/{fc_name}" + (f" {fc_args}" if fc_args else "")
 
-        async def _run_flowchart() -> None:
-            if not agents.is_awake(session):
-                await agents.hub.wake(session.name)
-            async with session.query_lock:
-                await agents.process_message(session, slash_content, channel)
-
-        agents.fire_and_forget(_run_flowchart())
+        # 7.5a: drive the flowchart through the hub (wake + flowchart-wrap + stream),
+        # like on_message — replaces the legacy hub.wake + process_message runner.
+        await agents.hub.submit_user_message(
+            session.name, slash_content, metadata={"channel_id": channel.id}
+        )
         return True
 
     if cmd == "skip":
@@ -2162,13 +2160,10 @@ async def flowchart_cmd(interaction: discord.Interaction, name: str, args: str |
     fc_args = args or ""
     slash_content = f"/{fc_name}" + (f" {fc_args}" if fc_args else "")
 
-    async def _run_flowchart() -> None:
-        if not agents.is_awake(session):
-            await agents.hub.wake(session.name)
-        async with session.query_lock:
-            await agents.process_message(session, slash_content, ch)
-
-    agents.fire_and_forget(_run_flowchart())
+    # 7.5a: drive the flowchart through the hub (wake + flowchart-wrap + stream).
+    await agents.hub.submit_user_message(
+        session.name, slash_content, metadata={"channel_id": ch.id}
+    )
 
     await audited_interaction_followup_send(interaction,f"*System:* Flowchart `{fc_name}` started on **{agent_name}**.")
 
