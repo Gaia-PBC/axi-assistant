@@ -29,7 +29,7 @@ from discord.ext import tasks
 from discord.ext.commands import Bot
 from opentelemetry import trace
 
-from axi import agents, channels, config, scheduler, tools, worktrees
+from axi import agents, channels, commands_api, config, scheduler, tools, worktrees
 from axi.axi_types import ActivityState, AgentSession, discord_state, tool_display
 from axi.discord_wire import (
     audited_channel_send,
@@ -775,159 +775,17 @@ async def _resolve_agent(
 
 @bot.tree.command(name="ping", description="Check bot latency and uptime.")
 async def ping_command(interaction: discord.Interaction) -> None:
-
-
-    def _fmt_uptime(total_seconds: int) -> str:
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return f"{hours}h {minutes}m {seconds}s"
-
-    if _bot_start_time is not None:
-        bot_uptime = datetime.now(UTC) - _bot_start_time
-        bot_str = _fmt_uptime(int(bot_uptime.total_seconds()))
-    else:
-        bot_str = "initializing"
-
-    procmux_str = None
-    bridge_conn = agents.procmux_conn
-    if bridge_conn is not None and bridge_conn.is_alive:
-        try:
-            result = await bridge_conn.send_command("status")
-            if result.ok and result.uptime_seconds is not None:
-                procmux_str = _fmt_uptime(result.uptime_seconds)
-        except Exception:
-            procmux_str = "error"
-
-    latency = round(bot.latency * 1000)
-    parts = [f"Pong! Latency: {latency}ms", f"Bot uptime: {bot_str}"]
-    if procmux_str is not None:
-        parts.append(f"Bridge uptime: {procmux_str}")
-    elif bridge_conn is None or not bridge_conn.is_alive:
-        parts.append("Bridge: not connected")
-    await audited_interaction_response_send(interaction," | ".join(parts))
+    # Thin wrapper (Phase 8a): logic lives in commands_api.ping; latency is a Discord metric.
+    result = await commands_api.ping(latency_ms=round(bot.latency * 1000), bot_start_time=_bot_start_time)
+    await audited_interaction_response_send(interaction, result.message)
 
 
 @bot.tree.command(name="claude-usage", description="Show Claude API usage for current sessions and rate limit status.")
 @app_commands.describe(history="Number of recent rate limit events to show (omit for current status)")
 async def claude_usage_command(interaction: discord.Interaction, history: int | None = None) -> None:
     log.info("Slash command /claude-usage history=%s from %s", history, interaction.user)
-
-
-    if history is not None:
-        count = max(1, min(history, 50))
-        lines = [f"**Rate Limit History** (last {count} events)", ""]
-        try:
-            with open(config.RATE_LIMIT_HISTORY_PATH) as f:
-                all_lines = f.readlines()
-            recent = all_lines[-count:]
-            if not recent:
-                lines.append("No history recorded yet.")
-            else:
-                for raw_line in recent:
-                    try:
-                        r = json.loads(raw_line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = datetime.fromisoformat(r["ts"]).astimezone(config.SCHEDULE_TIMEZONE)
-                    ts_str = ts.strftime("%-m/%-d %-I:%M %p")
-                    rl_type = r.get("type", "?").replace("_", " ")
-                    status = r.get("status", "?")
-                    util = r.get("utilization")
-                    if status == "rejected":
-                        icon = "\U0001f6ab"
-                    elif status == "allowed_warning":
-                        icon = "\u26a0\ufe0f"
-                    else:
-                        icon = "\u2705"
-                    util_str = f" ({int(util * 100)}%)" if util is not None else ""
-                    lines.append(f"`{ts_str}` {icon} {rl_type}: {status}{util_str}")
-        except FileNotFoundError:
-            lines.append("No history file yet — events are recorded on API calls.")
-        await audited_interaction_response_send(interaction,"\n".join(lines))
-        return
-
-    lines = ["**Claude Usage — Current Sessions**", ""]
-
-    total_cost = 0.0
-    total_queries = 0
-
-    if agents.session_usage:
-        for sid, usage in sorted(
-            agents.session_usage.items(), key=lambda x: x[1].last_query or datetime.min.replace(tzinfo=UTC), reverse=True
-        ):
-            total_cost += usage.total_cost_usd
-            total_queries += usage.queries
-
-            duration_s = usage.total_duration_ms // 1000
-            duration_str = agents.format_time_remaining(duration_s) if duration_s > 0 else "0s"
-
-            active_str = ""
-            if usage.first_query:
-                age_s = int((datetime.now(UTC) - usage.first_query).total_seconds())
-                active_str = f" | Active since {agents.format_time_remaining(age_s)} ago"
-
-            token_str = ""
-            if usage.total_input_tokens or usage.total_output_tokens:
-                token_str = f" | Tokens: {usage.total_input_tokens:,}in / {usage.total_output_tokens:,}out"
-
-            lines.append(f"**{usage.agent_name}** (`{sid[:8]}`)")
-            lines.append(
-                f"  Cost: **${usage.total_cost_usd:.2f}** | Queries: {usage.queries} | Turns: {usage.total_turns}{token_str}"
-            )
-            lines.append(f"  API time: {duration_str}{active_str}")
-            lines.append("")
-
-        lines.append(f"**Total: ${total_cost:.2f}** across {total_queries} queries")
-    else:
-        lines.append("No usage recorded yet.")
-
-    lines.append("")
-
-    if agents.rate_limit_quotas:
-        now = datetime.now(UTC)
-        lines.append("**Rate Limits**")
-
-        display_order = ["five_hour", "seven_day"]
-        sorted_keys = [k for k in display_order if k in agents.rate_limit_quotas]
-        sorted_keys += [k for k in agents.rate_limit_quotas if k not in display_order]
-
-        for rl_type in sorted_keys:
-            q = agents.rate_limit_quotas[rl_type]
-            remaining_s = max(0, int((q.resets_at - now).total_seconds()))
-            resets_str = agents.format_time_remaining(remaining_s) if remaining_s > 0 else "now"
-
-            local_reset = q.resets_at.astimezone(config.SCHEDULE_TIMEZONE)
-            reset_time_str = local_reset.strftime("%-I:%M %p")
-            local_now = now.astimezone(config.SCHEDULE_TIMEZONE)
-            if local_reset.date() != local_now.date():
-                reset_time_str = local_reset.strftime("%-I:%M %p %a")
-
-            if q.status == "rejected":
-                if q.utilization is not None:
-                    pct = int(q.utilization * 100)
-                    status_str = f"\U0001f6ab Rate limited ({pct}% used)"
-                else:
-                    status_str = "\U0001f6ab Rate limited"
-            elif q.status == "allowed_warning" and q.utilization is not None:
-                pct = int(q.utilization * 100)
-                status_str = f"\u26a0\ufe0f {pct}% used"
-            else:
-                status_str = "\u2705 OK (< 80%)"
-
-            label = q.rate_limit_type.replace("_", " ")
-            lines.append(f"  {label}: {status_str} — resets at {reset_time_str} (in {resets_str})")
-
-        latest_update = max(q.updated_at for q in agents.rate_limit_quotas.values())
-        age_s = int((now - latest_update).total_seconds())
-        age_str = agents.format_time_remaining(age_s) if age_s > 0 else "just now"
-        lines.append(f"  Last checked: {age_str} ago")
-    elif agents.rate_limited_until:
-        remaining = agents.format_time_remaining(agents.rate_limit_remaining_seconds())
-        lines.append(f"**Rate Limit**: \U0001f6ab Rate limited (~{remaining} remaining)")
-    else:
-        lines.append("**Rate Limit**: No data yet (updates on next API call)")
-
-    await audited_interaction_response_send(interaction,"\n".join(lines))
+    result = await commands_api.claude_usage(history)
+    await audited_interaction_response_send(interaction, result.message)
 
 
 @bot.tree.command(name="model", description="Get or set the LLM model for this agent or future spawned agents.")
@@ -994,44 +852,31 @@ async def model_command(interaction: discord.Interaction, name: str | None = Non
 @bot.tree.command(name="list-agents", description="List all active agent sessions.")
 async def list_agents(interaction: discord.Interaction) -> None:
     log.info("Slash command /list-agents from %s", interaction.user)
-
-
-    if not agents.agents:
-        await audited_interaction_response_send(interaction,"No active agents.", ephemeral=True)
+    result = commands_api.list_agents()
+    if not result.data.get("agents"):
+        await audited_interaction_response_send(interaction, result.message, ephemeral=True)
         return
-
-    now = datetime.now(UTC)
+    # Discord presentation: channel mentions + [killed] tags are Discord-category state.
     lines: list[str] = []
-    for name, session in agents.agents.items():
-        idle_minutes = int((now - session.last_activity).total_seconds() / 60)
-        if session.query_lock.locked():
-            status = " [busy]"
-        elif session.client is not None:
-            status = " [awake]"
-        else:
-            status = " [sleeping]"
-        is_killed = False
-        ds = discord_state(session)
-        if ds.channel_id:
-            ch = bot.get_channel(ds.channel_id)
+    for a in result.data["agents"]:
+        killed_tag = ""
+        cid = a.get("channel_id")
+        if cid:
+            ch = bot.get_channel(cid)
             if isinstance(ch, TextChannel) and channels.is_killed_channel(ch):
-                is_killed = True
-        killed_tag = " [killed]" if is_killed else ""
-        protected = " [protected]" if name == config.MASTER_AGENT_NAME else ""
-        sid = f" | sid: `{session.session_id[:8]}…`" if session.session_id else ""
-        ch_mention = f" | <#{discord_state(session).channel_id}>" if discord_state(session).channel_id else ""
+                killed_tag = " [killed]"
+        protected = " [protected]" if a["is_master"] else ""
+        sid = f" | sid: `{a['session_id'][:8]}\u2026`" if a["session_id"] else ""
+        mention = f" | <#{cid}>" if cid else ""
         lines.append(
-            f"- **{name}**{status}{killed_tag}{protected}{ch_mention} | cwd: `{session.cwd}` | idle: {idle_minutes}m{sid}"
+            f"- **{a['name']}** [{a['state']}]{killed_tag}{protected}{mention} | cwd: `{a['cwd']}` | idle: {a['idle_minutes']}m{sid}"
         )
-
-    awake = agents.count_awake_agents()
-    header = f"*System:* **Agent Sessions** ({awake}/{config.MAX_AWAKE_AGENTS} awake):\n"
+    header = f"*System:* **Agent Sessions** ({result.data['awake']}/{config.MAX_AWAKE_AGENTS} awake):\n"
     full_text = header + "\n".join(lines)
     if len(full_text) <= 2000:
         await audited_interaction_response_send(interaction, full_text)
     else:
         from discordquery import split_message
-
         parts = split_message(full_text)
         await audited_interaction_response_send(interaction, parts[0])
         for part in parts[1:]:
@@ -1042,21 +887,10 @@ async def list_agents(interaction: discord.Interaction) -> None:
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def agent_status(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /status agent=%s from %s", agent_name, interaction.user)
-
-
     if agent_name is None:
         agent_name = agents.channel_to_agent.get(interaction.channel_id or 0)
-
-    if agent_name is None:
-        await _show_all_agents_status(interaction)
-        return
-
-    session = agents.agents.get(agent_name)
-    if session is None:
-        await audited_interaction_response_send(interaction,f"Agent **{agent_name}** not found.", ephemeral=True)
-        return
-
-    await audited_interaction_response_send(interaction,_format_agent_status(agent_name, session), ephemeral=True)
+    result = commands_api.agent_status(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=result.ephemeral)
 
 
 def _format_agent_status(name: str, session: AgentSession) -> str:
@@ -2164,22 +1998,8 @@ async def flowchart_cmd(interaction: discord.Interaction, name: str, args: str |
 @bot.tree.command(name="flowchart-list", description="List available flowchart commands.")
 async def flowchart_list_cmd(interaction: discord.Interaction) -> None:
     log.info("Slash command /flowchart-list from %s", interaction.user)
-
-
-    commands = _list_flowchart_commands()
-    if not commands:
-        await audited_interaction_response_send(interaction,"No flowchart commands found.", ephemeral=True)
-        return
-
-    fc_lines: list[str] = []
-    for cmd in commands:
-        desc = f" — {cmd['description']}" if cmd["description"] else ""
-        fc_lines.append(f"• `{cmd['name']}`{desc}")
-
-    await audited_interaction_response_send(interaction,
-        f"*System:* **Available flowcharts** ({len(commands)}):\n" + "\n".join(fc_lines),
-        ephemeral=True,
-    )
+    result = commands_api.flowchart_list()
+    await audited_interaction_response_send(interaction, result.message, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------

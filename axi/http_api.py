@@ -16,8 +16,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from axi import agents, config
+from axi import agents, commands_api, config
 from axi.metrics import metrics_content_type, observe_http_request, render_latest_metrics
+
+
+def _result_json(result: commands_api.CommandResult) -> dict:
+    """Serialize a CommandResult for a JSON response."""
+    return {"ok": result.ok, "message": result.message, "data": result.data}
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -66,6 +71,41 @@ async def require_bearer_token(authorization: str | None = Header(default=None))
 @app.get("/metrics")
 async def metrics() -> Response:
     return Response(content=render_latest_metrics(), media_type=metrics_content_type())
+
+
+# ---------------------------------------------------------------------------
+# Read/info commands (Phase 8a) — GET endpoints mirroring the Discord slash commands.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/ping")
+async def api_ping(_: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.ping())
+
+
+@app.get("/v1/agents")
+async def api_list_agents(_: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(commands_api.list_agents())
+
+
+@app.get("/v1/status")
+async def api_all_status(_: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(commands_api.agent_status(None))
+
+
+@app.get("/v1/agents/{name}/status")
+async def api_agent_status(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(commands_api.agent_status(name))
+
+
+@app.get("/v1/usage")
+async def api_usage(history: int | None = None, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.claude_usage(history))
+
+
+@app.get("/v1/flowcharts")
+async def api_flowcharts(_: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(commands_api.flowchart_list())
 
 
 @app.post("/v1/trigger")
