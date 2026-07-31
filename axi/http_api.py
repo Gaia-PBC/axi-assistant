@@ -148,6 +148,55 @@ async def api_spawn(req: SpawnRequest, _: None = Depends(require_bearer_token)) 
     )
 
 
+# ---------------------------------------------------------------------------
+# Context + scope commands (Phase 8c). Scope commands take an explicit agent
+# target in the body (null = global/default); /debug-all is the all-agents variant.
+# ---------------------------------------------------------------------------
+
+
+class ResetRequest(BaseModel):
+    cwd: str | None = None
+
+
+class ModelRequest(BaseModel):
+    agent: str | None = None
+    model: str | None = None
+
+
+class ModeRequest(BaseModel):
+    mode: str | None = None
+
+
+@app.post("/v1/agents/{name}/reset")
+async def api_reset(name: str, req: ResetRequest | None = None, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.reset_context(name, cwd=(req.cwd if req else None)))
+
+
+@app.post("/v1/model")
+async def api_model(req: ModelRequest, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.set_model(req.agent, req.model))
+
+
+@app.post("/v1/agents/{name}/verbose")
+async def api_verbose(name: str, req: ModeRequest | None = None, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(commands_api.set_verbose(name, req.mode if req else None))
+
+
+@app.post("/v1/agents/{name}/debug")
+async def api_debug(name: str, req: ModeRequest | None = None, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(commands_api.set_debug(name, req.mode if req else None))
+
+
+@app.post("/v1/debug-all")
+async def api_debug_all(req: ModeRequest | None = None, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(commands_api.set_debug_all(req.mode if req else None))
+
+
+@app.post("/v1/agents/{name}/plan")
+async def api_plan(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.set_plan(name))
+
+
 @app.post("/v1/trigger")
 async def trigger(req: TriggerRequest, _: None = Depends(require_bearer_token)):
     agent_name = req.session
