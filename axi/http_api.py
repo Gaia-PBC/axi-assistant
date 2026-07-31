@@ -197,6 +197,16 @@ async def api_plan(name: str, _: None = Depends(require_bearer_token)) -> dict:
     return _result_json(await commands_api.set_plan(name))
 
 
+@app.post("/v1/agents/{name}/compact")
+async def api_compact(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.compact(name))
+
+
+@app.post("/v1/agents/{name}/clear")
+async def api_clear(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.clear(name))
+
+
 @app.post("/v1/trigger")
 async def trigger(req: TriggerRequest, _: None = Depends(require_bearer_token)):
     agent_name = req.session
