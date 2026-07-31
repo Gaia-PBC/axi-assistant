@@ -1747,6 +1747,27 @@ async def reclaim_agent_name(name: str) -> None:
     await _get_router().post_system(name, f"Recycled previous **{name}** session for new scheduled run.")
 
 
+def _apply_spawn_context(session: AgentSession, spawn_ctx: dict[str, Any] | None) -> None:
+    """Apply a frontend's spawn context to a freshly spawned session.
+
+    Substitutes the frontend-supplied placeholders (a ``{name: value}`` map) into
+    the agent's system prompt and assigns the routing id (channel_id). Generic:
+    the keys come from the frontend, so this names no frontend-specific concept.
+    Called once during spawn, right after the ``spawn_context`` round-trip, so a
+    non-Discord frontend fills the prompt + routing id just like Discord does.
+    """
+    placeholders = (spawn_ctx or {}).get("placeholders") or {}
+    if placeholders and isinstance(session.system_prompt, dict):
+        append_text = session.system_prompt.get("append")
+        if isinstance(append_text, str):
+            for key, value in placeholders.items():
+                append_text = append_text.replace("{" + key + "}", value)
+            session.system_prompt["append"] = append_text
+    routing_id = (spawn_ctx or {}).get("routing_id")
+    if routing_id is not None:
+        discord_state(session).channel_id = routing_id
+
+
 async def spawn_agent(
     name: str,
     cwd: str,
@@ -1827,17 +1848,7 @@ async def spawn_agent(
         # prompt placeholders and assign the session routing id (channel_id) — so
         # a non-Discord frontend fills them too (DiscordFrontend.on_spawn no longer
         # does this itself; it just supplies the raw values via spawn_context).
-        spawn_ctx = await router.spawn_context(name, session)
-        placeholders = (spawn_ctx or {}).get("placeholders") or {}
-        if placeholders and isinstance(session.system_prompt, dict):
-            append_text = session.system_prompt.get("append")
-            if isinstance(append_text, str):
-                for _key, _val in placeholders.items():
-                    append_text = append_text.replace("{" + _key + "}", _val)
-                session.system_prompt["append"] = append_text
-        routing_id = (spawn_ctx or {}).get("routing_id")
-        if routing_id is not None:
-            discord_state(session).channel_id = routing_id
+        _apply_spawn_context(session, await router.spawn_context(name, session))
 
         agent_label = "flowcoder" if agent_type == "flowcoder" else "claude code"
         if resume:
