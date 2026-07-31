@@ -178,15 +178,24 @@ class StubFrontend:
     # --- Message history ---
 
     async def read_messages(
-        self, agent_name: str, limit: int = 50, before: Any = None
+        self, agent_name: str, limit: int = 50, before: Any = None,
+        after: Any = None, channel_ref: Any = None,
     ) -> list[dict[str, Any]]:
-        self._record("read_messages", agent_name=agent_name, limit=limit, before=before)
+        self._record("read_messages", agent_name=agent_name, limit=limit, before=before, after=after, channel_ref=channel_ref)
         return []
 
     async def search_messages(
-        self, query: str, agent_name: str | None = None
+        self, query: str, agent_name: str | None = None,
+        limit: int = 25, channel_ref: Any = None,
     ) -> list[dict[str, Any]]:
-        self._record("search_messages", query=query, agent_name=agent_name)
+        self._record("search_messages", query=query, agent_name=agent_name, limit=limit, channel_ref=channel_ref)
+        return []
+
+    async def wait_for_message(
+        self, agent_name: str, timeout: float = 120,
+        after: Any = None, channel_ref: Any = None,
+    ) -> list[dict[str, Any]]:
+        self._record("wait_for_message", agent_name=agent_name, timeout=timeout, after=after, channel_ref=channel_ref)
         return []
 
     # --- Event log integration ---

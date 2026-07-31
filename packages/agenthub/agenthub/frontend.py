@@ -191,15 +191,27 @@ class Frontend(Protocol):
     # --- Message history ---
 
     async def read_messages(
-        self, agent_name: str, limit: int = 50, before: Any = None
+        self, agent_name: str, limit: int = 50, before: Any = None,
+        after: Any = None, channel_ref: Any = None,
     ) -> list[dict[str, Any]]:
         """Retrieve message history for an agent's channel."""
         ...
 
     async def search_messages(
-        self, query: str, agent_name: str | None = None
+        self, query: str, agent_name: str | None = None,
+        limit: int = 25, channel_ref: Any = None,
     ) -> list[dict[str, Any]]:
         """Search message history, optionally scoped to one agent's channel."""
+        ...
+
+    async def wait_for_message(
+        self, agent_name: str, timeout: float = 120,
+        after: Any = None, channel_ref: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Poll for new messages in an agent's channel.
+
+        Returns when a non-system message appears or timeout is reached.
+        """
         ...
 
     # --- Event log integration ---
