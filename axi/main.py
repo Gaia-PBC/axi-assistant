@@ -625,10 +625,10 @@ async def _recover_stranded_messages() -> None:
     if scheduler.slot_count() < config.MAX_AWAKE_AGENTS:
         for _agent_name, session in list(agents.agents.items()):
             if session.client is None and session.message_queue and not session.query_lock.locked():
-                content, ch, stranded_msg, *_ = session.message_queue.popleft()
+                content, _ch, stranded_msg, *_ = session.message_queue.popleft()
                 log.info("Stranded message found for sleeping agent '%s', waking", _agent_name)
                 await agents.remove_reaction(stranded_msg, "📨")
-                agents.fire_and_forget(agents.run_initial_prompt(session, content, ch))
+                agents.fire_and_forget(agents.run_initial_prompt(session, content))
                 break
 
 

@@ -54,7 +54,27 @@ class AxiTurnHooks(TurnHooks):
         # ignores its channel arg). The deferred compact-result post + "Continue from where
         # you left off." auto-resume that process_message performs is a re-query, reconciled
         # in Phase 7.2's turn-loop cutover (it is a follow-up turn, not a pure post step).
-        from axi.agents import _maybe_compact
+        from agenthub.types import TurnOutcome
+        from axi.agents import _get_router, _maybe_compact, _user_mentions
+
+        # B2 (7.3): initial/startup prompts now run through the hub. run_initial_prompt
+        # tags its turn with metadata["initial_prompt"]; post the completion notice here
+        # (the legacy run_initial_prompt posted it after process_message returned).
+        if turn is not None and isinstance(turn.metadata, dict) and turn.metadata.get("initial_prompt"):
+            if outcome == TurnOutcome.COMPLETED:
+                await _get_router().post_system(
+                    session.name, f"Agent **{session.name}** finished initial task. {_user_mentions()}"
+                )
+            elif outcome in (
+                TurnOutcome.ERROR,
+                TurnOutcome.TIMEOUT,
+                TurnOutcome.RATE_LIMIT,
+                TurnOutcome.RETRY_EXHAUSTED,
+            ):
+                await _get_router().post_system(
+                    session.name,
+                    f"Agent **{session.name}** encountered an error during initial task. {_user_mentions()}",
+                )
 
         await _maybe_compact(session)
 
