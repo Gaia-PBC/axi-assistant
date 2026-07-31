@@ -721,3 +721,35 @@ async def set_plan(agent: str) -> CommandResult:
     else:
         msg = f"🔧 **Plan mode OFF** for **{agent}** — back to normal execution."
     return CommandResult(message=msg, data={"agent": agent, "plan_mode": new_mode})
+
+
+async def _run_raw_cli_command(agent: str, command: str, verb: str) -> CommandResult:
+    """Run a raw CLI slash command (e.g. /compact, /clear) on an agent via a hub 'raw' turn.
+
+    The raw turn skips the flowchart wrap (so the CLI gets the literal command) but still uses
+    the hub's turn accounting + streams the reply to all frontends (Discord renders it; an HTTP
+    caller triggers it fire-and-forget). Rejects if the agent is busy, matching the slash UX.
+    """
+    session = agents.agents.get(agent)
+    if session is None:
+        return CommandResult(message=f"Agent **{agent}** not found.", ok=False, ephemeral=True)
+    if session.query_lock.locked():
+        return CommandResult(message=f"Agent **{agent}** is busy.", ok=False, ephemeral=True)
+    if agents.hub is None:
+        return CommandResult(message="Hub unavailable.", ok=False, ephemeral=True)
+    await agents.hub.submit_user_message(agent, command, metadata={"raw": True})
+    return CommandResult(message=f"*System:* {verb} context for **{agent}**...", data={"agent": agent, "command": command})
+
+
+async def compact(agent: str) -> CommandResult:
+    """Compact an agent's conversation context (raw /compact with its compact_instructions)."""
+    session = agents.agents.get(agent)
+    command = "/compact"
+    if session is not None and session.compact_instructions:
+        command = f"/compact {session.compact_instructions}"
+    return await _run_raw_cli_command(agent, command, "Compacting")
+
+
+async def clear(agent: str) -> CommandResult:
+    """Clear an agent's conversation context (raw /clear)."""
+    return await _run_raw_cli_command(agent, "/clear", "Clearing")

@@ -275,7 +275,14 @@ class AgentHub:
         async with asyncio.timeout(self.query_timeout):
             async with self.turn_hooks.turn_scope(session, turn):
                 await self.turn_hooks.before_turn(session, turn)
-                content = await self.turn_hooks.transform_content(session, turn.content)
+                # A "raw" turn sends its content straight to the CLI (e.g. a raw /compact or
+                # /clear command) bypassing the frontend content transform (flowchart wrap),
+                # while still using the hub's turn accounting + streaming to all frontends.
+                meta = turn.metadata if isinstance(turn.metadata, dict) else {}
+                if meta.get("raw"):
+                    content = turn.content
+                else:
+                    content = await self.turn_hooks.transform_content(session, turn.content)
                 await session.client.query(content)
                 outcome = await self._consume_stream(session, turn.turn_id)
                 await self.turn_hooks.after_turn(session, turn, outcome)

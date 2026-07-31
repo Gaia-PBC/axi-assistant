@@ -1513,20 +1513,24 @@ async def _run_agent_sdk_command(interaction: discord.Interaction, agent_name: s
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def compact_context(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /compact agent=%s from %s", agent_name, interaction.user)
-    # Resolve agent to get compact_instructions
-    resolved_name = agent_name or agents.channel_to_agent.get(interaction.channel_id or 0)
-    session = agents.agents.get(resolved_name) if resolved_name else None
-    command = "/compact"
-    if session and session.compact_instructions:
-        command = f"/compact {session.compact_instructions}"
-    await _run_agent_sdk_command(interaction, agent_name, command, "Context compacted")
+    resolved = await _resolve_agent(interaction, agent_name)
+    if resolved is None:
+        return
+    agent_name, _ = resolved
+    result = await commands_api.compact(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="clear", description="Clear an agent's conversation context. Infers agent from current channel.")
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def clear_context(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /clear agent=%s from %s", agent_name, interaction.user)
-    await _run_agent_sdk_command(interaction, agent_name, "/clear", "Context cleared")
+    resolved = await _resolve_agent(interaction, agent_name)
+    if resolved is None:
+        return
+    agent_name, _ = resolved
+    result = await commands_api.clear(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 # ---------------------------------------------------------------------------
