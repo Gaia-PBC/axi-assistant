@@ -340,7 +340,6 @@ def get_active_trace_tag(agent_name: str) -> str:
     return _active_trace_ids.get(agent_name, "")
 
 
-
 def find_session_by_question_message(message_id: int) -> AgentSession | None:
     """Find the agent session waiting for a reaction answer on this message."""
     for session in agents.values():
@@ -437,8 +436,6 @@ def _build_mcp_servers(
     if extra_mcp_servers:
         servers.update(extra_mcp_servers)
     return servers
-
-
 
 
 def _save_agent_config(
@@ -820,7 +817,6 @@ def make_cwd_permission_callback(allowed_cwd: str, session: AgentSession | None 
     return compose(*policies)
 
 
-
 # ---------------------------------------------------------------------------
 # Discord UI handlers — moved to axi/discord_ui.py (Phase 0b)
 # Functions are re-exported at the top of this module for backwards compat.
@@ -1021,102 +1017,6 @@ async def graceful_interrupt(session: AgentSession) -> bool:
         return False
     except Exception:
         log.warning("INTERRUPT[%s] graceful interrupt failed", session.name, exc_info=True)
-        return False
-
-
-async def wake_agent(session: AgentSession) -> None:
-    """Wake a sleeping agent, then run Discord-specific post-wake logic."""
-    if session.cwd and not os.path.isdir(session.cwd):
-        log.error("Agent '%s' cwd does not exist: %s", session.name, session.cwd)
-        raise ValueError(f"Agent '{session.name}' working directory no longer exists: {session.cwd}")
-
-    assert _bot is not None
-    assert hub is not None
-
-    if is_awake(session):
-        return
-
-    resume_id = session.session_id
-
-    async with _wake_lock:
-        if is_awake(session):
-            return
-
-        await scheduler.request_slot(session.name)
-        try:
-            options = hub.make_agent_options(session, resume_id)
-            client = await hub.create_client(session, options)
-            session.client = client
-            session.last_failed_resume_id = None
-        except Exception:
-            if resume_id:
-                log.warning(
-                    "Failed to resume agent '%s' with session_id=%s, retrying fresh",
-                    session.name,
-                    resume_id,
-                )
-                options = hub.make_agent_options(session, None)
-                try:
-                    client = await hub.create_client(session, options)
-                except Exception:
-                    scheduler.release_slot(session.name)
-                    raise
-                session.client = client
-                session.session_id = None
-                session.last_failed_resume_id = resume_id
-                log.warning(
-                    "Agent '%s' woke with fresh session (previous context lost)",
-                    session.name,
-                )
-            else:
-                scheduler.release_slot(session.name)
-                raise
-
-    # Post-wake logic (prompt-change detection, system-prompt posting, model
-    # warning) now lives in the frontend's on_wake handler (7.4a). Broadcast it so
-    # legacy wakes get it too; the hub's _ensure_awake broadcasts on_wake for
-    # hub-driven wakes. resume_id is still consumed by the resume-fallback above.
-    await _get_router().on_wake(session.name)
-
-
-async def wake_or_queue(
-    session: AgentSession,
-    content: MessageContent,
-    channel: TextChannel,
-    orig_message: discord.Message | None,
-) -> bool:
-    """Try to wake agent, return True if successful, False if queued.
-
-    Adds a ⏳ reaction immediately so the user knows the message was received
-    while we wait for a slot / SDK client creation.  The reaction is removed
-    on success or replaced with 📨/❌ on failure.
-    """
-    # Immediate feedback — user sees we received the message
-    router = _get_router()
-    await router.post_reaction(session.name, orig_message, "\u23f3")
-
-    try:
-        await wake_agent(session)
-        # Woke successfully — remove the waiting indicator
-        await router.remove_reaction(session.name, orig_message, "\u23f3")
-        return True
-    except ConcurrencyLimitError:
-        session.message_queue.append((content, channel, orig_message))
-        position = len(session.message_queue)
-        awake = count_awake_agents()
-        log.debug("Concurrency limit hit for '%s', queuing message (position %d)", session.name, position)
-        # Swap ⏳ → 📨 to indicate "queued, will process later"
-        await router.remove_reaction(session.name, orig_message, "\u23f3")
-        await router.post_reaction(session.name, orig_message, "\U0001f4e8")
-        await router.post_system(session.name, f"\u23f3 All {awake} agent slots busy. Message queued (position {position}).")
-        return False
-    except Exception:
-        log.exception("Failed to wake agent '%s'", session.name)
-        await router.remove_reaction(session.name, orig_message, "\u23f3")
-        await router.post_reaction(session.name, orig_message, "\u274c")
-        await router.post_system(
-            session.name, f"Failed to wake agent **{session.name}**. Try `/kill-agent {session.name}` and respawn."
-        )
         return False
 
 
@@ -1413,8 +1313,8 @@ async def _drain_inflight_stream(session: AgentSession) -> str | None:
     7.5c: this is the dedicated transport-level stream consumer used by procmux reconnect
     (_reconnect_and_drain) to drain the CLI's ongoing mid-task output after the bridge comes
     back — a consume with NO new query, which does not map to a hub query+consume turn.
-    It is intentionally KEPT past the 7.5f legacy deletion (the doomed _retry_stream_via_router
-    / process_message path also calls it transitionally until 7.5f removes them).
+    Its only caller is _reconnect_and_drain (7.5f deleted the legacy process_message /
+    _retry_stream_via_router path that also used it).
     """
     from agenthub.stream_types import StreamKilled, TransientError
     from agenthub.streaming import stream_response
@@ -1462,92 +1362,6 @@ async def _drain_inflight_stream(session: AgentSession) -> str | None:
         await _get_router().post_message(session.name, mentions)
 
     return error
-
-
-async def _retry_stream_via_router(session: AgentSession) -> bool:
-    """Stream response with retry on transient errors. Returns True on success.
-
-    Replaces discord_stream.stream_with_retry.
-    """
-    with _tracer.start_as_current_span("stream_with_retry", attributes={"agent.name": session.name}) as span:
-        log.info("RETRY_ENTER[%s] starting initial stream", session.name)
-        error = await _drain_inflight_stream(session)
-        if error is None:
-            log.info("RETRY_EXIT[%s] first attempt succeeded", session.name)
-            span.set_attribute("retry.attempts", 1)
-            return True
-
-        log.warning("RETRY_TRIGGERED[%s] error=%s — will retry", session.name, error)
-        router = _get_router()
-        for attempt in range(2, config.API_ERROR_MAX_RETRIES + 1):
-            delay = config.API_ERROR_BASE_DELAY * (2 ** (attempt - 2))
-            log.warning(
-                "Agent '%s' transient error '%s', retrying in %ds (attempt %d/%d)",
-                session.name, error, delay, attempt, config.API_ERROR_MAX_RETRIES,
-            )
-            await router.post_system(
-                session.name,
-                f"⚠️ API error, retrying in {delay}s... (attempt {attempt}/{config.API_ERROR_MAX_RETRIES})",
-            )
-            await asyncio.sleep(delay)
-
-            if session.client is None:
-                log.warning(
-                    "RETRY_ABORT[%s] client=None after %ds delay — agent killed during retry; bailing out",
-                    session.name, delay,
-                )
-                await router.post_system(
-                    session.name,
-                    f"⚠️ Agent **{session.name}** was killed mid-retry; send another message to continue.",
-                )
-                span.set_attribute("retry.aborted", True)
-                return False
-
-            try:
-                get_stdio_logger(session.name, config.LOG_DIR).debug(
-                    ">>> STDIN  %s", json.dumps({"type": "retry", "content": "Continue from where you left off."})
-                )
-                await session.client.query(as_stream("Continue from where you left off."))
-            except Exception:
-                log.exception("Agent '%s' retry query failed", session.name)
-                continue
-
-            error = await _drain_inflight_stream(session)
-            if error is None:
-                span.set_attribute("retry.attempts", attempt)
-                return True
-
-        log.error(
-            "Agent '%s' transient error persisted after %d retries",
-            session.name, config.API_ERROR_MAX_RETRIES,
-        )
-        await router.post_system(
-            session.name,
-            f"❌ API error persisted after {config.API_ERROR_MAX_RETRIES} retries. Try again later.",
-        )
-        span.set_attribute("retry.exhausted", True)
-        span.set_status(trace.StatusCode.ERROR, "retries exhausted")
-        return False
-
-
-async def handle_query_timeout(session: AgentSession, channel: TextChannel) -> None:
-    """Handle a query timeout by killing the CLI and rebuilding the session."""
-    log.warning("Query timeout for agent '%s', killing session", session.name)
-
-    try:
-        await interrupt_session(session)
-    except Exception:
-        log.exception("interrupt_session failed for '%s'", session.name)
-
-    old_session_id = session.session_id
-    new_session = await _rebuild_session(session.name, session_id=old_session_id)
-
-    if old_session_id:
-        await _get_router().post_system(
-            new_session.name, f"Agent **{new_session.name}** timed out and was recovered (sleeping). Context preserved."
-        )
-    else:
-        await _get_router().post_system(new_session.name, f"Agent **{new_session.name}** timed out and was reset (sleeping). Context lost.")
 
 
 # ---------------------------------------------------------------------------
@@ -1637,94 +1451,6 @@ async def _handle_pending_compact(session: AgentSession) -> bool:
 # ---------------------------------------------------------------------------
 # Message processing, spawning, and inter-agent delivery
 # ---------------------------------------------------------------------------
-
-
-async def process_message(session: AgentSession, content: MessageContent, channel: TextChannel) -> None:
-    """Process a user message through the agent's Claude session.
-
-    Flowcoder agents are a superset of Claude Code agents — the engine acts as
-    a transparent proxy for normal messages and intercepts slash commands for
-    flowchart execution. All messages go through session.client (the SDK).
-    """
-    if session.client is None:
-        raise RuntimeError(f"Agent '{session.name}' not awake")
-
-    set_agent_context(session.name, channel_id=channel.id)
-
-    _reset_session_activity(session)
-    session.bridge_busy = False
-    drain_stderr(session)
-    drained = drain_sdk_buffer(session)
-
-    if discord_state(session).agent_log:
-        discord_state(session).agent_log.info("USER: %s", content_summary(content))
-    log.info("PROCESS[%s] drained=%d, calling query+stream", session.name, drained)
-
-    # Route through the configured FlowCoder wrapper, if any
-    content = _wrap_content_with_flowchart(content, session)
-
-    get_stdio_logger(session.name, config.LOG_DIR).debug(
-        ">>> STDIN  %s", json.dumps({"type": "user", "content": content if isinstance(content, str) else "[blocks]"})
-    )
-    with _tracer.start_as_current_span(
-        "process_message",
-        attributes={
-            "agent.name": session.name,
-            "agent.type": session.agent_type or "claude_code",
-            "message.length": len(content) if isinstance(content, str) else -1,
-            "discord.channel": getattr(channel, "name", "?"),
-        },
-    ) as pm_span:
-        # Store trace ID so /stop and /skip can reference the interrupted turn
-        _sc = pm_span.get_span_context()
-        if _sc and _sc.trace_id:
-            _active_trace_ids[session.name] = f"[trace={format(_sc.trace_id, '032x')[:16]}]"
-        try:
-            async with asyncio.timeout(config.QUERY_TIMEOUT):
-                await session.client.query(as_stream(content))
-                # After query() the CLI emits the autocompact stderr line with
-                # updated token counts. Brief yield lets the stderr thread process it.
-                await asyncio.sleep(0.3)
-                # Show deferred compact result now that we have fresh post_tokens
-                router = _get_router()
-                pending = _pending_compact.pop(session.name, None)
-                if pending:
-                    post_tokens = session.context_tokens
-                    pre_tokens = int(pending["pre_tokens"])
-                    elapsed = time.monotonic() - float(pending["start_time"])
-                    if post_tokens > 0 and post_tokens != pre_tokens:
-                        saved = int(pre_tokens - post_tokens)
-                        pct = post_tokens / session.context_window if session.context_window else 0
-                        await router.post_system(
-                            session.name,
-                            f"\U0001f504 Compacted in {elapsed:.1f}s: {pre_tokens:,} \u2192 {post_tokens:,} tokens "
-                            f"({saved:,} freed, {pct:.0%} used) \u2014 resuming",
-                        )
-                    else:
-                        await router.post_system(
-                            session.name,
-                            f"\U0001f504 Compacted in {elapsed:.1f}s ({pre_tokens:,} tokens) \u2014 resuming",
-                        )
-                    _reset_session_activity(session)
-                    resume_msg = "Continue from where you left off."
-                    get_stdio_logger(session.name, config.LOG_DIR).debug(
-                        ">>> STDIN  %s", json.dumps({"type": "auto_resume", "content": resume_msg})
-                    )
-                    await session.client.query(as_stream(resume_msg))
-                    await asyncio.sleep(0.3)
-                    await _retry_stream_via_router(session)
-                await _retry_stream_via_router(session)
-                # 7.5b: proactive _maybe_compact now queues a hub turn, which must not be
-                # driven from this legacy (non-hub) path — the hub would run it concurrently
-                # with this stream. Reconnect-drain relies on CLI auto-compaction until 7.5c
-                # migrates it to the hub (where after_turn drives proactive compaction).
-        except TimeoutError:
-            await handle_query_timeout(session, channel)
-        except Exception:
-            log.exception("Error querying Claude Code agent '%s'", session.name)
-            raise RuntimeError(f"Query failed for agent '{session.name}'") from None
-        finally:
-            _active_trace_ids.pop(session.name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1969,89 +1695,6 @@ async def run_initial_prompt(session: AgentSession, prompt: MessageContent) -> N
     await hub.submit_user_message(session.name, content, metadata={"initial_prompt": True})
 
 
-async def process_message_queue(session: AgentSession) -> None:
-    """Process any queued messages for an agent after the current query finishes."""
-    if session.message_queue:
-        observe_agent_message_event("queue_process_start")
-        log.info("QUEUE[%s] processing %d queued messages", session.name, len(session.message_queue))
-        _tracer.start_span(
-            "process_message_queue",
-            attributes={"agent.name": session.name, "queue.size": len(session.message_queue)},
-        ).end()  # mark event; individual messages are traced via process_message
-    while session.message_queue:
-        if session.state.stop_requested:
-            session.state.stop_requested = False
-            break
-        if hub and hub.shutdown_requested:
-            log.info("Shutdown requested \u2014 not processing further queued messages for '%s'", session.name)
-            break
-        # Yield slot if scheduler needs it for another agent
-        if scheduler.should_yield(session.name):
-            log.info("Scheduler yield: '%s' deferring %d queued messages", session.name, len(session.message_queue))
-            await sleep_agent(session)
-            return
-        router = _get_router()
-        content, channel, orig_message, *rest = session.message_queue.popleft()
-        observe_agent_message_event("queue_dequeued")
-        raw_content = rest[0] if rest else content
-
-        remaining = len(session.message_queue)
-        log.debug("Processing queued message for '%s' (%d remaining)", session.name, remaining)
-        if discord_state(session).agent_log:
-            discord_state(session).agent_log.info("QUEUED_MSG: %s", content_summary(raw_content))
-        await router.remove_reaction(session.name, orig_message, "\U0001f4e8")
-        preview = content_summary(raw_content)
-        remaining_str = f" ({remaining} more in queue)" if remaining > 0 else ""
-        await _get_router().post_system(session.name, f"Processing queued message{remaining_str}:\n> {preview}")
-
-        async with session.query_lock:
-            if not is_awake(session):
-                try:
-                    await wake_agent(session)
-                except Exception:
-                    log.exception("Failed to wake agent '%s' for queued message", session.name)
-                    await router.post_reaction(session.name, orig_message, "\u274c")
-                    await _get_router().post_system(
-                        session.name,
-                        f"Failed to wake agent **{session.name}** \u2014 dropping queued message.",
-                    )
-                    while session.message_queue:
-                        _, ch, dropped_msg, *_ = session.message_queue.popleft()
-                        await router.remove_reaction(session.name, dropped_msg, "\U0001f4e8")
-                        await router.post_reaction(session.name, dropped_msg, "\u274c")
-                        await _get_router().post_system(
-                            session.name,
-                            f"Failed to wake agent **{session.name}** \u2014 dropping queued message.",
-                        )
-                    return
-
-            _reset_session_activity(session)
-            try:
-                await process_message(session, content, channel)
-                await router.post_reaction(session.name, orig_message, "\u2705")
-            except TimeoutError:
-                await router.post_reaction(session.name, orig_message, "\u23f3")
-                await handle_query_timeout(session, channel)
-            except RuntimeError as e:
-                log.warning(
-                    "Runtime error processing queued message for '%s': %s",
-                    session.name,
-                    e,
-                )
-                await router.post_reaction(session.name, orig_message, "\u274c")
-                await _get_router().post_system(session.name, str(e))
-            except Exception:
-                log.exception("Error processing queued message for '%s'", session.name)
-                await router.post_reaction(session.name, orig_message, "\u274c")
-                await _get_router().post_system(
-                    session.name,
-                    f"Error processing queued message for **{session.name}**.",
-                )
-            finally:
-                session.activity = ActivityState(phase="idle")
-    session.state.stop_requested = False
-
-
 # ---------------------------------------------------------------------------
 # Inter-agent messaging
 # ---------------------------------------------------------------------------
@@ -2130,76 +1773,6 @@ async def deliver_inter_agent_message(
         return f"delivered to busy agent '{target_session.name}' (queued, will process after current turn)"
 
     return f"delivered to agent '{target_session.name}'"
-
-
-async def _process_inter_agent_prompt(
-    session: AgentSession,
-    content: str,
-    channel: TextChannel,
-) -> None:
-    """Background task to wake (if needed) and process an inter-agent message."""
-    try:
-        async with session.query_lock:
-            if not is_awake(session):
-                try:
-                    await wake_agent(session)
-                except ConcurrencyLimitError:
-                    session.message_queue.append((content, channel, None))
-                    awake = count_awake_agents()
-                    log.info(
-                        "Concurrency limit hit for '%s' inter-agent message \u2014 queuing",
-                        session.name,
-                    )
-                    await _get_router().post_system(
-                        session.name,
-                        f"\u23f3 All {awake} agent slots busy. Inter-agent message queued.",
-                    )
-                    return
-                except Exception:
-                    log.exception(
-                        "Failed to wake agent '%s' for inter-agent message",
-                        session.name,
-                    )
-                    await _get_router().post_system(
-                        session.name,
-                        f"Failed to wake agent **{session.name}** for inter-agent message.",
-                    )
-                    return
-
-            _reset_session_activity(session)
-            try:
-                await process_message(session, content, channel)
-            except TimeoutError:
-                await handle_query_timeout(session, channel)
-            except RuntimeError as e:
-                log.warning(
-                    "Runtime error processing inter-agent message for '%s': %s",
-                    session.name,
-                    e,
-                )
-                await _get_router().post_system(session.name, str(e))
-            except Exception:
-                log.exception(
-                    "Error processing inter-agent message for '%s'",
-                    session.name,
-                )
-                await _get_router().post_system(
-                    session.name,
-                    f"Error processing inter-agent message for **{session.name}**.",
-                )
-            finally:
-                session.activity = ActivityState(phase="idle")
-
-        if scheduler.should_yield(session.name):
-            log.info("Scheduler yield: '%s' sleeping after inter-agent message", session.name)
-            await sleep_agent(session)
-        else:
-            await process_message_queue(session)
-    except Exception:
-        log.exception(
-            "Unhandled error in _process_inter_agent_prompt for '%s'",
-            session.name,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -2470,7 +2043,6 @@ __all__ = [
     "get_master_channel",
     "get_master_session",
     "graceful_interrupt",
-    "handle_query_timeout",
     "init",
     "init_shutdown_coordinator",
     "interrupt_session",
@@ -2483,8 +2055,6 @@ __all__ = [
     "make_stderr_callback",
     "move_channel_to_killed",
     "normalize_channel_name",
-    "process_message",
-    "process_message_queue",
     "procmux_conn",
     "rate_limit_quotas",
     "rate_limit_remaining_seconds",
@@ -2505,7 +2075,5 @@ __all__ = [
     "spawn_agent",
     "split_message",
     "stream_with_retry",
-    "wake_agent",
-    "wake_or_queue",
     "wire_conn",
 ]
