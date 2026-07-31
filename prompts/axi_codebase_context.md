@@ -89,7 +89,7 @@ Run these via Bash:
 
 ### Test Guilds
 
-Test instances run in separate Discord guilds. Your Discord MCP tools (`discord_list_channels`, `discord_read_messages`, `discord_send_message`) work in these guilds using your own bot token.
+Test instances run in separate Discord guilds. Your MCP tools (`discord_list_channels`, `read_messages`, `post_message`) work in these guilds using your own bot token.
 
 Available test guilds are configured in `~/.config/axi/test-config.json`. Run `cat ~/.config/axi/test-config.json` to see guild IDs.
 
@@ -108,7 +108,7 @@ The parent (Axi master) prepares the working directory, then spawns an agent in 
 1. **Edit files** in cwd (all edits naturally go to the right place)
 2. **Reserve a test slot**: `uv run python axi_test.py up <name> --wait` — only when ready to test
 3. **Restart**: `uv run python axi_test.py restart <name>`
-4. **Test via Discord MCP**: Use `discord_send_message` to the test guild, then `discord_wait_for_message` to wait for the bot's response
+4. **Test via MCP tools**: Use `post_message` to the test guild, then `wait_for_message` to wait for the bot's response
 5. **Iterate**: Repeat 1-4 until it works
 6. **Tear down**: `uv run python axi_test.py down <name>` — always release the slot when done testing
 7. **Commit**: `git add -A && git commit -m "description"`
@@ -121,8 +121,8 @@ When debugging axi bugs, reproduce the bug on a test instance before declaring a
 
 ### Fast Message Polling
 
-For scripted test interactions, use the `discord_wait_for_message` MCP tool:
-- `channel_id` — the channel to watch
+For scripted test interactions, use the `wait_for_message` MCP tool:
+- `agent_name` — the agent whose channel to watch (preferred), or `channel_id` for backward compat
 - `after` — message ID to wait after (optional, defaults to latest message)
 - `timeout` — max seconds to wait (default 120, max 300)
 
