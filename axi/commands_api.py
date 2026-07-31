@@ -446,3 +446,140 @@ def flowchart_list() -> CommandResult:
         data={"commands": commands},
         ephemeral=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Turn control + lifecycle (Phase 8b)
+# ---------------------------------------------------------------------------
+
+
+def _require_busy(name: str) -> tuple[Any, CommandResult | None]:
+    session = agents.agents.get(name)
+    if session is None:
+        return None, CommandResult(message=f"Agent **{name}** not found.", ok=False, ephemeral=True)
+    if session.client is None or not session.query_lock.locked():
+        return session, CommandResult(message=f"Agent **{name}** is not busy.", ok=False, ephemeral=True)
+    return session, None
+
+
+async def stop(name: str) -> CommandResult:
+    """Interrupt an agent's current query and clear its queued turns (the frontend-agnostic
+    core of /stop; Discord additionally cancels plan/question prompts + reactions)."""
+    session, err = _require_busy(name)
+    if err is not None:
+        return err
+    cleared = 0
+    if agents.hub is not None:
+        result = await agents.hub.request_stop(name, clear_queue=True)
+        cleared = result.cleared
+    else:
+        cleared = len(session.state.queued_turns)
+        session.state.stop_requested = True
+        session.state.queued_turns.clear()
+    parts = [f"*System:* Interrupt signal sent to **{name}**."]
+    if cleared:
+        parts.append(f"Cleared {cleared} queued message{'s' if cleared != 1 else ''}.")
+    return CommandResult(message=" ".join(parts), data={"status": "stopping", "cleared": cleared})
+
+
+async def skip(name: str) -> CommandResult:
+    """Interrupt the current query but keep processing queued turns."""
+    session, err = _require_busy(name)
+    if err is not None:
+        return err
+    queued = len(session.state.queued_turns)
+    activity = session.activity
+    tool_suffix = ""
+    if activity.phase == "waiting" and activity.tool_name:
+        tool_suffix = f" (was {tool_display(activity.tool_name)})"
+    if agents.hub is not None:
+        await agents.hub.request_skip(name)
+    if queued:
+        noun = "message" if queued == 1 else "messages"
+        msg = f"*System:* Skipped current query for **{name}**{tool_suffix}. Latest {noun} will continue processing."
+    else:
+        msg = f"*System:* Skipped current query for **{name}**{tool_suffix}. No queued messages."
+    return CommandResult(message=msg, data={"status": "skipping", "queued": queued})
+
+
+def validate_spawn(name: str, cwd: str | None, model: str | None) -> CommandResult:
+    """Synchronous validation for spawn (name/master/exists/cwd/model). On ok, data carries
+    the resolved {cwd, model}."""
+    agent_name = (name or "").strip()
+    if not agent_name:
+        return CommandResult(message="Agent name cannot be empty.", ok=False, ephemeral=True)
+    if agent_name == config.MASTER_AGENT_NAME:
+        return CommandResult(
+            message=f"Cannot spawn agent with reserved name '{config.MASTER_AGENT_NAME}'.", ok=False, ephemeral=True
+        )
+    default_cwd = os.path.join(config.AXI_USER_DATA, "agents", agent_name)
+    agent_cwd = os.path.realpath(os.path.expanduser(cwd)) if cwd else default_cwd
+    agent_model = config.normalize_model(model) if model else None
+    if agent_model:
+        error = config.validate_model(agent_model)
+        if error:
+            return CommandResult(message=f"*System:* {error}", ok=False, ephemeral=True)
+    if not any(agent_cwd == d or agent_cwd.startswith(d + os.sep) for d in config.ALLOWED_CWDS):
+        return CommandResult(message="Error: cwd is not in allowed directories.", ok=False, ephemeral=True)
+    return CommandResult(message="", data={"cwd": agent_cwd, "model": agent_model})
+
+
+async def spawn(
+    name: str, prompt: str, *, cwd: str | None = None, resume: str | None = None, model: str | None = None
+) -> CommandResult:
+    """Spawn (or resume-replace) an agent. Validates, reclaims the name on resume, then
+    agents.spawn_agent (which creates the channel via the frontend on_spawn)."""
+    agent_name = (name or "").strip()
+    if agent_name in agents.agents and not resume:
+        return CommandResult(
+            message=f"Agent **{agent_name}** already exists. Kill it first or use `resume` to replace it.",
+            ok=False,
+            ephemeral=True,
+        )
+    valid = validate_spawn(agent_name, cwd, model)
+    if not valid.ok:
+        return valid
+    agent_cwd = valid.data["cwd"]
+    agent_model = valid.data["model"]
+    if agent_name in agents.agents and resume:
+        await agents.reclaim_agent_name(agent_name)
+    await agents.spawn_agent(agent_name, agent_cwd, prompt, resume=resume, model=agent_model)
+    model_suffix = f" using **{agent_model}**" if agent_model else ""
+    return CommandResult(
+        message=f"*System:* Spawned agent **{agent_name}** in `{agent_cwd}`{model_suffix}.",
+        data={"name": agent_name, "cwd": agent_cwd, "model": agent_model},
+    )
+
+
+async def kill_agent(name: str) -> CommandResult:
+    """Terminate an agent (sleep + on_kill move-to-Killed + registry pop via hub.remove_agent)."""
+    session = agents.agents.get(name)
+    if session is None:
+        return CommandResult(message=f"Agent **{name}** not found.", ok=False, ephemeral=True)
+    if name == config.MASTER_AGENT_NAME:
+        return CommandResult(message="Cannot kill the axi-master session.", ok=False, ephemeral=True)
+    session_id = session.session_id
+    await agents.hub.remove_agent(name)
+    if session_id:
+        msg = f"*System:* Agent **{name}** moved to Killed.\nSession ID: `{session_id}` — use this to resume later."
+    else:
+        msg = f"*System:* Agent **{name}** moved to Killed."
+    return CommandResult(message=msg, data={"name": name, "session_id": session_id})
+
+
+async def restart_agent(name: str) -> CommandResult:
+    """Restart an agent's CLI with a fresh system prompt, preserving session context."""
+    if name not in agents.agents:
+        return CommandResult(message=f"Agent **{name}** not found.", ok=False, ephemeral=True)
+    if name == config.MASTER_AGENT_NAME:
+        return CommandResult(
+            message="Cannot restart axi-master this way. Use `/restart` instead.", ok=False, ephemeral=True
+        )
+    session = await agents.restart_agent(name)
+    return CommandResult(
+        message=(
+            f"*System:* Agent **{name}** restarted. "
+            f"System prompt refreshed, session `{session.session_id or 'none'}` preserved."
+        ),
+        data={"name": name, "session_id": session.session_id},
+    )

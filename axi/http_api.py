@@ -108,6 +108,46 @@ async def api_flowcharts(_: None = Depends(require_bearer_token)) -> dict:
     return _result_json(commands_api.flowchart_list())
 
 
+# ---------------------------------------------------------------------------
+# Turn control + lifecycle commands (Phase 8b) — POST endpoints.
+# ---------------------------------------------------------------------------
+
+
+class SpawnRequest(BaseModel):
+    name: str
+    prompt: str
+    cwd: str | None = None
+    resume: str | None = None
+    model: str | None = None
+
+
+@app.post("/v1/agents/{name}/stop")
+async def api_stop(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.stop(name))
+
+
+@app.post("/v1/agents/{name}/skip")
+async def api_skip(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.skip(name))
+
+
+@app.post("/v1/agents/{name}/kill")
+async def api_kill(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.kill_agent(name))
+
+
+@app.post("/v1/agents/{name}/restart")
+async def api_restart_agent(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.restart_agent(name))
+
+
+@app.post("/v1/spawn")
+async def api_spawn(req: SpawnRequest, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(
+        await commands_api.spawn(req.name, req.prompt, cwd=req.cwd, resume=req.resume, model=req.model)
+    )
+
+
 @app.post("/v1/trigger")
 async def trigger(req: TriggerRequest, _: None = Depends(require_bearer_token)):
     agent_name = req.session

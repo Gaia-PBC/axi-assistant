@@ -1114,40 +1114,25 @@ async def debug_all_command(interaction: discord.Interaction, mode: str | None =
 @app_commands.autocomplete(agent_name=killable_agent_autocomplete)
 async def kill_agent(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /kill-agent %s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, session = resolved
-
     if agent_name == config.MASTER_AGENT_NAME:
-        await audited_interaction_response_send(interaction,"Cannot kill the axi-master session.", ephemeral=True)
+        await audited_interaction_response_send(interaction, "Cannot kill the axi-master session.", ephemeral=True)
         return
-
     await interaction.response.defer()
     session_id = session.session_id
     _tracer.start_span("slash.kill_agent", attributes={"agent.name": agent_name}).end()
-
+    # Discord: cross-post to the agent's own channel if the command was run elsewhere.
     agent_ch = await agents.get_agent_channel(agent_name)
     if agent_ch and agent_ch.id != interaction.channel_id:
+        note = f"Agent **{agent_name}** moved to Killed."
         if session_id:
-            await agents.send_system(
-                agent_ch,
-                f"Agent **{agent_name}** moved to Killed.\nSession ID: `{session_id}` — use this to resume later.",
-            )
-        else:
-            await agents.send_system(agent_ch, f"Agent **{agent_name}** moved to Killed.")
-
-    # 7.4c: hub.remove_agent does sleep + on_kill (move-to-Killed) + registry pop.
-    await agents.hub.remove_agent(agent_name)
-
-    if session_id:
-        await audited_interaction_followup_send(
-            interaction,
-            f"*System:* Agent **{agent_name}** moved to Killed.\nSession ID: `{session_id}` — use this to resume later.",
-        )
-    else:
-        await audited_interaction_followup_send(interaction, f"*System:* Agent **{agent_name}** moved to Killed.")
+            note += f"\nSession ID: `{session_id}` \u2014 use this to resume later."
+        await agents.send_system(agent_ch, note)
+    result = await commands_api.kill_agent(agent_name)
+    await audited_interaction_followup_send(interaction, result.message)
 
 
 @bot.tree.command(name="spawn", description="Spawn a new agent session with its own Discord channel.")
@@ -1164,47 +1149,27 @@ async def spawn_agent_cmd(
 ) -> None:
     log.info("Slash command /spawn %s from %s", name, interaction.user)
     if interaction.user.id not in config.ALLOWED_USER_IDS:
-        await audited_interaction_response_send(interaction,"Not authorized.", ephemeral=True)
+        await audited_interaction_response_send(interaction, "Not authorized.", ephemeral=True)
         return
-
     agent_name = name.strip()
-    if not agent_name:
-        await audited_interaction_response_send(interaction,"Agent name cannot be empty.", ephemeral=True)
-        return
-    if agent_name == config.MASTER_AGENT_NAME:
-        await audited_interaction_response_send(interaction,
-            f"Cannot spawn agent with reserved name '{config.MASTER_AGENT_NAME}'.", ephemeral=True
-        )
-        return
     if agent_name in agents.agents and not resume:
-        await audited_interaction_response_send(interaction,
-            f"Agent **{agent_name}** already exists. Kill it first or use `resume` to replace it.", ephemeral=True
+        await audited_interaction_response_send(
+            interaction,
+            f"Agent **{agent_name}** already exists. Kill it first or use `resume` to replace it.",
+            ephemeral=True,
         )
         return
-
-    default_cwd = os.path.join(config.AXI_USER_DATA, "agents", agent_name)
-    agent_cwd = os.path.realpath(os.path.expanduser(cwd)) if cwd else default_cwd
-    agent_model = config.normalize_model(model) if model else None
-
-    if agent_model:
-        error = config.validate_model(agent_model)
-        if error:
-            await interaction.response.send_message(f"*System:* {error}", ephemeral=True)
-            return
-
-    if not any(agent_cwd == d or agent_cwd.startswith(d + os.sep) for d in config.ALLOWED_CWDS):
-        await audited_interaction_response_send(interaction,
-            "Error: cwd is not in allowed directories.", ephemeral=True
-        )
+    valid = commands_api.validate_spawn(agent_name, cwd, model)
+    if not valid.ok:
+        await audited_interaction_response_send(interaction, valid.message, ephemeral=True)
         return
-
+    agent_cwd = valid.data["cwd"]
+    agent_model = valid.data["model"]
     await interaction.response.defer()
 
     async def _do_spawn():
         try:
-            if agent_name in agents.agents and resume:
-                await agents.reclaim_agent_name(agent_name)
-            await agents.spawn_agent(agent_name, agent_cwd, prompt, resume=resume, model=agent_model)
+            await commands_api.spawn(agent_name, prompt, cwd=cwd, resume=resume, model=model)
         except Exception:
             channels.bot_creating_channels.discard(channels.normalize_channel_name(agent_name))
             log.exception("Error in background spawn of agent '%s'", agent_name)
@@ -1231,58 +1196,43 @@ async def spawn_agent_cmd(
 @app_commands.autocomplete(agent_name=killable_agent_autocomplete)
 async def restart_agent_cmd(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /restart-agent %s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, session = resolved
-
     if agent_name == config.MASTER_AGENT_NAME:
-        await audited_interaction_response_send(interaction,
-            "Cannot restart axi-master this way. Use `/restart` instead.", ephemeral=True
+        await audited_interaction_response_send(
+            interaction, "Cannot restart axi-master this way. Use `/restart` instead.", ephemeral=True
         )
         return
-
     await interaction.response.defer()
     _tracer.start_span("slash.restart_agent", attributes={"agent.name": agent_name}).end()
-
-    session = await agents.restart_agent(agent_name)
-
+    result = await commands_api.restart_agent(agent_name)
+    # Discord: cross-post to the agent's channel if run elsewhere.
     agent_ch = await agents.get_agent_channel(agent_name)
     if agent_ch and agent_ch.id != interaction.channel_id:
         await agents.send_system(
-            agent_ch,
-            f"Agent **{agent_name}** restarted with fresh system prompt. Session context preserved.",
+            agent_ch, f"Agent **{agent_name}** restarted with fresh system prompt. Session context preserved."
         )
-
-    await audited_interaction_followup_send(
-        interaction,
-        f"*System:* Agent **{agent_name}** restarted. System prompt refreshed, session `{session.session_id or 'none'}` preserved."
-    )
+    await audited_interaction_followup_send(interaction, result.message)
 
 
 @bot.tree.command(name="stop", description="Interrupt a running agent query (like Ctrl+C).")
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def stop_agent(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /stop agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, session = resolved
-
     if session.client is None or not session.query_lock.locked():
-        await audited_interaction_response_send(interaction,f"Agent **{agent_name}** is not busy.", ephemeral=True)
+        await audited_interaction_response_send(interaction, f"Agent **{agent_name}** is not busy.", ephemeral=True)
         return
-
     await interaction.response.defer()
     trace_tag = agents.get_active_trace_tag(agent_name)
-    _tracer.start_span(
-        "slash.stop_agent",
-        attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag},
-    ).end()
-
+    _tracer.start_span("slash.stop_agent", attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag}).end()
     try:
+        # Discord-specific cleanup: plan mode + pending plan/question prompts + queued reactions.
         plan_was_active = session.plan_mode
         if plan_was_active:
             session.plan_mode = False
@@ -1290,34 +1240,21 @@ async def stop_agent(interaction: discord.Interaction, agent_name: str | None = 
                 await session.client.set_permission_mode("default")
             except Exception:
                 log.exception("Failed to reset permission mode for '%s' during /stop", agent_name)
-
         ds = discord_state(session)
         if ds.plan_approval_future and not ds.plan_approval_future.done():
             ds.plan_approval_future.set_result({"approved": False, "message": "Interrupted by /stop."})
         ds.plan_approval_message_id = None
-
         if ds.question_future and not ds.question_future.done():
             ds.question_future.set_result("")
             ds.question_data = None
             ds.question_message_id = None
-
-        cleared = 0
         for turn in list(session.state.queued_turns):
             dropped_msg = (turn.metadata or {}).get("discord_message")
             if dropped_msg is not None:
-                await agents.remove_reaction(dropped_msg, "📨")
-            cleared += 1
-        if agents.hub is not None:
-            await agents.hub.request_stop(session.name, clear_queue=True)
-        else:
-            session.state.stop_requested = True
-            session.state.queued_turns.clear()
-
+                await agents.remove_reaction(dropped_msg, "\U0001f4e8")
+        result = await commands_api.stop(agent_name)
         await _interrupt_agent(session)
-
-        parts = [f"*System:* Interrupt signal sent to **{agent_name}**."]
-        if cleared:
-            parts.append(f"Cleared {cleared} queued message{'s' if cleared != 1 else ''}.")
+        parts = [result.message]
         if plan_was_active:
             parts.append("Plan mode deactivated.")
         if trace_tag:
@@ -1332,45 +1269,26 @@ async def stop_agent(interaction: discord.Interaction, agent_name: str | None = 
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def skip_agent(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /skip agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, session = resolved
-
     if session.client is None or not session.query_lock.locked():
-        await audited_interaction_response_send(interaction,f"Agent **{agent_name}** is not busy.", ephemeral=True)
+        await audited_interaction_response_send(interaction, f"Agent **{agent_name}** is not busy.", ephemeral=True)
         return
-
     await interaction.response.defer()
     trace_tag = agents.get_active_trace_tag(agent_name)
-    _tracer.start_span(
-        "slash.skip_agent",
-        attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag},
-    ).end()
-
-    queued = len(session.state.queued_turns)
-    activity = session.activity
-    tool_suffix = ""
-    if activity.phase == "waiting" and activity.tool_name:
-        tool_suffix = f" (was {tool_display(activity.tool_name)})"
-
+    _tracer.start_span("slash.skip_agent", attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag}).end()
     try:
+        result = await commands_api.skip(agent_name)
         await _interrupt_agent(session)
-        if queued:
-            noun = "message" if queued == 1 else "messages"
-            msg = (
-                f"*System:* Skipped current query for **{agent_name}**{tool_suffix}. "
-                f"Latest {noun} will continue processing."
-            )
-        else:
-            msg = f"*System:* Skipped current query for **{agent_name}**{tool_suffix}. No queued messages."
+        msg = result.message
         if trace_tag:
             msg += f"\n-# Skipped turn {trace_tag}"
-        await audited_interaction_followup_send(interaction,msg)
+        await audited_interaction_followup_send(interaction, msg)
     except Exception as e:
         log.exception("Failed to interrupt agent '%s'", agent_name)
-        await audited_interaction_followup_send(interaction,f"Failed to skip **{agent_name}**: {e}")
+        await audited_interaction_followup_send(interaction, f"Failed to skip **{agent_name}**: {e}")
 
 
 @bot.tree.command(
