@@ -126,6 +126,53 @@ class DiscordFrontend:
     # --- Agent lifecycle events ---
 
     async def on_wake(self, agent_name: str) -> None:
+        # Post-wake logic (moved out of agents.wake_agent in 7.4a). Runs for BOTH
+        # hub-driven wakes (hub's _ensure_awake broadcasts on_wake) and legacy wakes
+        # (wake_agent broadcasts on_wake), closing the 7.2 gap where hub wakes skipped
+        # it. resume_id mirrors wake_agent's pre-wake session_id, falling back to
+        # last_failed_resume_id so a resume that fell back to fresh is still a resume.
+        from axi.agents import _post_model_warning
+        from axi.agents import agents as _registry
+        from axi.axi_types import discord_state
+        from axi.prompts import compute_prompt_hash, post_system_prompt_to_channel
+
+        session = _registry.get(agent_name)
+        if session is None:
+            log.debug("Discord: on_wake for unknown agent '%s'", agent_name)
+            return
+
+        resume_id = session.session_id or session.last_failed_resume_id
+
+        # Prompt-change detection (resumes only)
+        prompt_changed = False
+        if resume_id and session.system_prompt is not None:
+            current_hash = compute_prompt_hash(session.system_prompt)
+            if session.system_prompt_hash is not None and current_hash != session.system_prompt_hash:
+                prompt_changed = True
+                log.info(
+                    "System prompt changed for '%s' (old=%s, new=%s)",
+                    agent_name,
+                    session.system_prompt_hash,
+                    current_hash,
+                )
+            session.system_prompt_hash = current_hash
+
+        # Post the system prompt on first wake
+        ds = discord_state(session)
+        if not ds.system_prompt_posted and ds.channel_id:
+            ds.system_prompt_posted = True
+            try:
+                await post_system_prompt_to_channel(
+                    agent_name,
+                    session.system_prompt,
+                    is_resume=bool(resume_id),
+                    prompt_changed=prompt_changed,
+                    session_id=session.session_id or resume_id,
+                )
+            except Exception:
+                log.warning("Failed to post system prompt for '%s'", agent_name, exc_info=True)
+
+        await _post_model_warning(session)
         log.debug("Discord: agent '%s' woke", agent_name)
 
     async def on_sleep(self, agent_name: str) -> None:
