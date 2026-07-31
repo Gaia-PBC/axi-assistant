@@ -583,3 +583,141 @@ async def restart_agent(name: str) -> CommandResult:
         ),
         data={"name": name, "session_id": session.session_id},
     )
+
+
+# ---------------------------------------------------------------------------
+# Context + scope commands (Phase 8c)
+# ---------------------------------------------------------------------------
+
+
+def _parse_toggle(mode: str | None, current: bool, usage: str) -> tuple[bool | None, str | None]:
+    """Resolve an on/off/toggle mode. Returns (new_state, error). error is set for bad input."""
+    if mode is None:
+        return (not current), None
+    m = mode.strip().lower()
+    if m == "on":
+        return True, None
+    if m == "off":
+        return False, None
+    return None, usage
+
+
+async def reset_context(agent: str, cwd: str | None = None) -> CommandResult:
+    """Reset an agent's context (fresh session), optionally moving its cwd."""
+    if agent not in agents.agents:
+        return CommandResult(message=f"Agent **{agent}** not found.", ok=False, ephemeral=True)
+    session = await agents.reset_session(agent, cwd=cwd)
+    return CommandResult(
+        message=f"*System:* Context reset for **{agent}**. Working directory: `{session.cwd}`",
+        data={"agent": agent, "cwd": session.cwd},
+    )
+
+
+async def set_model(agent: str | None, model: str | None) -> CommandResult:
+    """Get or set the model. agent=None targets the global default; a name targets that agent
+    (which is saved + restarted with a fresh session)."""
+    if model is None:  # view
+        if agent and agent in agents.agents:
+            current = agents.agents[agent].model or config.get_model()
+            return CommandResult(message=f"Current model for **{agent}**: **{current}**", data={"agent": agent, "model": current})
+        current = config.get_model()
+        return CommandResult(message=f"Current default model: **{current}**", data={"agent": None, "model": current})
+
+    error = config.validate_model(model)
+    if error:
+        return CommandResult(message=f"*System:* {error}", ok=False, ephemeral=True)
+    normalized = config.normalize_model(model)
+    if agent and agent in agents.agents:
+        session = agents.agents[agent]
+        session.model = normalized
+        agent_cfg = agents._load_agent_config(agent)
+        agents._save_agent_config(agent, session.mcp_server_names, extensions=agent_cfg.get("extensions"), model=normalized)
+        await agents.reset_session(agent)
+        return CommandResult(
+            message=f"*System:* Agent **{agent}** switched to **{normalized}** and restarted with a fresh session.",
+            data={"agent": agent, "model": normalized},
+        )
+    error = config.set_model(normalized)
+    if error:
+        return CommandResult(message=f"*System:* {error}", ok=False, ephemeral=True)
+    return CommandResult(
+        message=f"*System:* Default model set to **{config.get_model()}**.", data={"agent": None, "model": config.get_model()}
+    )
+
+
+def set_verbose(agent: str, mode: str | None = None) -> CommandResult:
+    """Toggle/set the Discord verbose-rendering flag for an agent."""
+    session = agents.agents.get(agent)
+    if session is None:
+        return CommandResult(message=f"Agent **{agent}** not found.", ok=False, ephemeral=True)
+    from axi.axi_types import discord_state
+
+    ds = discord_state(session)
+    new, err = _parse_toggle(mode, ds.verbose, "Usage: `/verbose` (toggle), `/verbose on`, `/verbose off`")
+    if err:
+        return CommandResult(message=err, ok=False, ephemeral=True)
+    ds.verbose = new
+    state = "on" if new else "off"
+    return CommandResult(message=f"*System:* Verbose output **{state}** for **{agent}**.", data={"agent": agent, "verbose": new})
+
+
+def set_debug(agent: str, mode: str | None = None) -> CommandResult:
+    """Toggle/set the Discord debug (stderr) rendering flag for an agent."""
+    session = agents.agents.get(agent)
+    if session is None:
+        return CommandResult(message=f"Agent **{agent}** not found.", ok=False, ephemeral=True)
+    from axi.axi_types import discord_state
+
+    ds = discord_state(session)
+    new, err = _parse_toggle(mode, ds.debug, "Usage: `/debug` (toggle), `/debug on`, `/debug off`")
+    if err:
+        return CommandResult(message=err, ok=False, ephemeral=True)
+    ds.debug = new
+    state = "on" if new else "off"
+    return CommandResult(message=f"*System:* Debug output **{state}** for **{agent}**.", data={"agent": agent, "debug": new})
+
+
+def set_debug_all(mode: str | None = None) -> CommandResult:
+    """Toggle/set the debug flag for ALL agents (the global variant of /debug)."""
+    from axi.axi_types import discord_state
+
+    if mode is not None:
+        m = mode.strip().lower()
+        if m == "on":
+            new = True
+        elif m == "off":
+            new = False
+        else:
+            return CommandResult(
+                message="Usage: `/debug-all` (toggle), `/debug-all on`, `/debug-all off`", ok=False, ephemeral=True
+            )
+    else:
+        on_count = sum(1 for s in agents.agents.values() if discord_state(s).debug)
+        new = on_count <= len(agents.agents) // 2
+    for session in agents.agents.values():
+        discord_state(session).debug = new
+    state = "on" if new else "off"
+    return CommandResult(
+        message=f"*System:* Debug output **{state}** for all **{len(agents.agents)}** agents.",
+        data={"debug": new, "count": len(agents.agents)},
+    )
+
+
+async def set_plan(agent: str) -> CommandResult:
+    """Toggle plan mode for an agent (and its CLI permission mode if awake)."""
+    session = agents.agents.get(agent)
+    if session is None:
+        return CommandResult(message=f"Agent **{agent}** not found.", ok=False, ephemeral=True)
+    new_mode = not session.plan_mode
+    session.plan_mode = new_mode
+    if session.client is not None:
+        try:
+            await session.client.set_permission_mode("plan" if new_mode else "default")
+        except Exception as e:
+            session.plan_mode = not new_mode
+            return CommandResult(message=f"Failed to set plan mode for **{agent}**: {e}", ok=False, ephemeral=True)
+    if new_mode:
+        msg = f"📋 **Plan mode ON** for **{agent}** — next query will plan before implementing."
+    else:
+        msg = f"🔧 **Plan mode OFF** for **{agent}** — back to normal execution."
+    return CommandResult(message=msg, data={"agent": agent, "plan_mode": new_mode})

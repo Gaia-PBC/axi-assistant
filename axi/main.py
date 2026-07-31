@@ -789,64 +789,31 @@ async def claude_usage_command(interaction: discord.Interaction, history: int | 
 
 
 @bot.tree.command(name="model", description="Get or set the LLM model for this agent or future spawned agents.")
-@app_commands.describe(name="Model name (for example: opus, sonnet, haiku, gpt-5.4) — omit to view current")
+@app_commands.describe(name="Model name (for example: opus, sonnet, haiku, gpt-5.4) \u2014 omit to view current")
 async def model_command(interaction: discord.Interaction, name: str | None = None) -> None:
     log.info("Slash command /model name=%s from %s", name, interaction.user)
-
-    if name is None:
-        agent_name = agents.channel_to_agent.get(interaction.channel_id or 0)
-        if agent_name == config.MASTER_AGENT_NAME:
-            agent_name = None
-        if agent_name and agent_name in agents.agents:
-            session = agents.agents[agent_name]
-            current = session.model or config.get_model()
-            await audited_interaction_response_send(
-                interaction, f"Current model for **{agent_name}**: **{current}**"
-            )
-        else:
-            current = config.get_model()
-            await audited_interaction_response_send(interaction, f"Current default model: **{current}**")
-        return
-
-    error = config.validate_model(name)
-    if error:
-        await audited_interaction_response_send(interaction, f"*System:* {error}", ephemeral=True)
-        return
-
-    normalized = config.normalize_model(name)
+    # Resolve target from the channel (master channel -> None = global default).
     agent_name = agents.channel_to_agent.get(interaction.channel_id or 0)
     if agent_name == config.MASTER_AGENT_NAME:
         agent_name = None
-    if agent_name and agent_name in agents.agents:
-        session = agents.agents[agent_name]
-        session.model = normalized
-        agent_cfg = agents._load_agent_config(agent_name)
-        saved_ext = agent_cfg.get("extensions")
-        agents._save_agent_config(
-            agent_name,
-            session.mcp_server_names,
-            extensions=saved_ext,
-            model=normalized,
-        )
+    per_agent_set = name is not None and bool(agent_name) and agent_name in agents.agents
+    if per_agent_set:
+        verr = config.validate_model(name)
+        if verr:
+            await audited_interaction_response_send(interaction, f"*System:* {verr}", ephemeral=True)
+            return
         await interaction.response.defer()
-        await agents.reset_session(agent_name)
-        await audited_interaction_followup_send(
-            interaction,
-            f"*System:* Agent **{agent_name}** switched to **{normalized}** and restarted with a fresh session.",
-        )
+        result = await commands_api.set_model(agent_name, name)
+        await audited_interaction_followup_send(interaction, result.message)
         channel = await agents.get_agent_channel(agent_name)
         if channel is not None and channel.id != interaction.channel_id:
             await agents.send_system(
                 channel,
-                f"Agent **{agent_name}** switched to **{normalized}** and restarted with a fresh session.",
+                f"Agent **{agent_name}** switched to **{result.data['model']}** and restarted with a fresh session.",
             )
-        return
-
-    error = config.set_model(normalized)
-    if error:
-        await audited_interaction_response_send(interaction, f"*System:* {error}", ephemeral=True)
     else:
-        await audited_interaction_response_send(interaction, f"*System:* Default model set to **{config.get_model()}**.")
+        result = await commands_api.set_model(agent_name, name)
+        await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="list-agents", description="List all active agent sessions.")
@@ -1030,84 +997,31 @@ async def _show_all_agents_status(interaction: discord.Interaction) -> None:
 @app_commands.describe(mode="on / off / omit to toggle")
 async def verbose_command(interaction: discord.Interaction, mode: str | None = None) -> None:
     log.info("Slash command /verbose mode=%s from %s", mode, interaction.user)
-
     resolved = await _resolve_agent(interaction, None)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if mode is not None:
-        mode_lower = mode.strip().lower()
-        if mode_lower == "on":
-            discord_state(session).verbose = True
-        elif mode_lower == "off":
-            discord_state(session).verbose = False
-        else:
-            await audited_interaction_response_send(interaction,
-                "Usage: `/verbose` (toggle), `/verbose on`, `/verbose off`", ephemeral=True
-            )
-            return
-    else:
-        discord_state(session).verbose = not discord_state(session).verbose
-
-    state = "on" if discord_state(session).verbose else "off"
-    await audited_interaction_response_send(interaction,f"*System:* Verbose output **{state}** for **{agent_name}**.")
+    agent_name, _ = resolved
+    result = commands_api.set_verbose(agent_name, mode)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="debug", description="Toggle debug output (stderr) for an agent.")
 @app_commands.describe(mode="on / off / omit to toggle")
 async def debug_command(interaction: discord.Interaction, mode: str | None = None) -> None:
     log.info("Slash command /debug mode=%s from %s", mode, interaction.user)
-
     resolved = await _resolve_agent(interaction, None)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if mode is not None:
-        mode_lower = mode.strip().lower()
-        if mode_lower == "on":
-            discord_state(session).debug = True
-        elif mode_lower == "off":
-            discord_state(session).debug = False
-        else:
-            await audited_interaction_response_send(interaction,
-                "Usage: `/debug` (toggle), `/debug on`, `/debug off`", ephemeral=True
-            )
-            return
-    else:
-        discord_state(session).debug = not discord_state(session).debug
-
-    state = "on" if discord_state(session).debug else "off"
-    await audited_interaction_response_send(interaction,f"*System:* Debug output **{state}** for **{agent_name}**.")
+    agent_name, _ = resolved
+    result = commands_api.set_debug(agent_name, mode)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="debug-all", description="Toggle debug output (stderr) for ALL agents.")
 async def debug_all_command(interaction: discord.Interaction, mode: str | None = None) -> None:
     log.info("Slash command /debug-all mode=%s from %s", mode, interaction.user)
-
-    if mode is not None:
-        mode_lower = mode.strip().lower()
-        if mode_lower == "on":
-            new_state = True
-        elif mode_lower == "off":
-            new_state = False
-        else:
-            await audited_interaction_response_send(interaction,
-                "Usage: `/debug-all` (toggle), `/debug-all on`, `/debug-all off`", ephemeral=True
-            )
-            return
-    else:
-        on_count = sum(1 for s in agents.agents.values() if discord_state(s).debug)
-        new_state = on_count <= len(agents.agents) // 2
-
-    for session in agents.agents.values():
-        discord_state(session).debug = new_state
-
-    state = "on" if new_state else "off"
-    await audited_interaction_response_send(interaction,
-        f"*System:* Debug output **{state}** for all **{len(agents.agents)}** agents."
-    )
+    result = commands_api.set_debug_all(mode)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="kill-agent", description="Terminate an agent session.")
@@ -1293,41 +1207,17 @@ async def skip_agent(interaction: discord.Interaction, agent_name: str | None = 
 
 @bot.tree.command(
     name="plan",
-    description="Toggle plan mode — agent will plan before implementing. Infers agent from current channel.",
+    description="Toggle plan mode \u2014 agent will plan before implementing. Infers agent from current channel.",
 )
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def toggle_plan_mode(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /plan agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    new_mode = not session.plan_mode
-    session.plan_mode = new_mode
-
-    if session.client is not None:
-        try:
-            mode_str = "plan" if new_mode else "default"
-            await session.client.set_permission_mode(mode_str)
-            log.info("Agent '%s' permission mode set to '%s'", agent_name, mode_str)
-        except Exception as e:
-            log.exception("Failed to set permission mode for '%s'", agent_name)
-            session.plan_mode = not new_mode
-            await audited_interaction_response_send(interaction,
-                f"Failed to set plan mode for **{agent_name}**: {e}", ephemeral=True
-            )
-            return
-
-    if new_mode:
-        await audited_interaction_response_send(interaction,
-            f"📋 **Plan mode ON** for **{agent_name}** — next query will plan before implementing."
-        )
-    else:
-        await audited_interaction_response_send(interaction,
-            f"🔧 **Plan mode OFF** for **{agent_name}** — back to normal execution."
-        )
+    agent_name, _ = resolved
+    result = await commands_api.set_plan(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(
@@ -1336,15 +1226,13 @@ async def toggle_plan_mode(interaction: discord.Interaction, agent_name: str | N
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def reset_context(interaction: discord.Interaction, agent_name: str | None = None, working_dir: str | None = None) -> None:
     log.info("Slash command /reset-context agent=%s cwd=%s from %s", agent_name, working_dir, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, _ = resolved
-
     await interaction.response.defer()
-    session = await agents.reset_session(agent_name, cwd=working_dir)
-    await audited_interaction_followup_send(interaction,f"*System:* Context reset for **{agent_name}**. Working directory: `{session.cwd}`")
+    result = await commands_api.reset_context(agent_name, cwd=working_dir)
+    await audited_interaction_followup_send(interaction, result.message)
 
 
 # ---------------------------------------------------------------------------
