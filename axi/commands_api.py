@@ -753,3 +753,112 @@ async def compact(agent: str) -> CommandResult:
 async def clear(agent: str) -> CommandResult:
     """Clear an agent's conversation context (raw /clear)."""
     return await _run_raw_cli_command(agent, "/clear", "Clearing")
+
+
+# ---------------------------------------------------------------------------
+# Runners + process (Phase 8d)
+# ---------------------------------------------------------------------------
+
+
+async def run_flowchart(agent: str, name: str, args: str | None = None) -> CommandResult:
+    """Run a flowchart command inline on a flowcoder agent (drives it through the hub so the
+    flowchart engine wraps + runs the command)."""
+    session = agents.agents.get(agent)
+    if session is None:
+        return CommandResult(message=f"Agent **{agent}** not found.", ok=False, ephemeral=True)
+    if session.agent_type != "flowcoder":
+        return CommandResult(message="Flowcharts are only available for **flowcoder** agents.", ok=False, ephemeral=True)
+    if session.query_lock.locked():
+        return CommandResult(message=f"Agent **{agent}** is busy. Wait for it to finish.", ok=False, ephemeral=True)
+    fc_name = name.lstrip("/")
+    fc_args = args or ""
+    slash_content = f"/{fc_name}" + (f" {fc_args}" if fc_args else "")
+    if agents.hub is not None:
+        await agents.hub.submit_user_message(agent, slash_content)
+    return CommandResult(
+        message=f"*System:* Flowchart `{fc_name}` started on **{agent}**.",
+        data={"agent": agent, "flowchart": fc_name, "args": fc_args},
+    )
+
+
+async def _run_interview(agent: str, md_path: str, query: str, label: str) -> CommandResult:
+    """Inject an interview instruction prompt into an agent as a raw turn (direct prompt,
+    no flowchart wrap), streamed via the hub."""
+    session = agents.agents.get(agent)
+    if session is None:
+        return CommandResult(message=f"Agent **{agent}** not found.", ok=False, ephemeral=True)
+    if session.query_lock.locked():
+        return CommandResult(message=f"Agent **{agent}** is busy. Wait for it to finish.", ok=False, ephemeral=True)
+    if agents.hub is not None:
+        await agents.hub.submit_user_message(agent, query, metadata={"raw": True})
+    return CommandResult(message=f"*System:* {label} started for **{agent}**.", data={"agent": agent})
+
+
+async def build_user_profile(agent: str) -> CommandResult:
+    """Start the conversational user-profile interview on an agent."""
+    md_path = os.path.join(config.BOT_DIR, ".claude", "commands", "build_user_profile.md")
+    try:
+        with open(md_path) as f:
+            instructions = f.read()
+    except OSError as e:
+        return CommandResult(message=f"*System:* Could not read build_user_profile.md: {e}", ok=False, ephemeral=True)
+    instructions = instructions.replace("%(axi_user_data)s", config.AXI_USER_DATA)
+    query = (
+        "The user has triggered the profile interview. "
+        "Please conduct the interview now, following the instructions below exactly.\n\n"
+        "--- PROFILE INTERVIEW INSTRUCTIONS ---\n\n" + instructions
+    )
+    return await _run_interview(agent, md_path, query, "Profile interview")
+
+
+async def build_music_preferences(agent: str) -> CommandResult:
+    """Start the music-preferences interview on an agent."""
+    md_path = os.path.join(config.BOT_DIR, ".claude", "commands", "build_music_preferences.md")
+    prefs_path = os.path.join(config.AXI_USER_DATA, "profile", "refs", "music-preferences.md")
+    try:
+        with open(md_path) as f:
+            instructions = f.read()
+    except OSError as e:
+        return CommandResult(message=f"*System:* Could not read build_music_preferences.md: {e}", ok=False, ephemeral=True)
+    instructions = instructions.replace("%(axi_user_data)s", config.AXI_USER_DATA)
+    query = (
+        "The user has triggered the music preferences interview. "
+        "Please conduct the interview now, following the instructions below exactly. "
+        f"Write results to `{prefs_path}` as you go.\n\n"
+        "--- MUSIC PREFERENCES INTERVIEW INSTRUCTIONS ---\n\n" + instructions
+    )
+    return await _run_interview(agent, md_path, query, "Music preferences interview")
+
+
+# Process control. restart-including-bridge needs Discord/process-specific wiring (bot.close +
+# a goodbye post), so main.py registers a handler that commands_api triggers.
+_full_restart_handler: Any = None
+
+
+def set_full_restart_handler(fn: Any) -> None:
+    global _full_restart_handler
+    _full_restart_handler = fn
+
+
+async def restart(force: bool = False) -> CommandResult:
+    """Hot-reload the bot process (bridge stays alive) via the shutdown coordinator. The
+    shutdown is fired in the background so the response is delivered before the process exits."""
+    if agents.shutdown_coordinator is None:
+        return CommandResult(message="Bot is not fully initialized yet.", ok=False, ephemeral=True)
+    if force:
+        agents.fire_and_forget(agents.shutdown_coordinator.force_shutdown("/restart force"))
+        return CommandResult(message="*System:* Force restarting (hot reload)...", data={"force": True, "mode": "hot-reload"})
+    agents.fire_and_forget(agents.shutdown_coordinator.graceful_shutdown("/restart command"))
+    return CommandResult(
+        message="*System:* Initiating graceful restart (hot reload)...", data={"force": False, "mode": "hot-reload"}
+    )
+
+
+async def restart_including_bridge(force: bool = False) -> CommandResult:
+    """Full restart — kills the bridge + all agents (via the main.py-registered handler)."""
+    if _full_restart_handler is None:
+        return CommandResult(message="Full restart is not available yet.", ok=False, ephemeral=True)
+    result = await _full_restart_handler(force)
+    if isinstance(result, CommandResult):
+        return result
+    return CommandResult(message=str(result), data={"force": force, "mode": "full"})

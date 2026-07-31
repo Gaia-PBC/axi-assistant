@@ -1583,49 +1583,12 @@ async def _run_profile_interview(session: AgentSession, channel: TextChannel) ->
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def build_user_profile_cmd(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /build-user-profile agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if session.query_lock.locked():
-        await audited_interaction_response_send(interaction,
-            f"Agent **{agent_name}** is busy. Wait for it to finish.", ephemeral=True
-        )
-        return
-
-    await interaction.response.defer()
-
-    async with session.query_lock:
-        if session.client is None:
-            try:
-                await agents.hub.wake(session.name)
-            except Exception:
-                log.exception("Failed to wake agent '%s'", agent_name)
-                await audited_interaction_followup_send(interaction,f"Failed to wake agent **{agent_name}**.")
-                return
-
-        session.last_activity = datetime.now(UTC)
-        agents.drain_stderr(session)
-        agents.drain_sdk_buffer(session)
-        session.activity = ActivityState(phase="starting", query_started=datetime.now(UTC))
-
-        try:
-            async with asyncio.timeout(config.QUERY_TIMEOUT):
-                ds = discord_state(session)
-                assert ds.channel_id is not None
-                ch = bot.get_channel(ds.channel_id)
-                assert isinstance(ch, TextChannel)
-                await _run_profile_interview(session, ch)
-            await audited_interaction_followup_send(interaction,f"*System:* Profile interview complete for **{agent_name}**.")
-        except TimeoutError:
-            await audited_interaction_followup_send(interaction,f"*System:* Profile interview timed out for **{agent_name}**.")
-        except Exception as e:
-            log.exception("Failed to run profile interview for agent '%s'", agent_name)
-            await audited_interaction_followup_send(interaction,f"Failed to start profile interview for **{agent_name}**: {e}")
-        finally:
-            session.activity = ActivityState(phase="idle")
+    agent_name, _ = resolved
+    result = await commands_api.build_user_profile(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 # ---------------------------------------------------------------------------
@@ -1675,54 +1638,17 @@ async def _run_music_prefs_interview(session: AgentSession, channel: TextChannel
 
 @bot.tree.command(
     name="build-music-preferences",
-    description="Interactive music preferences interview — builds your listening profile for auto-dj.",
+    description="Interactive music preferences interview \u2014 builds your listening profile for auto-dj.",
 )
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def build_music_preferences_cmd(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /build-music-preferences agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if session.query_lock.locked():
-        await audited_interaction_response_send(interaction,
-            f"Agent **{agent_name}** is busy. Wait for it to finish.", ephemeral=True
-        )
-        return
-
-    await interaction.response.defer()
-
-    async with session.query_lock:
-        if session.client is None:
-            try:
-                await agents.hub.wake(session.name)
-            except Exception:
-                log.exception("Failed to wake agent '%s'", agent_name)
-                await audited_interaction_followup_send(interaction,f"Failed to wake agent **{agent_name}**.")
-                return
-
-        session.last_activity = datetime.now(UTC)
-        agents.drain_stderr(session)
-        agents.drain_sdk_buffer(session)
-        session.activity = ActivityState(phase="starting", query_started=datetime.now(UTC))
-
-        try:
-            async with asyncio.timeout(config.QUERY_TIMEOUT):
-                ds = discord_state(session)
-                assert ds.channel_id is not None
-                ch = bot.get_channel(ds.channel_id)
-                assert isinstance(ch, TextChannel)
-                await _run_music_prefs_interview(session, ch)
-            await audited_interaction_followup_send(interaction,f"*System:* Music preferences interview complete for **{agent_name}**.")
-        except TimeoutError:
-            await audited_interaction_followup_send(interaction,f"*System:* Music preferences interview timed out for **{agent_name}**.")
-        except Exception as e:
-            log.exception("Failed to run music preferences interview for agent '%s'", agent_name)
-            await audited_interaction_followup_send(interaction,f"Failed to run music preferences interview for **{agent_name}**: {e}")
-        finally:
-            session.activity = ActivityState(phase="idle")
+    agent_name, _ = resolved
+    result = await commands_api.build_music_preferences(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 # ---------------------------------------------------------------------------
@@ -1775,41 +1701,12 @@ async def flowchart_name_autocomplete(interaction: discord.Interaction, current:
 @app_commands.autocomplete(name=flowchart_name_autocomplete)
 async def flowchart_cmd(interaction: discord.Interaction, name: str, args: str | None = None) -> None:
     log.info("Slash command /flowchart name=%s args=%s from %s", name, args, interaction.user)
-
     resolved = await _resolve_agent(interaction, None)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if session.agent_type != "flowcoder":
-        await audited_interaction_response_send(interaction,
-            "Flowcharts are only available for **flowcoder** agents.", ephemeral=True
-        )
-        return
-
-    if session.query_lock.locked():
-        await audited_interaction_response_send(interaction,
-            f"Agent **{agent_name}** is busy. Wait for it to finish.", ephemeral=True
-        )
-        return
-
-    await interaction.response.defer()
-
-    ds = discord_state(session)
-    assert ds.channel_id is not None
-    ch = bot.get_channel(ds.channel_id)
-    assert isinstance(ch, TextChannel)
-
-    fc_name = name.lstrip("/")
-    fc_args = args or ""
-    slash_content = f"/{fc_name}" + (f" {fc_args}" if fc_args else "")
-
-    # 7.5a: drive the flowchart through the hub (wake + flowchart-wrap + stream).
-    await agents.hub.submit_user_message(
-        session.name, slash_content, metadata={"channel_id": ch.id}
-    )
-
-    await audited_interaction_followup_send(interaction,f"*System:* Flowchart `{fc_name}` started on **{agent_name}**.")
+    agent_name, _ = resolved
+    result = await commands_api.run_flowchart(agent_name, name, args)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="flowchart-list", description="List available flowchart commands.")
@@ -1827,70 +1724,56 @@ async def flowchart_list_cmd(interaction: discord.Interaction) -> None:
 @bot.tree.command(name="restart", description="Hot-reload bot.py (bridge stays alive, agents keep running).")
 @app_commands.describe(force="Skip waiting for busy agents and restart immediately")
 async def restart_cmd(interaction: discord.Interaction, force: bool = False) -> None:
-
+    log.info("Slash command /restart force=%s from %s", force, interaction.user)
     _tracer.start_span("slash.restart", attributes={"restart.force": force}).end()
+    result = await commands_api.restart(force=force)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
+
+async def _trigger_full_restart(force: bool) -> "commands_api.CommandResult":
+    """Full-restart trigger registered with commands_api (needs bot.close + a goodbye post)."""
     if agents.shutdown_coordinator is None:
-        await audited_interaction_response_send(interaction,"Bot is not fully initialized yet.", ephemeral=True)
-        return
-
-    if force:
-        await audited_interaction_response_send(interaction,"*System:* Force restarting (hot reload)...")
-        log.info("Force restart requested via /restart command")
-        await agents.shutdown_coordinator.force_shutdown("/restart force")
-        return
-
-    await audited_interaction_response_send(interaction,"*System:* Initiating graceful restart (hot reload)...")
-    log.info("Restart requested via /restart command")
-    await agents.shutdown_coordinator.graceful_shutdown("/restart command")
-
-
-@bot.tree.command(
-    name="restart-including-bridge",
-    description="Full restart — kills bridge + all agents. Sessions will disconnect.",
-)
-@app_commands.describe(force="Skip waiting for busy agents and restart immediately")
-async def restart_including_bridge_cmd(interaction: discord.Interaction, force: bool = False) -> None:
-
-    if agents.shutdown_coordinator is None:
-        await audited_interaction_response_send(interaction,"Bot is not fully initialized yet.", ephemeral=True)
-        return
+        return commands_api.CommandResult(message="Bot is not fully initialized yet.", ok=False, ephemeral=True)
     if agents.shutdown_coordinator.requested:
-        await audited_interaction_response_send(interaction,
-            "*System:* A restart is already in progress.",
-            ephemeral=True,
-        )
-        return
+        return commands_api.CommandResult(message="*System:* A restart is already in progress.", ok=False, ephemeral=True)
 
     async def _send_goodbye() -> None:
         master_ch = await agents.get_master_channel()
         if master_ch:
             await audited_channel_send(
                 master_ch,
-                "*System:* Full restart — bridge is going down. See you soon!",
+                "*System:* Full restart \u2014 bridge is going down. See you soon!",
                 operation="restart.goodbye",
             )
 
     full_coordinator = agents.make_shutdown_coordinator(
-        close_bot_fn=bot.close,
-        kill_fn=kill_supervisor,
-        goodbye_fn=_send_goodbye,
-        bridge_mode=False,
+        close_bot_fn=bot.close, kill_fn=kill_supervisor, goodbye_fn=_send_goodbye, bridge_mode=False
     )
-
     if force:
-        await audited_interaction_response_send(interaction,
-            "*System:* Force restarting (full — bridge will be killed, agents will disconnect)..."
+        agents.fire_and_forget(full_coordinator.force_shutdown("/restart-including-bridge force"))
+        return commands_api.CommandResult(
+            message="*System:* Force restarting (full \u2014 bridge will be killed, agents will disconnect)...",
+            data={"force": True, "mode": "full"},
         )
-        log.info("Force full restart requested via /restart-including-bridge command")
-        await full_coordinator.force_shutdown("/restart-including-bridge force")
-        return
-
-    await audited_interaction_response_send(interaction,
-        "*System:* Initiating graceful full restart (bridge will be killed, agents will disconnect)..."
+    agents.fire_and_forget(full_coordinator.graceful_shutdown("/restart-including-bridge command"))
+    return commands_api.CommandResult(
+        message="*System:* Initiating graceful full restart (bridge will be killed, agents will disconnect)...",
+        data={"force": False, "mode": "full"},
     )
-    log.info("Full restart requested via /restart-including-bridge command")
-    await full_coordinator.graceful_shutdown("/restart-including-bridge command")
+
+
+commands_api.set_full_restart_handler(_trigger_full_restart)
+
+
+@bot.tree.command(
+    name="restart-including-bridge",
+    description="Full restart \u2014 kills bridge + all agents. Sessions will disconnect.",
+)
+@app_commands.describe(force="Skip waiting for busy agents and restart immediately")
+async def restart_including_bridge_cmd(interaction: discord.Interaction, force: bool = False) -> None:
+    log.info("Slash command /restart-including-bridge force=%s from %s", force, interaction.user)
+    result = await commands_api.restart_including_bridge(force=force)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 # ---------------------------------------------------------------------------
