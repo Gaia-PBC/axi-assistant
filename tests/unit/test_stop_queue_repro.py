@@ -100,8 +100,6 @@ def session(monkeypatch: pytest.MonkeyPatch) -> AgentSession:
     monkeypatch.setattr(main.scheduler, "should_yield", lambda _name: False)
     monkeypatch.setattr(main, "_interrupt_agent", AsyncMock())
     monkeypatch.setattr(agents, "graceful_interrupt", AsyncMock(return_value=True))
-    monkeypatch.setattr(agents, "process_message", AsyncMock())
-    monkeypatch.setattr(agents, "wake_agent", AsyncMock())
     monkeypatch.setattr(agents, "sleep_agent", AsyncMock())
     monkeypatch.setattr(agents, "send_system", AsyncMock())
     monkeypatch.setattr(agents, "remove_reaction", AsyncMock())
@@ -282,27 +280,6 @@ async def test_non_master_busy_queue_remains_fifo(session: AgentSession) -> None
 
 
 @pytest.mark.asyncio
-async def test_stop_drops_followup_instead_of_running_it(session: AgentSession) -> None:
-    author = FakeAuthor(_allowed_user_id())
-    channel = FakeTextChannel(12345, "axi-master")
-
-    _set_busy(session)
-
-    first = FakeMessage(10, channel, "first queued", author)
-    await main.on_message(first)
-    assert len(session.state.queued_turns) == 1
-
-    stop_message = FakeMessage(11, channel, "/stop", author)
-    await main._handle_text_command(stop_message, session, session.name)
-    assert len(session.state.queued_turns) == 0
-
-    session.state.current_turn = None
-    await agents.process_message_queue(session)
-
-    agents.process_message.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_busy_queue_each_message_attempts_graceful_interrupt(session: AgentSession) -> None:
     author = FakeAuthor(_allowed_user_id())
     channel = FakeTextChannel(12345, "axi-master")
@@ -329,21 +306,6 @@ async def test_busy_queue_each_message_attempts_graceful_interrupt(session: Agen
 
 
 @pytest.mark.asyncio
-async def test_stop_prevents_queue_drain_if_processing_starts(session: AgentSession) -> None:
-    author = FakeAuthor(_allowed_user_id())
-    channel = FakeTextChannel(12345, "axi-master")
-
-    _set_busy(session)
-    await main.on_message(FakeMessage(50, channel, "queued followup", author))
-    session.state.current_turn = None
-
-    session.state.stop_requested = True
-    await agents.process_message_queue(session)
-
-    agents.process_message.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_plain_slash_stop_is_normalized_and_clears_queue(session: AgentSession) -> None:
     author = FakeAuthor(_allowed_user_id())
     channel = FakeTextChannel(12345, "axi-master")
@@ -358,7 +320,6 @@ async def test_plain_slash_stop_is_normalized_and_clears_queue(session: AgentSes
     await main.on_message(plain_stop)
 
     assert len(session.state.queued_turns) == 0
-    agents.process_message.assert_not_awaited()
     agents.send_system.assert_any_await(channel, "Interrupt signal sent to **axi-master**. Cleared 1 queued message.")
 
 
@@ -382,4 +343,3 @@ async def test_flowchart_command_drives_via_hub(session: AgentSession, monkeypat
     submit.assert_awaited_once()
     assert submit.call_args.args[0] == session.name
     assert submit.call_args.args[1] == "/soul do-thing"  # slash_content, hub-driven
-    agents.process_message.assert_not_awaited()  # legacy path not used
