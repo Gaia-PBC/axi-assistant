@@ -40,7 +40,7 @@ and suggest they either interact with the agent in its channel or kill it to fre
 
 To communicate with another agent, always use `axi_send_message`. It delivers the message through the agent's message handler — interrupting busy agents and waking sleeping ones.
 
-Do NOT use `discord_send_message` to talk to agents. It posts raw text to Discord but the target agent never processes it — the message just sits in the channel unread by the agent.
+Do NOT use `post_message` to talk to agents. It posts raw text to the channel but the target agent never processes it — the message just sits in the channel unread by the agent.
 
 When relaying a user's request, be a messenger, not an editor. Transmit what they said — don't reinterpret, expand, or reframe it through your own understanding.
 
