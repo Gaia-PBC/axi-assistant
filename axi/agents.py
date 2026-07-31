@@ -58,7 +58,7 @@ from axi.channels import (
 )
 
 # Re-exports from discord_stream — legacy functions still used by main.py slash commands.
-# Phase 3 cutover moved process_message to _stream_via_router / _retry_stream_via_router.
+# Phase 3 cutover moved process_message to _drain_inflight_stream / _retry_stream_via_router.
 # These re-exports will be removed when main.py migrates to the router path (Phase 8).
 from axi.discord_stream import (  # noqa: F401
     _compact_start_times,
@@ -1404,11 +1404,16 @@ async def _stall_watchdog(
             )
 
 
-async def _stream_via_router(session: AgentSession) -> str | None:
-    """Consume stream via frontend-agnostic consumer, broadcast through FrontendRouter.
+async def _drain_inflight_stream(session: AgentSession) -> str | None:
+    """Consume an in-flight response stream and broadcast it through the FrontendRouter.
 
     Returns None on success, or an error string for retry.
-    Replaces discord_stream.stream_response_to_channel.
+
+    7.5c: this is the dedicated transport-level stream consumer used by procmux reconnect
+    (_reconnect_and_drain) to drain the CLI's ongoing mid-task output after the bridge comes
+    back — a consume with NO new query, which does not map to a hub query+consume turn.
+    It is intentionally KEPT past the 7.5f legacy deletion (the doomed _retry_stream_via_router
+    / process_message path also calls it transitionally until 7.5f removes them).
     """
     from agenthub.stream_types import StreamKilled, TransientError
     from agenthub.streaming import stream_response
@@ -1465,7 +1470,7 @@ async def _retry_stream_via_router(session: AgentSession) -> bool:
     """
     with _tracer.start_as_current_span("stream_with_retry", attributes={"agent.name": session.name}) as span:
         log.info("RETRY_ENTER[%s] starting initial stream", session.name)
-        error = await _stream_via_router(session)
+        error = await _drain_inflight_stream(session)
         if error is None:
             log.info("RETRY_EXIT[%s] first attempt succeeded", session.name)
             span.set_attribute("retry.attempts", 1)
@@ -1506,7 +1511,7 @@ async def _retry_stream_via_router(session: AgentSession) -> bool:
                 log.exception("Agent '%s' retry query failed", session.name)
                 continue
 
-            error = await _stream_via_router(session)
+            error = await _drain_inflight_stream(session)
             if error is None:
                 span.set_attribute("retry.attempts", attempt)
                 return True
@@ -2261,6 +2266,30 @@ async def connect_procmux() -> None:
             fire_and_forget(_reconnect_and_drain(session, info))
 
 
+async def _drain_reconnect_queue(session: AgentSession) -> None:
+    """Submit messages buffered during the reconnect window through the hub.
+
+    7.5c: replaces process_message_queue for the reconnect path. During reconnect,
+    on_message diverts incoming messages to session.message_queue (the transport-level
+    buffer) because the hub would otherwise drive a conflicting turn mid-reconnect. Once
+    reconnect completes, we flush that buffer into the hub via submit_user_message — the
+    first drives, the rest land in queued_turns — so the hub owns turn-driving end to end.
+    """
+    if not session.message_queue or hub is None:
+        return
+    router = _get_router()
+    count = len(session.message_queue)
+    log.info("RECONNECT_QUEUE[%s] draining %d buffered message(s) via hub", session.name, count)
+    while session.message_queue:
+        content, channel, orig_message, *rest = session.message_queue.popleft()
+        observe_agent_message_event("queue_dequeued")
+        if orig_message is not None:
+            await router.remove_reaction(session.name, orig_message, "\U0001f4e8")
+        routing_id = getattr(channel, "id", None) or discord_state(session).channel_id
+        metadata = {"channel_id": routing_id} if routing_id is not None else None
+        await hub.submit_user_message(session.name, content, metadata=metadata)
+
+
 async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any]) -> None:
     """Reconnect a single agent to the bridge and drain any buffered output.
 
@@ -2357,10 +2386,12 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
                 # queue alongside any replayed messages.
                 session.bridge_busy = True
                 log.info("RECONNECT_DRAIN[%s] draining output (replayed=%d)", session.name, replayed)
-                await _get_router().post_system(session.name, "*(reconnected after restart \u2014 resuming output)*")
+                # 7.5c: preserve reconnect UX via the frontend-agnostic on_reconnect hook
+                # (was_mid_task=True) instead of a direct post_system.
+                await _get_router().on_reconnect(session.name, True)
                 try:
                     async with asyncio.timeout(config.QUERY_TIMEOUT):
-                        await _stream_via_router(session)
+                        await _drain_inflight_stream(session)
                 except TimeoutError:
                     log.warning("Drain timeout for '%s' \u2014 continuing", session.name)
                 except Exception:
@@ -2373,7 +2404,8 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
                     replayed,
                 )
             elif cli_status == "running":
-                await _get_router().post_system(session.name, "*(reconnected after restart)*")
+                # 7.5c: idle reconnect UX via the on_reconnect hook (was_mid_task=False).
+                await _get_router().on_reconnect(session.name, False)
                 log.info("Agent '%s' reconnected idle (between turns)", session.name)
 
             log.info("Reconnect complete for '%s'", session.name)
@@ -2400,7 +2432,10 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
         otel_context.detach(ctx_token)
         span.end()
 
-    await process_message_queue(session)
+    # 7.5c: drain messages buffered during the reconnect window through the hub instead of
+    # the legacy process_message_queue/process_message. Reconnect is complete here (query_lock
+    # released, reconnecting=False), so submit_user_message drives/queues them via queued_turns.
+    await _drain_reconnect_queue(session)
 
 
 # ---------------------------------------------------------------------------
