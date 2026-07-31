@@ -1874,27 +1874,20 @@ async def spawn_agent(
             await router.post_system(name, f"**{agent_label.title()}** agent **{name}** is ready (sleeping).")
             return session
 
-        channel = await get_agent_channel(name)
-        fire_and_forget(run_initial_prompt(session, initial_prompt, channel))
+        # B2 (7.3): the hub drives the initial prompt — no Discord channel object.
+        fire_and_forget(run_initial_prompt(session, initial_prompt))
         return session
 
 
 async def send_prompt_to_agent(agent_name: str, prompt: str) -> None:
-    """Send a prompt to an existing agent session in the background."""
+    """Send a prompt to an existing agent session via the hub (channel-independent)."""
     session = agents.get(agent_name)
     if session is None:
         log.warning("send_prompt_to_agent: agent '%s' not found", agent_name)
         return
 
-    channel = await get_agent_channel(agent_name)
-    if channel is None:
-        log.warning("send_prompt_to_agent: no channel for agent '%s'", agent_name)
-        return
-
     ts_prefix = datetime.now(UTC).strftime("[%Y-%m-%d %H:%M:%S UTC] ")
-    prompt = ts_prefix + prompt
-
-    fire_and_forget(run_initial_prompt(session, prompt, channel))
+    fire_and_forget(run_initial_prompt(session, ts_prefix + prompt))
 
 
 # ---------------------------------------------------------------------------
@@ -1923,80 +1916,30 @@ def _initial_agent_message(session: AgentSession, prompt: MessageContent) -> Mes
     return prompt
 
 
-async def run_initial_prompt(session: AgentSession, prompt: MessageContent, channel: TextChannel) -> None:
-    """Run the initial prompt for a spawned agent."""
-    set_agent_context(session.name, channel_id=channel.id)
+async def run_initial_prompt(session: AgentSession, prompt: MessageContent) -> None:
+    """Run an agent's initial/startup prompt through the hub (channel-independent).
+
+    B2 (7.3): no Discord channel object is required — the routing id (channel_id)
+    lives in frontend_state (set at spawn via the frontend's spawn_context). The
+    hub wakes the agent, drives the turn through the flowchart hook, and streams
+    to the frontend; AxiTurnHooks.after_turn posts the \"finished initial task\"
+    notice for the metadata-tagged turn. Concurrency + wake are owned by the hub.
+    """
+    set_agent_context(session.name, channel_id=discord_state(session).channel_id)
     set_trigger("initial_prompt")
-    prompt = _initial_agent_message(session, prompt)
-    with _tracer.start_as_current_span(
-        "run_initial_prompt",
-        attributes={
-            "agent.name": session.name,
-            "prompt.length": len(prompt) if isinstance(prompt, str) else -1,
-        },
-    ):
-        try:
-            async with session.query_lock:
-                if not is_awake(session):
-                    try:
-                        await wake_agent(session)
-                    except ConcurrencyLimitError:
-                        log.info("Concurrency limit hit for '%s' initial prompt \u2014 queuing", session.name)
-                        session.message_queue.append((prompt, channel, None))
-                        awake = count_awake_agents()
-                        await _get_router().post_system(
-                            session.name,
-                            f"\u23f3 All {awake} agent slots are busy. Initial prompt queued \u2014 will run when a slot opens.",
-                        )
-                        return
-                    except Exception:
-                        log.exception("Failed to wake agent '%s' for initial prompt", session.name)
-                        # Drain stderr so we can see why the CLI crashed
-                        stderr_lines = drain_stderr(session)
-                        if stderr_lines:
-                            stderr_text = "\n".join(stderr_lines[-20:])  # last 20 lines
-                            log.error("Stderr from failed agent '%s':\n%s", session.name, stderr_text)
-                        await _get_router().post_system(session.name, f"Failed to wake agent **{session.name}**.")
-                        return
-
-                session.last_activity = datetime.now(UTC)
-                drain_stderr(session)
-                drain_sdk_buffer(session)
-
-                prompt_text = prompt if isinstance(prompt, str) else str(prompt)
-                await _get_router().post_system(session.name, f"\U0001f4dd **Initial prompt:**\n{prompt_text}")
-
-                if session.agent_log:
-                    session.agent_log.info("PROMPT: %s", content_summary(prompt))
-                log.info("INITIAL_PROMPT[%s] running initial prompt: %s", session.name, content_summary(prompt))
-                session.activity = ActivityState(phase="starting", query_started=datetime.now(UTC))
-                try:
-                    await process_message(session, prompt, channel)
-                    session.last_activity = datetime.now(UTC)
-                except RuntimeError as e:
-                    log.warning("Handler error for '%s' initial prompt: %s", session.name, e)
-                    await _get_router().post_system(session.name, f"Error: {e}")
-                finally:
-                    session.activity = ActivityState(phase="idle")
-
-            log.debug("Initial prompt completed for '%s'", session.name)
-            await _get_router().post_system(session.name, f"Agent **{session.name}** finished initial task. {_user_mentions()}")
-
-        except Exception:
-            log.exception("Error running initial prompt for agent '%s'", session.name)
-            await _get_router().post_system(
-                session.name, f"Agent **{session.name}** encountered an error during initial task. {_user_mentions()}"
-            )
-
-        if scheduler.should_yield(session.name):
-            log.info("Scheduler yield: '%s' sleeping after initial prompt (skipping queue)", session.name)
-        else:
-            await process_message_queue(session)
-
-        try:
-            await sleep_agent(session)
-        except Exception:
-            log.exception("Error sleeping agent '%s' after initial prompt", session.name)
+    content = _initial_agent_message(session, prompt)
+    prompt_text = content if isinstance(content, str) else str(content)
+    await _get_router().post_system(session.name, f"\U0001f4dd **Initial prompt:**\n{prompt_text}")
+    if hub is None:
+        log.error("run_initial_prompt: hub unavailable for '%s'", session.name)
+        await _get_router().post_system(
+            session.name, f"Failed to run initial prompt for **{session.name}** (hub unavailable)."
+        )
+        return
+    if session.agent_log:
+        session.agent_log.info("PROMPT: %s", content_summary(content))
+    log.info("INITIAL_PROMPT[%s] submitting initial prompt: %s", session.name, content_summary(content))
+    await hub.submit_user_message(session.name, content, metadata={"initial_prompt": True})
 
 
 async def process_message_queue(session: AgentSession) -> None:
