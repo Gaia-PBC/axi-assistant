@@ -319,12 +319,28 @@ class AgentHub:
             return
         await self.scheduler.request_slot(session.name)
         session.state.lifecycle = LifecycleState.WAKING
+        resume_id = session.session_id
         try:
-            options = self.make_agent_options(session, session.session_id)
+            options = self.make_agent_options(session, resume_id)
             session.client = await self.create_client(session, options)
+            session.last_failed_resume_id = None
         except Exception:
-            self.scheduler.release_slot(session.name)
-            raise
+            if not resume_id:
+                self.scheduler.release_slot(session.name)
+                raise
+            # 7.4b: resume failed — retry once with a fresh session (previous context
+            # lost). Mirrors the legacy agents.wake_agent fallback so hub-driven wakes
+            # recover from a bad resume instead of failing the wake.
+            log.warning("Failed to resume '%s' (session_id=%s); retrying fresh", session.name, resume_id)
+            try:
+                options = self.make_agent_options(session, None)
+                session.client = await self.create_client(session, options)
+            except Exception:
+                self.scheduler.release_slot(session.name)
+                raise
+            session.session_id = None
+            session.last_failed_resume_id = resume_id
+            log.warning("Agent '%s' woke with a fresh session (previous context lost)", session.name)
         async with session.dispatch_lock:
             session.state = reduce_session(session.state, WakeCompleted(agent_name=session.name))
         await self._frontend_broadcast("on_wake", session.name)
