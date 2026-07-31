@@ -164,8 +164,8 @@ class AgentHub:
     async def wake(self, name: str) -> None:
         await self._ensure_awake(self.sessions[name])
 
-    async def sleep(self, name: str) -> None:
-        await self._sleep_session(self.sessions[name])
+    async def sleep(self, name: str, *, force: bool = True) -> None:
+        await self._sleep_session(self.sessions[name], force=force)
 
     async def _submit_turn(
         self,
@@ -350,7 +350,12 @@ class AgentHub:
             session.state = reduce_session(session.state, WakeCompleted(agent_name=session.name))
         await self._frontend_broadcast("on_wake", session.name)
 
-    async def _sleep_session(self, session: AgentSession) -> None:
+    async def _sleep_session(self, session: AgentSession, *, force: bool = True) -> None:
+        # 7.4c-2: a non-force sleep skips an agent whose query_lock is held (mid-turn),
+        # mirroring agents.sleep_agent. Auto-sleep + scheduler eviction pass force=False
+        # so they never sleep a busy agent; internal hub calls default to force=True.
+        if not force and session.query_lock.locked():
+            return
         if session.client is None:
             session.state.lifecycle = LifecycleState.SLEEPING
             return

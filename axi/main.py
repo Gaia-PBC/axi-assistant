@@ -655,7 +655,7 @@ async def _auto_sleep_idle_agents(now_utc: datetime) -> None:
         if idle_duration > idle_threshold:
             log.info("Auto-sleeping idle agent '%s' (idle %.0fs, pressure=%s)", agent_name, idle_duration.total_seconds(), under_pressure)
             try:
-                await agents.sleep_agent(session)
+                await agents.hub.sleep(session.name, force=False)
             except Exception:
                 log.exception("Error auto-sleeping agent '%s'", agent_name)
 
@@ -2450,7 +2450,7 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel) -> None:
 
     if agents.is_awake(session):
         try:
-            await agents.sleep_agent(session, force=True)
+            await agents.hub.sleep(session.name)
         except Exception:
             log.exception("Error sleeping agent '%s' during channel deletion", agent_name)
 
@@ -2893,7 +2893,7 @@ async def on_ready() -> None:
         max_slots=config.MAX_AWAKE_AGENTS,
         protected={config.MASTER_AGENT_NAME},
         get_agents=lambda: agents.agents,
-        sleep_fn=lambda s: agents.sleep_agent(s),
+        sleep_fn=lambda s: agents.hub.sleep(s.name, force=False),
     )
     set_agent_sessions_provider(lambda: agents.agents)
     set_scheduler_status_provider(scheduler.status)
