@@ -317,6 +317,11 @@ class AgentHub:
                 async with session.dispatch_lock:
                     session.state = reduce_session(session.state, WakeCompleted(agent_name=session.name))
             return
+        # 7.4c: refuse to wake an agent whose working directory is gone (e.g. a
+        # cleaned-up worktree). Previously enforced by agents.wake_agent; moved here
+        # so hub.wake call sites get the same early, clear error.
+        if session.cwd and not Path(session.cwd).is_dir():
+            raise ValueError(f"Agent '{session.name}' working directory no longer exists: {session.cwd}")
         await self.scheduler.request_slot(session.name)
         session.state.lifecycle = LifecycleState.WAKING
         resume_id = session.session_id
