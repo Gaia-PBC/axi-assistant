@@ -108,6 +108,10 @@ class FrontendRouter:
     async def on_spawn(self, agent_name: str, session: Any) -> None:
         await self._broadcast("on_spawn", agent_name, session)
 
+    async def spawn_context(self, agent_name: str, session: Any) -> dict[str, Any]:
+        result = await self._first_response("spawn_context", agent_name, session)
+        return result if result is not None else {"placeholders": {}, "routing_id": None}
+
     async def on_kill(self, agent_name: str, session_id: str | None) -> None:
         await self._broadcast("on_kill", agent_name, session_id)
 

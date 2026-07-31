@@ -132,26 +132,13 @@ class DiscordFrontend:
         log.debug("Discord: agent '%s' slept", agent_name)
 
     async def on_spawn(self, agent_name: str, session: Any) -> None:
-        from axi.axi_types import discord_state
-        from axi.channels import (
-            ensure_agent_channel,
-            format_channel_topic,
-            strip_status_prefix,
-        )
+        # Channel creation + topic only. Prompt-placeholder substitution and the
+        # session routing id (channel_id) are applied generically in the spawn
+        # path from spawn_context() below, so a non-Discord frontend fills them
+        # too.
+        from axi.channels import ensure_agent_channel, format_channel_topic
 
         channel = await ensure_agent_channel(agent_name, cwd=session.cwd)
-        ds = discord_state(session)
-        ds.channel_id = channel.id
-
-        if isinstance(session.system_prompt, dict):
-            append_text = session.system_prompt.get("append")
-            if isinstance(append_text, str):
-                session.system_prompt["append"] = (
-                    append_text.replace("{channel_id}", str(channel.id))
-                    .replace("{channel_name}", strip_status_prefix(channel.name))
-                    .replace("{guild_id}", str(channel.guild.id))
-                    .replace("{guild_name}", channel.guild.name)
-                )
 
         desired_topic = format_channel_topic(
             session.cwd,
@@ -172,6 +159,20 @@ class DiscordFrontend:
             asyncio.get_running_loop().create_task(_update_topic(channel, desired_topic))
 
         log.info("Discord: agent '%s' spawned, channel=#%s (id=%d)", agent_name, channel.name, channel.id)
+
+    async def spawn_context(self, agent_name: str, session: Any) -> dict[str, Any]:
+        from axi.channels import ensure_agent_channel, strip_status_prefix
+
+        channel = await ensure_agent_channel(agent_name, cwd=session.cwd)
+        return {
+            "placeholders": {
+                "channel_id": str(channel.id),
+                "channel_name": strip_status_prefix(channel.name),
+                "guild_id": str(channel.guild.id),
+                "guild_name": channel.guild.name,
+            },
+            "routing_id": channel.id,
+        }
 
     async def on_kill(self, agent_name: str, session_id: str | None) -> None:
         from axi.channels import move_channel_to_killed

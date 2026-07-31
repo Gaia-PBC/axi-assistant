@@ -123,6 +123,19 @@ class Frontend(Protocol):
         """New agent spawned."""
         ...
 
+    async def spawn_context(self, agent_name: str, session: Any) -> dict[str, Any]:
+        """Return spawn-time prompt substitutions + a routing id for this agent.
+
+        Called once during spawn, right after ``on_spawn``. The generic spawn
+        path applies ``placeholders`` (a ``{name: value}`` map, e.g.
+        ``{"channel_id": "123"}``) to the agent's system prompt and stores
+        ``routing_id`` so the agent can later be resolved back to a
+        channel/session. A frontend with no such concept returns
+        ``{"placeholders": {}, "routing_id": None}``. The keys are supplied by
+        the frontend, so this contract names no frontend-specific concept.
+        """
+        ...
+
     async def on_kill(self, agent_name: str, session_id: str | None) -> None:
         """Agent killed."""
         ...
