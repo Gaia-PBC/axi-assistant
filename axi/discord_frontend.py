@@ -169,6 +169,7 @@ class DiscordFrontend:
                     prompt_changed=prompt_changed,
                     session_id=session.session_id or resume_id,
                 )
+                log.info("on_wake: posted system prompt to '%s' on first wake", agent_name)
             except Exception:
                 log.warning("Failed to post system prompt for '%s'", agent_name, exc_info=True)
 
