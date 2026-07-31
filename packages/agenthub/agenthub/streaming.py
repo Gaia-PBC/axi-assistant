@@ -312,8 +312,9 @@ async def _handle_stream_event(
                 preview=preview,
             )
 
-            # Special case: TodoWrite
-            if tool_name == "TodoWrite" and tool_input:
+            # Special case: TodoWrite (tool_input may be a non-dict on malformed/partial
+            # JSON, e.g. a bare int — guard before .get()).
+            if tool_name == "TodoWrite" and isinstance(tool_input, dict):
                 todos = tool_input.get("todos", [])
                 if todos:
                     yield TodoUpdate(todos=todos)
