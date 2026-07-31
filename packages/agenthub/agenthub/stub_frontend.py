@@ -41,6 +41,7 @@ class StubFrontend:
 
     def __init__(self) -> None:
         self.log: list[StubCall] = []
+        self._spawn_seq = 0
 
     def _record(self, method: str, **kwargs: Any) -> None:
         self.log.append(StubCall(method=method, args=kwargs))
@@ -118,6 +119,20 @@ class StubFrontend:
 
     async def on_spawn(self, agent_name: str, session: Any) -> None:
         self._record("on_spawn", agent_name=agent_name)
+
+    async def spawn_context(self, agent_name: str, session: Any) -> dict[str, Any]:
+        self._record("spawn_context", agent_name=agent_name)
+        self._spawn_seq += 1
+        channel_id = 900_000_000_000_000_000 + self._spawn_seq
+        return {
+            "placeholders": {
+                "channel_id": str(channel_id),
+                "channel_name": agent_name,
+                "guild_id": "0",
+                "guild_name": "stub",
+            },
+            "routing_id": channel_id,
+        }
 
     async def on_kill(self, agent_name: str, session_id: str | None) -> None:
         self._record("on_kill", agent_name=agent_name, session_id=session_id)

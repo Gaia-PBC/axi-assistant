@@ -1823,6 +1823,22 @@ async def spawn_agent(
         router = _get_router()
         await router.on_spawn(name, session)
 
+        # G2: apply the frontend-supplied spawn context generically — substitute
+        # prompt placeholders and assign the session routing id (channel_id) — so
+        # a non-Discord frontend fills them too (DiscordFrontend.on_spawn no longer
+        # does this itself; it just supplies the raw values via spawn_context).
+        spawn_ctx = await router.spawn_context(name, session)
+        placeholders = (spawn_ctx or {}).get("placeholders") or {}
+        if placeholders and isinstance(session.system_prompt, dict):
+            append_text = session.system_prompt.get("append")
+            if isinstance(append_text, str):
+                for _key, _val in placeholders.items():
+                    append_text = append_text.replace("{" + _key + "}", _val)
+                session.system_prompt["append"] = append_text
+        routing_id = (spawn_ctx or {}).get("routing_id")
+        if routing_id is not None:
+            discord_state(session).channel_id = routing_id
+
         agent_label = "flowcoder" if agent_type == "flowcoder" else "claude code"
         if resume:
             await router.post_system(
@@ -2065,7 +2081,14 @@ async def deliver_inter_agent_message(
     target_session: AgentSession,
     content: str,
 ) -> str:
-    """Deliver a message from one agent to another."""
+    """Deliver a message from one agent to another via the hub turn queue.
+
+    Routes through hub.submit_inter_agent_message, so no real Discord channel is
+    required (a non-Discord frontend records the notification and drives the turn
+    identically). The started/queued result mirrors the user-message path in
+    main.on_message: a busy target is interrupted so the hub drains the inter-agent
+    turn next, and a sleeping target is woken by the hub.
+    """
     set_agent_context(target_session.name, channel_id=discord_state(target_session).channel_id)
     set_trigger("inter_agent", detail=f"from={sender_name}")
     _tracer.start_span(
@@ -2076,10 +2099,12 @@ async def deliver_inter_agent_message(
             "message.length": len(content),
         },
     ).end()
-    channel = await get_agent_channel(target_session.name)
-    if channel is None:
-        return f"No Discord channel found for agent '{target_session.name}'"
 
+    if hub is None:
+        return f"hub unavailable — message to '{target_session.name}' not delivered"
+
+    # Frontend-agnostic delivery notification (Discord posts to the channel; a
+    # non-Discord frontend records it) — no channel lookup required.
     await _get_router().post_system(
         target_session.name,
         f"\U0001f4e8 **Message from {sender_name}:**\n> {content}",
@@ -2088,32 +2113,42 @@ async def deliver_inter_agent_message(
     ts_prefix = datetime.now(UTC).strftime("[%Y-%m-%d %H:%M:%S UTC] ")
     prompt = ts_prefix + f"[Inter-agent message from {sender_name}] {content}"
 
-    if target_session.query_lock.locked():
-        target_session.message_queue.appendleft((prompt, channel, None))
+    result = await hub.submit_inter_agent_message(
+        target_session.name,
+        prompt,
+        metadata={"sender": sender_name},
+    )
+
+    if result.status == "shutdown":
+        return f"agent '{target_session.name}' is shutting down — message not delivered"
+
+    if result.status == "queued":
         if target_session.compacting:
-            # Don't interrupt during compaction — message is queued, will process after
+            # Don't interrupt during compaction — message is queued, will process after.
             log.info(
-                "Inter-agent message from '%s' to compacting agent '%s' \u2014 queued (no interrupt)",
+                "Inter-agent message from '%s' to compacting agent '%s' — queued (no interrupt)",
                 sender_name,
                 target_session.name,
             )
             return f"delivered to compacting agent '{target_session.name}' (queued, will process after compaction)"
-        log.info(
-            "Inter-agent message from '%s' to busy agent '%s' \u2014 interrupting",
-            sender_name,
-            target_session.name,
-        )
         try:
-            await graceful_interrupt(target_session)
+            interrupted = await graceful_interrupt(target_session)
         except Exception:
+            interrupted = False
             log.warning(
                 "Graceful interrupt failed for '%s' inter-agent message (message still queued)",
                 target_session.name,
             )
-        return f"delivered to busy agent '{target_session.name}' (interrupted, will process next)"
-    else:
-        fire_and_forget(_process_inter_agent_prompt(target_session, prompt, channel))
-        return f"delivered to agent '{target_session.name}'"
+        if interrupted:
+            log.info(
+                "Inter-agent message from '%s' to busy agent '%s' — interrupting",
+                sender_name,
+                target_session.name,
+            )
+            return f"delivered to busy agent '{target_session.name}' (interrupted, will process next)"
+        return f"delivered to busy agent '{target_session.name}' (queued, will process after current turn)"
+
+    return f"delivered to agent '{target_session.name}'"
 
 
 async def _process_inter_agent_prompt(
