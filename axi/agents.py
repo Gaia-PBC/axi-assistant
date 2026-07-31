@@ -866,7 +866,8 @@ def make_shutdown_coordinator(
     """Create a ShutdownCoordinator with standard agents/sleep/notify wiring."""
     return ShutdownCoordinator(
         agents=agents,
-        sleep_fn=lambda s: sleep_agent(s, force=True),
+        # 7.5d: shutdown sleeps route through the hub (on_sleep + lifecycle=SLEEPING).
+        sleep_fn=lambda s: hub.sleep(s.name, force=True),
         close_bot_fn=close_bot_fn,
         kill_fn=kill_fn,
         notify_fn=_notify_agent_channel,
@@ -1738,7 +1739,8 @@ async def restart_agent(name: str) -> AgentSession:
         raise ValueError(f"Agent '{name}' not found")
     session_id = session.session_id
     if is_awake(session):
-        await sleep_agent(session, force=True)
+        # 7.5d: sleep through the hub (on_sleep + lifecycle=SLEEPING); agent stays registered.
+        await hub.sleep(name, force=True)
     agent_cfg = _load_agent_config(name)
     saved_ext = agent_cfg.get("extensions")
     session.model = agent_cfg.get("model")
@@ -1760,8 +1762,10 @@ async def reclaim_agent_name(name: str) -> None:
         return
     _tracer.start_span("reclaim_agent_name", attributes={"agent.name": name}).end()
     log.info("Reclaiming agent name '%s' \u2014 terminating existing session", name)
-    session = agents[name]
-    await sleep_agent(session, force=True)
+    # 7.5d: route the sleep through the hub (on_sleep + lifecycle=SLEEPING). Keep the manual
+    # pop rather than hub.remove_agent so we do NOT emit on_kill / move the channel to Killed \u2014
+    # the name and its channel are recycled by the incoming scheduled run's respawn.
+    await hub.sleep(name, force=True)
     agents.pop(name, None)
     await _get_router().post_system(name, f"Recycled previous **{name}** session for new scheduled run.")
 

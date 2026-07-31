@@ -401,6 +401,10 @@ async def axi_kill_agent(args: McpArgs) -> McpResult:
                 else:
                     await agents.send_system(agent_ch, f"Agent **{agent_name}** moved to Killed.")
 
+            # 7.5d: stays a direct sleep_agent on the captured session object — the agent was
+            # already popped from the registry above (to free the name for respawn), so the
+            # name-based hub.sleep/hub.remove_agent would KeyError/no-op. The kill lifecycle
+            # event is emitted separately via move_channel_to_killed (on_kill) below.
             await agents.sleep_agent(session, force=True)
 
             # Stop any test-instance systemd service for this agent BEFORE
