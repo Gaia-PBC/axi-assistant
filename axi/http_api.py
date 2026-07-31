@@ -207,6 +207,47 @@ async def api_clear(name: str, _: None = Depends(require_bearer_token)) -> dict:
     return _result_json(await commands_api.clear(name))
 
 
+# ---------------------------------------------------------------------------
+# Runners + process control (Phase 8d). Voice (vc-join/vc-leave) is Discord-only.
+# restart / restart-including-bridge are a powerful surface, gated by the bearer token.
+# ---------------------------------------------------------------------------
+
+
+class FlowchartRequest(BaseModel):
+    agent: str
+    flowchart: str
+    args: str | None = None
+
+
+class ForceRequest(BaseModel):
+    force: bool = False
+
+
+@app.post("/v1/flowchart")
+async def api_flowchart(req: FlowchartRequest, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.run_flowchart(req.agent, req.flowchart, req.args))
+
+
+@app.post("/v1/agents/{name}/build-profile")
+async def api_build_profile(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.build_user_profile(name))
+
+
+@app.post("/v1/agents/{name}/build-music")
+async def api_build_music(name: str, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.build_music_preferences(name))
+
+
+@app.post("/v1/restart")
+async def api_restart(req: ForceRequest | None = None, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.restart(force=(req.force if req else False)))
+
+
+@app.post("/v1/restart-including-bridge")
+async def api_restart_bridge(req: ForceRequest | None = None, _: None = Depends(require_bearer_token)) -> dict:
+    return _result_json(await commands_api.restart_including_bridge(force=(req.force if req else False)))
+
+
 @app.post("/v1/trigger")
 async def trigger(req: TriggerRequest, _: None = Depends(require_bearer_token)):
     agent_name = req.session
