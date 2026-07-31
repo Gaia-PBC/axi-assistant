@@ -1560,11 +1560,14 @@ async def _maybe_compact(session: AgentSession, channel: TextChannel | None = No
     if usage_pct < config.COMPACT_THRESHOLD:
         return
 
+    if hub is None:
+        return
+
     pre_tokens = session.context_tokens
     instructions = session.compact_instructions or ""
     cmd = f"/compact {instructions}".strip()
     log.info(
-        "Auto-compact for '%s': %d/%d tokens (%.0f%%), sending: %s",
+        "Auto-compact for '%s': %d/%d tokens (%.0f%%), queuing: %s",
         session.name, pre_tokens, session.context_window,
         usage_pct * 100, cmd[:80],
     )
@@ -1573,16 +1576,56 @@ async def _maybe_compact(session: AgentSession, channel: TextChannel | None = No
         session.name,
         f"\U0001f504 Context at {usage_pct:.0%} ({pre_tokens:,} tokens) — compacting...",
     )
+    # Mark self-triggered so the stream's CompactStart reports self_triggered=True.
+    # AxiTurnHooks.after_turn discards this once the /compact turn's stream completes.
     _self_compacting.add(session.name)
     _compact_start_times[session.name] = time.monotonic()
-    session.compacting = True
-    try:
-        await session.client.query(as_stream(cmd))
-        await _retry_stream_via_router(session)
-    finally:
-        _self_compacting.discard(session.name)
-        session.compacting = False
-    # compact_boundary handler posts the completion message with timing + stats
+    # 7.5b: queue /compact as a hub turn instead of the old nested client.query +
+    # _retry_stream_via_router. Called from after_turn (current_turn still set), so this
+    # appends to queued_turns and drives after the current turn's TurnFinished — no
+    # re-entrancy. The /compact turn's stream sets _pending_compact (via the hub stream
+    # factory), and its after_turn posts the completion + queues the auto-resume.
+    await hub.submit_user_message(session.name, cmd, metadata={"compaction": True})
+
+
+async def _handle_pending_compact(session: AgentSession) -> bool:
+    """Post the deferred compaction summary and queue a hub auto-resume turn.
+
+    Called from AxiTurnHooks.after_turn (Phase 7.5b). When a CLI auto-compaction happens
+    during a hub turn, the hub stream factory records _pending_compact; here we render the
+    completion message (with fresh post-tokens) and queue 'Continue from where you left off.'
+    through the hub. This replaces the legacy process_message path, which re-queried the
+    client directly via _retry_stream_via_router. Returns True if a resume turn was queued.
+    """
+    pending = _pending_compact.pop(session.name, None)
+    if not pending:
+        return False
+    # Let the autocompact stderr line update post_tokens before rendering the summary.
+    await asyncio.sleep(0.3)
+    router = _get_router()
+    post_tokens = session.context_tokens
+    pre_tokens = int(pending["pre_tokens"])
+    elapsed = time.monotonic() - float(pending["start_time"])
+    if post_tokens > 0 and post_tokens != pre_tokens:
+        saved = int(pre_tokens - post_tokens)
+        pct = post_tokens / session.context_window if session.context_window else 0
+        await router.post_system(
+            session.name,
+            f"\U0001f504 Compacted in {elapsed:.1f}s: {pre_tokens:,} → {post_tokens:,} tokens "
+            f"({saved:,} freed, {pct:.0%} used) — resuming",
+        )
+    else:
+        await router.post_system(
+            session.name,
+            f"\U0001f504 Compacted in {elapsed:.1f}s ({pre_tokens:,} tokens) — resuming",
+        )
+    _reset_session_activity(session)
+    if hub is None:
+        return False
+    await hub.submit_user_message(
+        session.name, "Continue from where you left off.", metadata={"auto_resume": True}
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1664,9 +1707,11 @@ async def process_message(session: AgentSession, content: MessageContent, channe
                     await session.client.query(as_stream(resume_msg))
                     await asyncio.sleep(0.3)
                     await _retry_stream_via_router(session)
-                    await _maybe_compact(session, channel)
                 await _retry_stream_via_router(session)
-                await _maybe_compact(session, channel)
+                # 7.5b: proactive _maybe_compact now queues a hub turn, which must not be
+                # driven from this legacy (non-hub) path — the hub would run it concurrently
+                # with this stream. Reconnect-drain relies on CLI auto-compaction until 7.5c
+                # migrates it to the hub (where after_turn drives proactive compaction).
         except TimeoutError:
             await handle_query_timeout(session, channel)
         except Exception:

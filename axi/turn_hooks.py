@@ -50,17 +50,20 @@ class AxiTurnHooks(TurnHooks):
         return _wrap_content_with_flowchart(content, session)
 
     async def after_turn(self, session: AgentSession, turn: TurnRequest, outcome: TurnOutcome) -> None:
-        # Proactive threshold compaction (agents._maybe_compact posts via the router and
-        # ignores its channel arg). The deferred compact-result post + "Continue from where
-        # you left off." auto-resume that process_message performs is a re-query, reconciled
-        # in Phase 7.2's turn-loop cutover (it is a follow-up turn, not a pure post step).
+        # Post-turn: initial-prompt finished-notice (7.3), then compaction handling (7.5b).
+        # Compaction is fully hub-driven now: a CLI auto-compaction during this turn records
+        # _pending_compact (via the hub stream factory), and the post-compaction "Continue
+        # from where you left off." auto-resume + the proactive /compact are queued as
+        # follow-up hub turns rather than nested client re-queries.
         from agenthub.types import TurnOutcome
-        from axi.agents import _get_router, _maybe_compact, _user_mentions
+        from axi.agents import _get_router, _handle_pending_compact, _maybe_compact, _user_mentions
+
+        meta = turn.metadata if (turn is not None and isinstance(turn.metadata, dict)) else {}
 
         # B2 (7.3): initial/startup prompts now run through the hub. run_initial_prompt
         # tags its turn with metadata["initial_prompt"]; post the completion notice here
         # (the legacy run_initial_prompt posted it after process_message returned).
-        if turn is not None and isinstance(turn.metadata, dict) and turn.metadata.get("initial_prompt"):
+        if meta.get("initial_prompt"):
             if outcome == TurnOutcome.COMPLETED:
                 await _get_router().post_system(
                     session.name, f"Agent **{session.name}** finished initial task. {_user_mentions()}"
@@ -76,7 +79,20 @@ class AxiTurnHooks(TurnHooks):
                     f"Agent **{session.name}** encountered an error during initial task. {_user_mentions()}",
                 )
 
-        await _maybe_compact(session)
+        # 7.5b: this was a self-triggered /compact turn — clear the flag now its stream is done.
+        if meta.get("compaction"):
+            from axi.discord_stream import _self_compacting
+
+            _self_compacting.discard(session.name)
+
+        # 7.5b: if the CLI compacted during this turn, post the completion summary and queue
+        # the "Continue from where you left off." auto-resume as a follow-up hub turn.
+        resumed = await _handle_pending_compact(session)
+
+        # Proactive threshold compaction — queues a /compact hub turn. Skip right after a
+        # /compact turn or when an auto-resume was just queued, to avoid re-compaction loops.
+        if not meta.get("compaction") and not resumed:
+            await _maybe_compact(session)
 
     def turn_scope(self, session: AgentSession, turn: TurnRequest) -> Any:
         return self._span_scope(session, turn)
