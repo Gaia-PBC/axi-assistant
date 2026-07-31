@@ -176,6 +176,11 @@ class DiscordFrontend:
         log.debug("Discord: agent '%s' woke", agent_name)
 
     async def on_sleep(self, agent_name: str) -> None:
+        # 7.4c-2: refresh the channel status prefix on sleep. Moved here from
+        # agents.sleep_agent so hub.sleep (which broadcasts on_sleep) triggers it.
+        from axi.channels import schedule_status_update
+
+        schedule_status_update()
         log.debug("Discord: agent '%s' slept", agent_name)
 
     async def on_spawn(self, agent_name: str, session: Any) -> None:
