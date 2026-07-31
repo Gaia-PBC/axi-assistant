@@ -484,10 +484,10 @@ def _load_agent_config(agent_name: str) -> dict[str, Any]:
 
 def _close_agent_log(session: AgentSession) -> None:
     """Remove all handlers from the per-agent logger."""
-    if session.agent_log:
-        for handler in session.agent_log.handlers[:]:
+    if discord_state(session).agent_log:
+        for handler in discord_state(session).agent_log.handlers[:]:
             handler.close()
-            session.agent_log.removeHandler(handler)
+            discord_state(session).agent_log.removeHandler(handler)
 
 
 _AUTOCOMPACT_RE = re.compile(r"autocompact: tokens=(\d+) threshold=\d+ effectiveWindow=(\d+)")
@@ -1656,8 +1656,8 @@ async def process_message(session: AgentSession, content: MessageContent, channe
     drain_stderr(session)
     drained = drain_sdk_buffer(session)
 
-    if session.agent_log:
-        session.agent_log.info("USER: %s", content_summary(content))
+    if discord_state(session).agent_log:
+        discord_state(session).agent_log.info("USER: %s", content_summary(content))
     log.info("PROCESS[%s] drained=%d, calling query+stream", session.name, drained)
 
     # Route through the configured FlowCoder wrapper, if any
@@ -1866,10 +1866,9 @@ async def spawn_agent(
             extra_write_dirs=merged_write_dirs,
             model=model,
         )
-        # Axi treats session.agent_log as a logging.Logger|None (discord_stream calls
-        # .info/.warning/.debug on it); the hub's AgentLog (.append) is incompatible, so
-        # keep it None as before. (agent_log field-purpose conflict — revisit in 7.5.)
-        session.agent_log = None
+        # 7.5e: no longer reset the hub's AgentLog here. It (set by hub.spawn_agent) now
+        # lives undisturbed on the session, while Axi's per-agent debug logger moved to the
+        # Discord frontend_state. The two logs no longer collide on one field.
         router = _get_router()
 
         # G2: apply the frontend-supplied spawn context generically — substitute
@@ -1964,8 +1963,8 @@ async def run_initial_prompt(session: AgentSession, prompt: MessageContent) -> N
             session.name, f"Failed to run initial prompt for **{session.name}** (hub unavailable)."
         )
         return
-    if session.agent_log:
-        session.agent_log.info("PROMPT: %s", content_summary(content))
+    if discord_state(session).agent_log:
+        discord_state(session).agent_log.info("PROMPT: %s", content_summary(content))
     log.info("INITIAL_PROMPT[%s] submitting initial prompt: %s", session.name, content_summary(content))
     await hub.submit_user_message(session.name, content, metadata={"initial_prompt": True})
 
@@ -1998,8 +1997,8 @@ async def process_message_queue(session: AgentSession) -> None:
 
         remaining = len(session.message_queue)
         log.debug("Processing queued message for '%s' (%d remaining)", session.name, remaining)
-        if session.agent_log:
-            session.agent_log.info("QUEUED_MSG: %s", content_summary(raw_content))
+        if discord_state(session).agent_log:
+            discord_state(session).agent_log.info("QUEUED_MSG: %s", content_summary(raw_content))
         await router.remove_reaction(session.name, orig_message, "\U0001f4e8")
         preview = content_summary(raw_content)
         remaining_str = f" ({remaining} more in queue)" if remaining > 0 else ""
@@ -2365,8 +2364,8 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
                 await _disconnect_client(client, session.name)
                 session.transport = None
                 session.reconnecting = False
-                if session.agent_log:
-                    session.agent_log.info("SESSION_RECONNECT aborted — CLI exited")
+                if discord_state(session).agent_log:
+                    discord_state(session).agent_log.info("SESSION_RECONNECT aborted — CLI exited")
                 log.info("Agent '%s' left sleeping (CLI dead, will respawn on next message)", session.name)
                 return
 
@@ -2374,8 +2373,8 @@ async def _reconnect_and_drain(session: AgentSession, bridge_info: dict[str, Any
             scheduler.restore_slot(session.name)
             session.last_activity = datetime.now(UTC)
 
-            if session.agent_log:
-                session.agent_log.info(
+            if discord_state(session).agent_log:
+                discord_state(session).agent_log.info(
                     "SESSION_RECONNECT via bridge (replayed=%d, idle=%s)",
                     replayed,
                     cli_idle,
