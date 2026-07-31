@@ -1795,14 +1795,21 @@ async def spawn_agent(
         for d in merged_write_dirs:
             os.makedirs(d, exist_ok=True)
 
-        session = AgentSession(
+        # 7.4d: create + register the session via the hub, which broadcasts on_spawn
+        # once. Mark bot_creating_channels BEFORE that (on_spawn creates the Discord
+        # channel). All args are generic AgentSession fields; system_prompt_hash is
+        # passed so DiscordFrontend.on_spawn formats the channel topic correctly.
+        normalized = normalize_channel_name(name)
+        _channels_mod.bot_creating_channels.add(normalized)
+        session = await hub.spawn_agent(
             name=name,
-            agent_type=agent_type,
             cwd=cwd,
+            agent_type=agent_type,
             system_prompt=prompt,
             system_prompt_hash=compute_prompt_hash(prompt),
-            mcp_server_names=mcp_names,
+            session_id=resume,
             mcp_servers=mcp_servers,
+            mcp_server_names=mcp_names,
             compact_instructions=compact_instructions,
             startup_command=command or None,
             startup_command_args=command_args,
@@ -1810,13 +1817,11 @@ async def spawn_agent(
             extra_write_dirs=merged_write_dirs,
             model=model,
         )
-        session.session_id = resume
-
-        # Frontend creates channel, sets channel_id, substitutes prompt placeholders
-        normalized = normalize_channel_name(name)
-        _channels_mod.bot_creating_channels.add(normalized)
+        # Axi treats session.agent_log as a logging.Logger|None (discord_stream calls
+        # .info/.warning/.debug on it); the hub's AgentLog (.append) is incompatible, so
+        # keep it None as before. (agent_log field-purpose conflict — revisit in 7.5.)
+        session.agent_log = None
         router = _get_router()
-        await router.on_spawn(name, session)
 
         # G2: apply the frontend-supplied spawn context generically — substitute
         # prompt placeholders and assign the session routing id (channel_id) — so
@@ -1832,7 +1837,7 @@ async def spawn_agent(
         else:
             await router.post_system(name, f"Spawning **{agent_label}** agent **{name}** in `{cwd}`...")
 
-        agents[name] = session
+        # (hub.spawn_agent already registered the session in the shared sessions dict.)
 
         # Persist agent config for restart reconstruction
         from axi.extensions import DEFAULT_EXTENSIONS

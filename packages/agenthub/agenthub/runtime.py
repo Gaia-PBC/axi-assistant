@@ -86,20 +86,36 @@ class AgentHub:
         cwd: str,
         agent_type: str = "claude_code",
         system_prompt: Any = None,
+        system_prompt_hash: str | None = None,
         session_id: str | None = None,
         mcp_servers: dict[str, Any] | None = None,
+        mcp_server_names: list[str] | None = None,
         frontend_state: Any = None,
         compact_instructions: str | None = None,
+        startup_command: str | None = None,
+        startup_command_args: str = "",
+        extra_excluded_commands: list[str] | None = None,
+        extra_write_dirs: list[str] | None = None,
+        model: str | None = None,
     ) -> AgentSession:
         Path(cwd).mkdir(parents=True, exist_ok=True)
+        # All fields below are generic AgentSession fields. system_prompt_hash is set
+        # before the on_spawn broadcast so a frontend can format its channel/topic from it.
         session = AgentSession(
             name=name,
             agent_type=agent_type,
             cwd=cwd,
             system_prompt=system_prompt,
+            system_prompt_hash=system_prompt_hash,
             mcp_servers=mcp_servers,
+            mcp_server_names=mcp_server_names,
             frontend_state=frontend_state,
             compact_instructions=compact_instructions,
+            startup_command=startup_command,
+            startup_command_args=startup_command_args,
+            extra_excluded_commands=list(extra_excluded_commands or []),
+            extra_write_dirs=list(extra_write_dirs or []),
+            model=model,
         )
         session.state = replace(session.state, session_id=session_id)
         session.agent_log = make_agent_log(name, persist_dir=self.log_dir)
