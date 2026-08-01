@@ -66,8 +66,10 @@ class FrontendRouter:
                 )
         return None
 
-    async def post_message(self, agent_name: str, text: str) -> None:
-        await self._broadcast("post_message", agent_name, text)
+    async def post_message(
+        self, agent_name: str, text: str, channel_ref: Any = None,
+    ) -> None:
+        await self._broadcast("post_message", agent_name, text, channel_ref=channel_ref)
 
     async def post_system(self, agent_name: str, text: str) -> None:
         await self._broadcast("post_system", agent_name, text)
@@ -76,9 +78,10 @@ class FrontendRouter:
         await self._broadcast("broadcast", text)
 
     async def post_file(
-        self, agent_name: str, filename: str, data: bytes, description: str = ""
+        self, agent_name: str, filename: str, data: bytes, description: str = "",
+        channel_ref: Any = None,
     ) -> None:
-        await self._broadcast("post_file", agent_name, filename, data, description)
+        await self._broadcast("post_file", agent_name, filename, data, description, channel_ref=channel_ref)
 
     async def post_embed(self, agent_name: str, embed_data: dict[str, Any]) -> None:
         await self._broadcast("post_embed", agent_name, embed_data)

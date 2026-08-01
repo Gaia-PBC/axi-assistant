@@ -63,7 +63,9 @@ class Frontend(Protocol):
 
     # --- Outbound: hub -> frontend ---
 
-    async def post_message(self, agent_name: str, text: str) -> None:
+    async def post_message(
+        self, agent_name: str, text: str, channel_ref: Any = None,
+    ) -> None:
         """Send an assistant message to the user."""
         ...
 
@@ -76,7 +78,8 @@ class Frontend(Protocol):
         ...
 
     async def post_file(
-        self, agent_name: str, filename: str, data: bytes, description: str = ""
+        self, agent_name: str, filename: str, data: bytes, description: str = "",
+        channel_ref: Any = None,
     ) -> None:
         """Send a file/attachment to the user."""
         ...

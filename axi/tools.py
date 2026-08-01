@@ -645,7 +645,7 @@ async def post_file(args: McpArgs) -> McpResult:
         with open(file_path, "rb") as f:
             file_data = f.read()
         router = _get_router()
-        await router.post_file(target or "", filename, file_data, description)
+        await router.post_file(target or "", filename, file_data, description, channel_ref=channel_ref)
         return {"content": [{"type": "text", "text": f"File '{filename}' sent."}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
@@ -780,7 +780,7 @@ async def post_message(args: McpArgs) -> McpResult:
     _tracer.start_span("tool.post_message", attributes={"agent": target}).end()
     try:
         router = _get_router()
-        await router.post_message(target, content)
+        await router.post_message(target, content, channel_ref=channel_ref)
         return {"content": [{"type": "text", "text": "Message sent."}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
@@ -941,6 +941,9 @@ async def clear_status(args: McpArgs) -> McpResult:
     return {"content": [{"type": "text", "text": "Custom status cleared. Channel will revert to auto-detected status."}]}
 
 
+# toggle_plan_mode is intentionally NOT routed through the Frontend protocol.
+# It controls the Claude SDK client's permission mode (session.client.set_permission_mode),
+# which is a runtime concern — no frontend interaction involved.
 @tool(
     "toggle_plan_mode",
     "Toggle plan mode on an agent. When plan mode is ON, the agent plans "

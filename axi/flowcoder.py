@@ -44,6 +44,17 @@ def get_engine_binary() -> str:
     )
 
 
+def _has_discord_frontend() -> bool:
+    try:
+        from axi import hub_wiring
+
+        if hub_wiring.router is not None:
+            return hub_wiring.router.get("discord") is not None
+    except Exception:
+        pass
+    return False
+
+
 def get_search_paths(extra: list[str] | None = None) -> list[str]:
     """Return flowchart command search paths."""
     from axi import config
@@ -52,7 +63,13 @@ def get_search_paths(extra: list[str] | None = None) -> list[str]:
     bot_commands = os.path.join(config.BOT_DIR, "commands")
     env_raw = os.environ.get("FLOWCODER_SEARCH_PATH", "")
     env_paths = [p for p in env_raw.split(":") if p]
-    return [default_search, bot_commands] + env_paths + (extra or [])
+    paths = [default_search, bot_commands] + env_paths + (extra or [])
+
+    discord_commands = os.path.join(bot_commands, "discord")
+    if os.path.isdir(discord_commands) and _has_discord_frontend():
+        paths.append(discord_commands)
+
+    return paths
 
 
 def build_engine_cmd(
