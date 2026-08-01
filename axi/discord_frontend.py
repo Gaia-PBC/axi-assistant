@@ -48,10 +48,19 @@ class DiscordFrontend:
 
     # --- Outbound: hub -> frontend ---
 
-    async def post_message(self, agent_name: str, text: str) -> None:
+    async def post_message(
+        self, agent_name: str, text: str, channel_ref: Any = None,
+    ) -> None:
         from axi.agents import send_long
         from axi.channels import get_agent_channel
 
+        if channel_ref:
+            from axi.discord_wire import audited_channel_send
+            channel_id = await self._resolve_channel_id(str(channel_ref))
+            ch = self._bot.get_channel(int(channel_id))
+            if ch:
+                await audited_channel_send(ch, text, operation="frontend.post_message")
+            return
         channel = await get_agent_channel(agent_name)
         if channel:
             await send_long(channel, text)
@@ -73,7 +82,8 @@ class DiscordFrontend:
             await audited_channel_send(master_ch, text, operation="frontend.broadcast")
 
     async def post_file(
-        self, agent_name: str, filename: str, data: bytes, description: str = ""
+        self, agent_name: str, filename: str, data: bytes, description: str = "",
+        channel_ref: Any = None,
     ) -> None:
         import io
 
@@ -82,11 +92,15 @@ class DiscordFrontend:
         from axi.channels import get_agent_channel
         from axi.discord_wire import audited_channel_send
 
-        channel = await get_agent_channel(agent_name)
-        if channel:
+        if channel_ref:
+            channel_id = await self._resolve_channel_id(str(channel_ref))
+            ch = self._bot.get_channel(int(channel_id))
+        else:
+            ch = await get_agent_channel(agent_name)
+        if ch:
             file = discord.File(io.BytesIO(data), filename=filename)
             await audited_channel_send(
-                channel, description, file=file, operation="frontend.post_file"
+                ch, description, file=file, operation="frontend.post_file"
             )
 
     async def post_embed(self, agent_name: str, embed_data: dict[str, Any]) -> None:

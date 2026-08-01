@@ -42,7 +42,7 @@ Core files: SOUL.md, soul.json, axi_codebase_context.md, axi/main.py, axi/handle
 
 ## Important Patterns
 
-- `BOT_WORKTREES_DIR` (default `~/axi-tests`, configurable via `AXI_WORKTREES_DIR`) gates Discord MCP tools and worktree write access
+- `BOT_WORKTREES_DIR` (default `~/axi-tests`, configurable via `AXI_WORKTREES_DIR`) gates MCP tools and worktree write access
 - Permission callback: agents rooted in BOT_DIR or worktrees get write access to worktrees dir
 - Bot message filter: own messages always ignored, other bots allowed if in ALLOWED_USER_IDS
 - `httpx.AsyncClient` used for Discord REST API (MCP tools), not discord.py
@@ -69,7 +69,7 @@ You have access to a disposable test instance system. Use it to test code change
 You must NEVER directly modify the code you are currently running (`%(bot_dir)s/axi/main.py`, etc.). Instead:
 1. Create a test instance
 2. Spawn an agent in the test worktree to make changes
-3. Test the changes via Discord MCP tools
+3. Test the changes via MCP tools
 4. When verified, commit in the worktree, merge to main, and restart yourself
 
 Humans using Claude Code on the server can edit your code directly (the supervisor has auto-rollback), but you cannot — a bad edit could crash you mid-operation.

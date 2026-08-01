@@ -64,8 +64,10 @@ class StubFrontend:
 
     # --- Outbound: hub -> frontend ---
 
-    async def post_message(self, agent_name: str, text: str) -> None:
-        self._record("post_message", agent_name=agent_name, text=text)
+    async def post_message(
+        self, agent_name: str, text: str, channel_ref: Any = None,
+    ) -> None:
+        self._record("post_message", agent_name=agent_name, text=text, channel_ref=channel_ref)
 
     async def post_system(self, agent_name: str, text: str) -> None:
         self._record("post_system", agent_name=agent_name, text=text)
@@ -74,7 +76,8 @@ class StubFrontend:
         self._record("broadcast", text=text)
 
     async def post_file(
-        self, agent_name: str, filename: str, data: bytes, description: str = ""
+        self, agent_name: str, filename: str, data: bytes, description: str = "",
+        channel_ref: Any = None,
     ) -> None:
         self._record(
             "post_file",
@@ -82,6 +85,7 @@ class StubFrontend:
             filename=filename,
             data_len=len(data),
             description=description,
+            channel_ref=channel_ref,
         )
 
     async def post_embed(self, agent_name: str, embed_data: dict[str, Any]) -> None:
