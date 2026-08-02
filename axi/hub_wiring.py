@@ -201,6 +201,8 @@ def create_hub(
         disconnect_client=_disconnect_client,
         stream_factory=_stream_factory,
         query_timeout=config.QUERY_TIMEOUT,
+        max_attempts=config.API_ERROR_MAX_RETRIES,
+        retry_base_delay=config.API_ERROR_BASE_DELAY,
         usage_history_path=config.USAGE_HISTORY_PATH,
         rate_limit_history_path=config.RATE_LIMIT_HISTORY_PATH,
         turn_hooks=AxiTurnHooks(),

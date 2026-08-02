@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -50,6 +51,12 @@ class AgentHub:
         make_agent_options: Any,
         max_awake: int = 8,
         query_timeout: float = 300.0,
+        # Total attempts per turn, counting the first. 1 = no retry, which is the
+        # conservative default for embedders that have not opted in; Axi wires
+        # config.API_ERROR_MAX_RETRIES here.
+        max_attempts: int = 1,
+        retry_base_delay: float = 5.0,
+        retry_resume_prompt: str = "Continue from where you left off.",
         usage_history_path: str | None = None,
         rate_limit_history_path: str | None = None,
         log_dir: str | None = None,
@@ -63,6 +70,9 @@ class AgentHub:
         self.make_agent_options = make_agent_options
         self.max_awake = max_awake
         self.query_timeout = query_timeout
+        self.max_attempts = max(1, max_attempts)
+        self.retry_base_delay = retry_base_delay
+        self.retry_resume_prompt = retry_resume_prompt
         self.scheduler = Scheduler(
             max_slots=max_awake,
             protected=set(),
@@ -283,10 +293,85 @@ class AgentHub:
                     content = turn.content
                 else:
                     content = await self.turn_hooks.transform_content(session, turn.content)
-                await session.client.query(content)
-                outcome = await self._consume_stream(session, turn.turn_id)
+                outcome = await self._query_with_retry(session, turn, content)
                 await self.turn_hooks.after_turn(session, turn, outcome)
                 return outcome
+
+    async def _query_with_retry(self, session: AgentSession, turn: Any, content: Any) -> TurnOutcome:
+        """Run the turn's query, retrying transient API errors in place.
+
+        The retry stays *inside* the turn, mirroring the pre-hub
+        ``stream_with_retry`` (discord_stream.py:1598-1663). It deliberately does
+        not re-submit a hub turn: ``after_turn`` has to fire exactly once with
+        the final outcome, or Axi's hooks would run their compaction pass on
+        every failed attempt, and a re-submitted turn would queue *behind* any
+        user message that arrived in the meantime instead of continuing this one.
+        """
+        await session.client.query(content)
+        outcome = await self._consume_stream(session, turn.turn_id)
+
+        for attempt in range(2, self.max_attempts + 1):
+            if outcome is not TurnOutcome.RETRY_EXHAUSTED:
+                return outcome
+            if session.state.stop_requested:
+                return TurnOutcome.INTERRUPTED
+
+            delay = self.retry_base_delay * (2 ** (attempt - 2))
+            await self._frontend_broadcast(
+                "post_system",
+                session.name,
+                f"⚠️ API error, retrying in {delay:.0f}s... "
+                f"(attempt {attempt}/{self.max_attempts})",
+            )
+            if not await self._sleep_unless_stopped(session, delay):
+                return TurnOutcome.INTERRUPTED
+
+            # The agent can be killed during the backoff (force-kill, or sleep
+            # from another path). Querying a dead client would raise; bail with a
+            # message instead, as the old path did (discord_stream.py:1631-1645).
+            if session.client is None:
+                await self._frontend_broadcast(
+                    "post_system",
+                    session.name,
+                    f"⚠️ Agent **{session.name}** was killed mid-retry; "
+                    "send another message to continue.",
+                )
+                return TurnOutcome.RETRY_EXHAUSTED
+
+            try:
+                await session.client.query(self.retry_resume_prompt)
+            except Exception:
+                log.exception("Retry query failed for '%s'", session.name)
+                continue
+            outcome = await self._consume_stream(session, turn.turn_id)
+
+        if outcome is TurnOutcome.RETRY_EXHAUSTED:
+            # Without this the turn dies silently — the regression this fixes.
+            suffix = (
+                f" persisted after {self.max_attempts} attempts"
+                if self.max_attempts > 1
+                else ""
+            )
+            await self._frontend_broadcast(
+                "post_system", session.name, f"❌ API error{suffix}. Try again later.",
+            )
+        return outcome
+
+    async def _sleep_unless_stopped(self, session: AgentSession, delay: float) -> bool:
+        """Sleep for ``delay``, returning False as soon as a stop is requested.
+
+        ``request_stop`` only flips state and interrupts the CLI — it never
+        cancels ``query_task`` — so a plain ``asyncio.sleep`` would swallow /stop
+        for the whole backoff window.
+        """
+        deadline = time.monotonic() + delay
+        while True:
+            if session.state.stop_requested:
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            await asyncio.sleep(min(0.5, remaining))
 
     async def _handle_turn_timeout(self, session: AgentSession) -> None:
         await self._emit_log(session, "error", f"turn timed out after {self.query_timeout}s")
