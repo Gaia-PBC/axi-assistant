@@ -147,16 +147,28 @@ def test_acceptance_point_6_config_imports_without_discord() -> None:
     )
 
 
-@pytest.mark.skip(
-    reason="Points 4-5 (all MCP tools resolve to StubFrontend / no discord_* tool names in agent "
-    "prompts) are Phase 9 MCP-tool-abstraction, owned by the parallel agent's deck "
-    "ms9dc99inc0n6ucdcp. Not landed on this branch — full acceptance is not claimed until this passes."
-)
 def test_acceptance_points_4_5_mcp_tools_frontend_agnostic() -> None:
-    # When Phase 9 lands: MCP tools should route through the FrontendRouter (resolving to whatever
-    # frontend, incl. StubFrontend), and no discord_* tool names should remain in agent prompts
-    # except the documented Discord-only carve-outs.
-    from axi import tools
+    # Phase 9 (MCP-tool-abstraction) + Phase 10 (prompt abstraction) are now merged in from
+    # feature/mcp-tool-abstraction, so these assert for real.
+    import inspect
+    import re
 
-    discord_tools = [n for n in dir(tools) if n.startswith("discord_")]
-    assert not discord_tools, f"discord_* MCP tools still present (Phase 9 pending): {discord_tools}"
+    from axi import config, tools
+
+    # POINT 5 — no discord_* tool names referenced in the core agent prompts (Phase 10 cleaned them).
+    for rel in ("prompts/SOUL.md", "commands/soul.json"):
+        text = open(os.path.join(config.BOT_DIR, rel)).read()
+        names = sorted(set(re.findall(r"discord_[a-z_]+", text)))
+        assert not names, f"point 5: discord_* tool names still referenced in {rel}: {names}"
+
+    # POINT 4 — MCP tools resolve through the FrontendRouter (Phase 9), so they reach whatever
+    # frontend is attached (incl. StubFrontend). The only discord_* tool functions left are the
+    # documented Discord-only carve-outs (guild/channel listing).
+    src = inspect.getsource(tools)
+    assert "_get_router()" in src, "point 4: tools should route through the frontend router"
+    discord_tool_fns = set(re.findall(r"async def (discord_[a-z_]+)", src))
+    carve_outs = {"discord_list_guilds", "discord_list_channels"}
+    extra = discord_tool_fns - carve_outs
+    assert not extra, f"point 4: non-carve-out discord_* tools remain: {extra}"
+    # frontend-agnostic communication tools exist (replaced discord_send/read_messages)
+    assert "async def read_messages" in src, "point 4: frontend-agnostic read_messages tool missing"
