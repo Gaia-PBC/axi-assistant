@@ -44,7 +44,7 @@
         "type": "prompt",
         "name": "EXECUTE CARD",
         "position": { "x": 150, "y": 370 },
-        "prompt": "[Automated flowchart step — output goes to the user.]\n\nDeck context (read before starting):\n- Project: {{deck_description}}\n- Completed so far: {{deck_done}}\n- Notes: {{deck_notes}}\n\nExecute this task to the best of your ability:\n\n{{card_text}}\n\nWork thoroughly and completely. When finished, describe what you accomplished.",
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nDeck context (read before starting):\n- Project: {{deck_description}}\n- Completed so far: {{deck_done}}\n- Notes: {{deck_notes}}\n\nExecute this task to the best of your ability:\n\n{{card_text}}\n\nIf this task is too large or complex for a single pass, split it into sub-cards using `minflow card add {{deck_id}} \"<sub-task>\" --top` (add in reverse order so they read top-to-bottom correctly). Do not ask permission to split — do it autonomously. Only pause (via AskUserQuestion) for genuinely ambiguous architectural decisions where multiple approaches have materially different risk or tradeoff profiles.\n\nWork thoroughly and completely. When finished, describe what you accomplished.",
         "output_schema": null,
         "sound_effect": null
       },
@@ -53,7 +53,7 @@
         "type": "prompt",
         "name": "CHECK APPROVAL",
         "position": { "x": 150, "y": 490 },
-        "prompt": "[Automated flowchart step — not a user message.]\n\nYou just worked on: {{card_text}}\n\nDetermine whether this work can be automatically marked complete, or whether it requires human review/approval.\n\nDefault to auto-completing. Only require approval in these cases:\n- Plan tasks: require approval ONLY if the plan involves very complex architecture or genuinely ambiguous requirements where you could easily go the wrong direction. Straightforward plans should auto-complete.\n- Research tasks: auto-complete UNLESS you uncovered something highly pertinent that the user would want to act on immediately (e.g. a critical finding, a decision point, something that changes project direction). Routine research summaries auto-complete.\n- Failed or incomplete work: ALWAYS requires approval\n\nEverything else (implementation, testing, git operations, etc.) should auto-complete.\n\nBias strongly toward auto-completing. The user wants momentum, not gatekeeping.",
+        "prompt": "[Automated flowchart step — not a user message.]\n\nYou just worked on: {{card_text}}\n\nDetermine whether this work can be automatically marked complete, or whether it requires human review/approval.\n\nDefault to auto-completing. Only require approval in these cases:\n- Plan tasks: require approval ONLY if the plan involves very complex architecture or genuinely ambiguous requirements where you could easily go the wrong direction. Straightforward plans should auto-complete.\n- Research tasks: auto-complete UNLESS you uncovered something highly pertinent that the user would want to act on immediately (e.g. a critical finding, a decision point, something that changes project direction). Routine research summaries auto-complete.\n- Failed or incomplete work: ALWAYS requires approval\n\nAlways auto-complete in these cases:\n- Card restructuring/splitting: if you split the card into sub-cards, auto-complete. The restructuring IS the completed work — sub-cards will execute in subsequent iterations.\n- Gate/verification cards with headless-verified assertions: if all assertions have passing automated tests and you have documented reasons for not live-testing specific ones, auto-complete with a gap note.\n\nEverything else (implementation, testing, git operations, etc.) should auto-complete.\n\nBias strongly toward auto-completing. The user wants momentum, not gatekeeping.",
         "output_schema": {
           "type": "object",
           "properties": {
@@ -110,10 +110,20 @@
       },
       "b000000a-exit-4000-8000-00000000000a": {
         "id": "b000000a-exit-4000-8000-00000000000a",
-        "type": "exit",
-        "name": "AWAIT HUMAN",
+        "type": "input",
+        "name": "WAIT FOR INPUT",
         "position": { "x": 400, "y": 730 },
-        "exit_code": 0
+        "output_variable": "user_response"
+      },
+      "b000000g-proc-4000-8000-00000000000g": {
+        "id": "b000000g-proc-4000-8000-00000000000g",
+        "type": "prompt",
+        "name": "PROCESS RESPONSE",
+        "position": { "x": 400, "y": 830 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nYou were working on: {{card_text}}\n\nThe user responded: {{user_response}}\n\nAct on the user's response. This could be:\n- Approval to continue (\"go\", \"approved\", \"yes\", etc.) — acknowledge briefly\n- A direction or instruction — follow it, then confirm what you did\n- A question — answer it\n\nAfter handling the response, the card will be marked complete and /mil will continue to the next card.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": false
       },
       "b000000b-end-4000-8000-00000000000b": {
         "id": "b000000b-end-4000-8000-00000000000b",
@@ -318,6 +328,26 @@
         "target_block_id": "b000000a-exit-4000-8000-00000000000a",
         "source_port": "bottom",
         "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000011-0000-4000-8000-000000000011",
+        "source_block_id": "b000000a-exit-4000-8000-00000000000a",
+        "target_block_id": "b000000g-proc-4000-8000-00000000000g",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000012-0000-4000-8000-000000000012",
+        "source_block_id": "b000000g-proc-4000-8000-00000000000g",
+        "target_block_id": "b0000007-mark-4000-8000-000000000007",
+        "source_port": "bottom",
+        "target_port": "left",
         "is_true_path": true,
         "condition": null,
         "label": null
