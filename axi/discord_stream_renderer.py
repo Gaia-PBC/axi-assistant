@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from axi import config
 from axi.discord_stream import (
@@ -25,6 +25,7 @@ from axi.discord_stream import (
     _live_edit_update,
     _render_chunked,
     _retry_discord_503,
+    _task_text_preview,
 )
 from agenthub.stream_types import (
     BlockComplete,
@@ -69,6 +70,13 @@ _fc_quiet_str = os.environ.get("FC_QUIET_COMMANDS", "soul,soul-flow")
 _FC_QUIET_COMMANDS: set[str] = {c.strip() for c in _fc_quiet_str.split(",") if c.strip()}
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Coerce an untrusted payload field to a dict — task usage blocks are optional."""
+    if isinstance(value, dict):
+        return cast("dict[str, Any]", value)
+    return {}
+
+
 def _show_output_schema() -> bool:
     """Whether output-schema block text should be shown despite being internal JSON."""
     return os.environ.get("FC_SHOW_OUTPUT_SCHEMA", "").lower() in ("1", "true", "yes")
@@ -98,8 +106,12 @@ class DiscordStreamRenderer:
         "_saw_error",
         "_streaming_enabled",
         "_suppress_stream",
+        "_task_last_status",
+        "_task_start_messages",
+        "_task_status_messages",
         "_text_buffer",
         "_thinking_msg_id",
+        "_tool_parents",
         "_typing_task",
     )
 
@@ -137,6 +149,13 @@ class DiscordStreamRenderer:
         # (also what R7 will need to prefix that subagent's task updates).
         self._agent_announcements: dict[str, list[Message]] = {}
         self._agent_labels: dict[str, str] = {}
+        # tool_use_id -> parent_tool_use_id, walked to attribute a task back to
+        # the top-level Agent call that owns it.
+        self._tool_parents: dict[str, str | None] = {}
+        # Per-task Discord messages, edited in place rather than reposted.
+        self._task_start_messages: dict[str, list[Message]] = {}
+        self._task_status_messages: dict[str, list[Message]] = {}
+        self._task_last_status: dict[str, str] = {}
         # Set when the stream hits a rate limit or transient API error. The old
         # path returned before its end-of-stream ping on both (discord_stream.py
         # :1455, :1466); StreamEnd is now emitted on every terminal path, so the
@@ -309,6 +328,8 @@ class DiscordStreamRenderer:
 
     async def _on_tool_use_start(self, event: ToolUseStart) -> None:
         log.debug("RENDER[%s] tool_use_start: %s", self._agent_name, event.tool_name)
+        if event.tool_use_id:
+            self._tool_parents[event.tool_use_id] = event.parent_tool_use_id
         # The input has not streamed in yet, so this posts the bare label and
         # _on_tool_use_end fills in the JSON once it is complete.
         await self._announce_agent_tool_use(event.tool_name, event, None)
@@ -446,24 +467,111 @@ class DiscordStreamRenderer:
         if not event.success and self._block_output_allowed():
             await self._send_system(f"❌ Block **{event.block_name}** failed")
 
+    # --- Subagent task rendering ---
+
+    def _task_label_prefix(self, tool_use_id: str | None) -> str:
+        """'[Agent label] ' when this task belongs to a top-level Agent call.
+
+        Walks tool_use_id -> parent until it hits one that was announced
+        (discord_stream.py:_resolve_parent_agent_tool_use_id).
+        """
+        current = tool_use_id
+        seen: set[str] = set()
+        while current and current not in seen:
+            if current in self._agent_labels:
+                return f"[{self._agent_labels[current]}] "
+            seen.add(current)
+            current = self._tool_parents.get(current)
+        return ""
+
+    async def _upsert_task_status(self, task_id: str, content: str) -> None:
+        """Edit this task's status message in place instead of posting a new one.
+
+        Port of discord_stream.py:470-486. Without the dedup + edit, a long
+        subagent emits one fresh Discord message per progress tick.
+        """
+        if self._task_last_status.get(task_id) == content:
+            return
+        tracked = self._task_status_messages.setdefault(task_id, [])
+        await _render_chunked(self._channel, tracked, content)
+        self._task_last_status[task_id] = content
+
+    async def _on_task_started(self, data: dict[str, Any]) -> None:
+        task_id = str(data.get("task_id") or "")
+        if not task_id or task_id in self._task_start_messages:
+            return
+        tool_use_id = data.get("tool_use_id") or "?"
+        content = (
+            f"`🔧 {self._task_label_prefix(tool_use_id)}"
+            f"{data.get('task_type') or 'unknown'} — "
+            f"{_task_text_preview(data.get('description') or 'subagent')} "
+            f"({tool_use_id})`\nStarted task `{task_id}`"
+        )
+        tracked: list[Message] = []
+        self._task_start_messages[task_id] = tracked
+        await _render_chunked(self._channel, tracked, content)
+
+    async def _on_task_progress(self, data: dict[str, Any]) -> None:
+        task_id = str(data.get("task_id") or "")
+        if not task_id:
+            return
+        tool_use_id = data.get("tool_use_id") or "?"
+        usage = _as_dict(data.get("usage"))
+        duration_ms = usage.get("duration_ms", 0)
+        duration_s = duration_ms / 1000 if isinstance(duration_ms, (int, float)) else 0
+        label = (
+            f"{self._task_label_prefix(tool_use_id)}task progress — "
+            f"{_task_text_preview(data.get('description') or 'subagent')} ({tool_use_id})"
+        )
+        await self._upsert_task_status(
+            task_id,
+            f"`🔧 {label}`\nTask `{task_id}` | {usage.get('tool_uses', 0)} tools | "
+            f"{usage.get('total_tokens', 0)} tokens | {duration_s:.1f}s | "
+            f"last tool: `{data.get('last_tool_name') or '?'}`",
+        )
+
+    async def _on_task_notification(self, data: dict[str, Any]) -> None:
+        task_id = str(data.get("task_id") or "")
+        if not task_id:
+            return
+        tool_use_id = data.get("tool_use_id") or "?"
+        usage = _as_dict(data.get("usage"))
+        details: list[str] = []
+        tool_uses = usage.get("tool_uses")
+        if tool_uses is not None:
+            details.append(f"tools={tool_uses}")
+        duration_ms = usage.get("duration_ms")
+        if isinstance(duration_ms, (int, float)):
+            details.append(f"duration={duration_ms / 1000:.1f}s")
+        output_file = data.get("output_file")
+        if output_file:
+            details.append(f"output=`{output_file}`")
+
+        label = (
+            f"{self._task_label_prefix(tool_use_id)}"
+            f"task {data.get('status') or 'unknown'} ({task_id})"
+        )
+        content = f"`🔧 {label}`"
+        summary = data.get("summary")
+        if summary:
+            content += f"\n{_task_text_preview(summary, limit=240)}"
+        if details:
+            content += f"\n{' | '.join(details)}"
+        await self._upsert_task_status(task_id, content)
+
     # --- System notifications ---
 
     async def _on_system_notification(self, event: SystemNotification) -> None:
+        # NOTE: task_* payloads sit at the TOP level of event.data, unlike
+        # block_*/flowchart_* which nest under a "data" key. The refactor read
+        # the nested shape for both, which is why it invented a "content" key
+        # the producer never sets — see discord_stream.py:1100-1171 vs :1209+.
         if event.subtype == "task_started":
-            data = event.data.get("data", {})
-            desc = data.get("description", "")
-            if desc:
-                await self._send_system(f"\U0001f680 Task started: {desc}")
+            await self._on_task_started(event.data)
         elif event.subtype == "task_progress":
-            data = event.data.get("data", {})
-            content = data.get("content", "")
-            if content:
-                await self._send_system(content)
+            await self._on_task_progress(event.data)
         elif event.subtype == "task_notification":
-            data = event.data.get("data", {})
-            content = data.get("content", "")
-            if content:
-                await self._send_system(content)
+            await self._on_task_notification(event.data)
         elif event.subtype == "block_timeout":
             # A per-block timeout kills the CLI and halts the flowchart; without
             # this the block just stops and looks like nothing happened.
