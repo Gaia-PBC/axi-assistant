@@ -379,6 +379,21 @@ async def on_message(message: discord.Message) -> None:
     if discord_fe and await discord_fe.try_resolve_gate(agent_name, content, message):
         return
 
+    # --- Flowchart input capture ---
+    ds = discord_state(session)
+    if ds.pending_input_block_id and session.agent_type == "flowcoder" and session.transport:
+        block_id = ds.pending_input_block_id
+        ds.pending_input_block_id = None
+        from axi.flowcoder_transport import FlowcoderBridgeTransport
+
+        if isinstance(session.transport, FlowcoderBridgeTransport):
+            user_text = content if isinstance(content, str) else str(content)
+            await session.transport.send_input_response(block_id, user_text)
+            log.info("INPUT_RESPONSE[%s] block_id=%s content=%s", agent_name, block_id, user_text[:100])
+            observe_inbound_discord_event("message", "input_response")
+            return
+        log.warning("INPUT_RESPONSE[%s] transport is not FlowcoderBridgeTransport — falling through", agent_name)
+
     # --- Centralized message processing via Axi hub wrapper ---
     msg_id = message.id
     log.info(

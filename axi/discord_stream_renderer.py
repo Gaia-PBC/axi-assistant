@@ -318,6 +318,24 @@ class DiscordStreamRenderer:
             content = data.get("content", "")
             if content:
                 await self._send_system(content)
+        elif event.subtype == "input_request":
+            data = event.data.get("data", {})
+            block_id = data.get("block_id", "")
+            block_name = data.get("block_name", "input")
+            from axi import agents as _agents_mod
+            from axi.axi_types import discord_state
+            session = _agents_mod.agents.get(self._agent_name)
+            if session:
+                discord_state(session).pending_input_block_id = block_id
+            mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+            await self._send_system(
+                f"**{block_name}**: Flowchart is waiting for input. "
+                f"Type your response below.\n{mentions}"
+            )
+            log.info(
+                "Input block '%s' (id=%s) waiting for user input for '%s'",
+                block_name, block_id, self._agent_name,
+            )
         else:
             log.debug(
                 "RENDER[%s] unhandled system notification: %s",
