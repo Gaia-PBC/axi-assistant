@@ -391,6 +391,15 @@ async def ensure_guild_infrastructure() -> None:
         # guild.me in permission overwrites when creating categories, so
         # absence of this bot's user means another instance created it.
         if not any(getattr(k, "id", None) == bot_member_id for k in cat.overwrites):
+            # Logged because the failure mode is otherwise silent: if this bot's
+            # overwrite were ever missing from a category it DID create, it would
+            # quietly orphan itself and make a duplicate instead.
+            if _match_category_group(cat.name, config.AXI_CATEGORY_NAME) is not None:
+                log.info(
+                    "Skipping category '%s' (id=%s) — no overwrite for this bot, "
+                    "so another instance owns it",
+                    cat.name, cat.id,
+                )
             continue
         for base_name, found_list, create in group_map:
             order = _match_category_group(cat.name, base_name)

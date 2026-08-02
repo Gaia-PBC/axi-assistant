@@ -50,13 +50,27 @@ class FakeChannel:
         category.text_channels.append(self)
 
 
+BOT_MEMBER_ID = 2
+
+
 class FakeCategory:
-    def __init__(self, cid: int, name: str, text_channels: list | None = None) -> None:
+    def __init__(
+        self,
+        cid: int,
+        name: str,
+        text_channels: list | None = None,
+        *,
+        owner_id: int | None = BOT_MEMBER_ID,
+    ) -> None:
         self.id = cid
         self.name = name
         self.text_channels = text_channels or []
         self.channels = self.text_channels  # channel limit check uses .channels
-        self.overwrites: dict = {}
+        # ensure_guild_infrastructure treats a category as its own only when this
+        # bot's member appears in the permission overwrites (0f85e12) — every
+        # category the bot creates gets guild.me via _build_category_overwrites.
+        # owner_id=None models a category created by a DIFFERENT bot instance.
+        self.overwrites: dict = {} if owner_id is None else {FakeRole(owner_id): object()}
         self.edit = AsyncMock()
         self.delete = AsyncMock()
 
@@ -404,3 +418,82 @@ async def test_combined_mode_overflow_to_second_combined_when_full() -> None:
 
     # axi_categories includes overflow too (for lookup).
     assert [c.name for c in channels.axi_categories] == ["Combined", "Combined 2"]
+
+
+# ---------------------------------------------------------------------------
+# Category ownership (0f85e12) — a shared guild holds more than one Axi instance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_foreign_categories_are_neither_adopted_nor_deleted() -> None:
+    """Another instance's categories must be invisible to this bot.
+
+    Before 0f85e12 a second Axi in the same guild would adopt the first's
+    categories, move its channels and delete its emptied categories.
+    """
+    foreign_axi = FakeCategory(1, "Axi", owner_id=None)
+    foreign_chan = FakeChannel(10, "axi-master", foreign_axi)
+    guild = FakeGuild([foreign_axi])
+
+    with patch.object(channels, "_bot", FakeBot(guild)), \
+         patch.object(channels.config, "DISCORD_GUILD_ID", 999), \
+         patch.object(channels.config, "COMBINE_LIVE_CATEGORIES", False), \
+         patch.object(channels.config, "AXI_CATEGORY_NAME", "Axi"), \
+         patch.object(channels.config, "ACTIVE_CATEGORY_NAME", "Active"), \
+         patch.object(channels.config, "KILLED_CATEGORY_NAME", "Killed"), \
+         patch.object(channels.config, "ALLOWED_USER_IDS", []):
+        await channels.ensure_guild_infrastructure()
+
+    foreign_axi.delete.assert_not_awaited()
+    assert foreign_chan in foreign_axi.text_channels, "another instance's channel was moved"
+    assert foreign_axi not in channels.axi_categories, "adopted a foreign category"
+    # It made its own 'Axi' instead of taking the existing one.
+    created = [c.args[0] for c in guild.create_category.call_args_list]
+    assert "Axi" in created
+
+
+@pytest.mark.asyncio
+async def test_own_categories_are_still_adopted() -> None:
+    """The ownership check must not orphan the bot from its own categories."""
+    own_axi = FakeCategory(1, "Axi")
+    own_active = FakeCategory(2, "Active")
+    own_killed = FakeCategory(3, "Killed")
+    guild = FakeGuild([own_axi, own_active, own_killed])
+
+    with patch.object(channels, "_bot", FakeBot(guild)), \
+         patch.object(channels.config, "DISCORD_GUILD_ID", 999), \
+         patch.object(channels.config, "COMBINE_LIVE_CATEGORIES", False), \
+         patch.object(channels.config, "AXI_CATEGORY_NAME", "Axi"), \
+         patch.object(channels.config, "ACTIVE_CATEGORY_NAME", "Active"), \
+         patch.object(channels.config, "KILLED_CATEGORY_NAME", "Killed"), \
+         patch.object(channels.config, "ALLOWED_USER_IDS", []):
+        await channels.ensure_guild_infrastructure()
+
+    guild.create_category.assert_not_called()
+    assert own_axi in channels.axi_categories
+
+
+@pytest.mark.asyncio
+async def test_mixed_guild_adopts_only_our_own() -> None:
+    """Both instances present: take ours, leave theirs alone."""
+    theirs = FakeCategory(1, "Axi", owner_id=None)
+    theirs_chan = FakeChannel(10, "axi-master", theirs)
+    ours = FakeCategory(2, "Axi")
+    ours_chan = FakeChannel(11, "axi-master", ours)
+    guild = FakeGuild([theirs, ours, FakeCategory(3, "Active"), FakeCategory(4, "Killed")])
+
+    with patch.object(channels, "_bot", FakeBot(guild)), \
+         patch.object(channels.config, "DISCORD_GUILD_ID", 999), \
+         patch.object(channels.config, "COMBINE_LIVE_CATEGORIES", False), \
+         patch.object(channels.config, "AXI_CATEGORY_NAME", "Axi"), \
+         patch.object(channels.config, "ACTIVE_CATEGORY_NAME", "Active"), \
+         patch.object(channels.config, "KILLED_CATEGORY_NAME", "Killed"), \
+         patch.object(channels.config, "ALLOWED_USER_IDS", []):
+        await channels.ensure_guild_infrastructure()
+
+    assert ours in channels.axi_categories
+    assert theirs not in channels.axi_categories
+    theirs.delete.assert_not_awaited()
+    assert theirs_chan in theirs.text_channels, "their axi-master was touched"
+    assert ours_chan in ours.text_channels
