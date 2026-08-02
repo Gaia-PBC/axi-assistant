@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import time
@@ -17,9 +18,12 @@ from typing import TYPE_CHECKING, Any
 
 from axi import config
 from axi.discord_stream import (
+    _agent_context_label,
+    _BLANK_CONTENT,
     _LiveEditState,
     _live_edit_post,
     _live_edit_update,
+    _render_chunked,
     _retry_discord_503,
 )
 from agenthub.stream_types import (
@@ -49,7 +53,7 @@ from agenthub.stream_types import (
 )
 
 if TYPE_CHECKING:
-    from discord import TextChannel
+    from discord import Message, TextChannel
     from discord.ext.commands import Bot
 
 log = logging.getLogger(__name__)
@@ -73,6 +77,8 @@ class DiscordStreamRenderer:
     """
 
     __slots__ = (
+        "_agent_announcements",
+        "_agent_labels",
         "_agent_name",
         "_bot",
         "_channel",
@@ -121,6 +127,11 @@ class DiscordStreamRenderer:
         self._in_flowchart = False
         self._suppress_stream = False
         self._fc_command: str | None = None
+        # Top-level Agent tool calls announced this stream, keyed by tool_use_id:
+        # the Discord messages backing each announcement, and the short label
+        # (also what R7 will need to prefix that subagent's task updates).
+        self._agent_announcements: dict[str, list[Message]] = {}
+        self._agent_labels: dict[str, str] = {}
         # Set when the stream hits a rate limit or transient API error. The old
         # path returned before its end-of-stream ping on both (discord_stream.py
         # :1455, :1466); StreamEnd is now emitted on every terminal path, so the
@@ -287,6 +298,9 @@ class DiscordStreamRenderer:
 
     async def _on_tool_use_start(self, event: ToolUseStart) -> None:
         log.debug("RENDER[%s] tool_use_start: %s", self._agent_name, event.tool_name)
+        # The input has not streamed in yet, so this posts the bare label and
+        # _on_tool_use_end fills in the JSON once it is complete.
+        await self._announce_agent_tool_use(event.tool_name, event, None)
 
     async def _on_tool_use_end(self, event: ToolUseEnd) -> None:
         if event.preview:
@@ -294,6 +308,45 @@ class DiscordStreamRenderer:
                 "RENDER[%s] tool_use_end: %s -> %s",
                 self._agent_name, event.tool_name, event.preview[:80],
             )
+        await self._announce_agent_tool_use(event.tool_name, event, event.tool_input)
+
+    async def _announce_agent_tool_use(
+        self, tool_name: str, event: Any, tool_input: dict[str, Any] | None,
+    ) -> None:
+        """Post or enrich the announcement for a top-level Agent tool call.
+
+        Port of discord_stream.py:436-468. Only top-level Agent calls are shown —
+        a nested one is already covered by its parent's announcement. The same
+        messages are edited as the input arrives rather than reposted, which is
+        why this needs the tool_use_id that ToolUseStart/End now carry.
+        """
+        if tool_name != "Agent" or event.parent_tool_use_id:
+            return
+        tool_use_id = event.tool_use_id
+        if not tool_use_id:
+            return
+
+        payload = tool_input or {}
+        label = _agent_context_label(tool_use_id, payload)
+        # Keep the richest label seen: the start event has no description yet.
+        if payload or tool_use_id not in self._agent_labels:
+            self._agent_labels[tool_use_id] = label
+
+        content = f"`🔧 {label}`"
+        if payload:
+            body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
+            content = f"`🔧 {label}`\n```json\n{body}\n```"
+
+        tracked = self._agent_announcements.get(tool_use_id)
+        if tracked is None:
+            fresh: list[Message] = []
+            self._agent_announcements[tool_use_id] = fresh
+            await _render_chunked(self._channel, fresh, content)
+            return
+
+        current = "".join(m.content for m in tracked if m.content != _BLANK_CONTENT)
+        if payload and current != content:
+            await _render_chunked(self._channel, tracked, content)
 
     # --- Todo ---
 

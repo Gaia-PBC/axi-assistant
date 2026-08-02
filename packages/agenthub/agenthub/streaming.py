@@ -107,6 +107,8 @@ class _Ctx:
 
     __slots__ = (
         "current_tool_name",
+        "current_tool_parent_id",
+        "current_tool_use_id",
         "flush_count",
         "got_result",
         "hit_rate_limit",
@@ -128,6 +130,10 @@ class _Ctx:
         self.text_buffer = ""
         self.tool_input_json = ""
         self.current_tool_name = ""
+        # Carried from content_block_start to content_block_stop, which does not
+        # repeat the block's id.
+        self.current_tool_use_id: str | None = None
+        self.current_tool_parent_id: str | None = None
         self.in_thinking = False
 
 
@@ -283,9 +289,13 @@ async def _handle_stream_event(
         if block.get("type") == "tool_use":
             ctx.tool_input_json = ""
             ctx.current_tool_name = block.get("name", "")
+            ctx.current_tool_use_id = block.get("id")
+            ctx.current_tool_parent_id = msg.parent_tool_use_id
             yield ToolUseStart(
                 tool_name=ctx.current_tool_name,
                 index=event.get("index", 0),
+                tool_use_id=ctx.current_tool_use_id,
+                parent_tool_use_id=ctx.current_tool_parent_id,
             )
     elif event_type == "content_block_delta":
         delta = event.get("delta", {})
@@ -310,6 +320,8 @@ async def _handle_stream_event(
                 tool_name=tool_name,
                 tool_input=tool_input,
                 preview=preview,
+                tool_use_id=ctx.current_tool_use_id,
+                parent_tool_use_id=ctx.current_tool_parent_id,
             )
 
             # Special case: TodoWrite (tool_input may be a non-dict on malformed/partial
