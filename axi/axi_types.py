@@ -114,6 +114,8 @@ class DiscordAgentState:
     task_error: bool = False
     # FlowCoder: current command name (set on flowchart_start, cleared on flowchart_complete)
     fc_current_command: str | None = None
+    # FlowCoder: pending input block (set on input_request, cleared when user responds)
+    pending_input_block_id: str | None = None
 
 
 def discord_state(session: AgentSession) -> DiscordAgentState:

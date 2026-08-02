@@ -86,3 +86,12 @@ class FlowcoderBridgeTransport(BridgeTransport):
                 continue
 
             yield msg_data
+
+    async def send_input_response(self, block_id: str, content: str) -> None:
+        """Send an input_response message to the flowcoder engine's stdin."""
+        import json as _json
+
+        msg = {"type": "input_response", "block_id": block_id, "content": content}
+        if self._stdio_logger:
+            self._stdio_logger.debug(">>> STDIN  %s (input_response)", _json.dumps(msg))
+        await self._conn.send_stdin(self._name, msg)

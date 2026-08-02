@@ -1312,6 +1312,19 @@ async def _handle_system_message(
             assert _set_session_id_fn is not None
             await _set_session_id_fn(session, None, channel=channel)
 
+    elif msg.subtype == "input_request":
+        data = msg.data.get("data", {})
+        block_id = data.get("block_id", "")
+        block_name = data.get("block_name", "input")
+        ds = discord_state(session)
+        ds.pending_input_block_id = block_id
+        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+        await _retry_discord_503(
+            channel.send,
+            f"**{block_name}**: Flowchart is waiting for input. Type your response below.\n{mentions}",
+        )
+        log.info("Input block '%s' (id=%s) waiting for user input for '%s'", block_name, block_id, session.name)
+
 
 # ---------------------------------------------------------------------------
 # Stall watchdog
