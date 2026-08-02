@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +58,12 @@ _STREAMING_CURSOR = "█"
 _STREAMING_MSG_LIMIT = 1900
 _SILENT_BLOCK_TYPES = {"start", "end", "variable"}
 
+# Flowchart commands whose per-block progress is suppressed in Discord.
+# /soul wraps every user message, so without this every ordinary turn would
+# post a "▶ block" line per block. Mirrors discord_stream.py:1090.
+_fc_quiet_str = os.environ.get("FC_QUIET_COMMANDS", "soul,soul-flow")
+_FC_QUIET_COMMANDS: set[str] = {c.strip() for c in _fc_quiet_str.split(",") if c.strip()}
+
 
 class DiscordStreamRenderer:
     """Stateful renderer that turns StreamOutput events into Discord messages.
@@ -70,12 +77,14 @@ class DiscordStreamRenderer:
         "_bot",
         "_channel",
         "_deferred_msg",
+        "_fc_command",
         "_flush_count",
         "_in_flowchart",
         "_last_flushed_channel_id",
         "_last_flushed_content",
         "_last_flushed_msg_id",
         "_live_edit",
+        "_saw_error",
         "_streaming_enabled",
         "_suppress_stream",
         "_text_buffer",
@@ -111,6 +120,12 @@ class DiscordStreamRenderer:
         self._typing_task: asyncio.Task[None] | None = None
         self._in_flowchart = False
         self._suppress_stream = False
+        self._fc_command: str | None = None
+        # Set when the stream hits a rate limit or transient API error. The old
+        # path returned before its end-of-stream ping on both (discord_stream.py
+        # :1455, :1466); StreamEnd is now emitted on every terminal path, so the
+        # guard has to be explicit.
+        self._saw_error = False
 
     async def handle(self, event: StreamOutput) -> None:
         """Dispatch a StreamOutput event to the appropriate handler."""
@@ -139,9 +154,11 @@ class DiscordStreamRenderer:
         elif isinstance(event, QueryResult):
             await self._on_query_result(event)
         elif isinstance(event, RateLimitHit):
-            await self.stop_typing()  # notice is orchestration-level; drop the indicator
+            self._saw_error = True  # notice is orchestration-level; suppress the end ping
+            await self.stop_typing()
         elif isinstance(event, TransientError):
-            await self.stop_typing()  # retry handling is orchestration-level
+            self._saw_error = True  # retry handling is orchestration-level
+            await self.stop_typing()
         elif isinstance(event, StreamKilled):
             await self.stop_typing()  # kill handling is orchestration-level
         elif isinstance(event, CompactStart):
@@ -204,6 +221,12 @@ class DiscordStreamRenderer:
         if self._deferred_msg:
             await self._send_long(self._deferred_msg)
             self._deferred_msg = ""
+
+        # Rate limit / transient error: the old path returned before the ping
+        # (discord_stream.py:1455, :1466). Pinging here would summon the user to
+        # a turn that produced no answer and no explanation.
+        if self._saw_error:
+            return
 
         mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
         await _retry_discord_503(self._channel.send, mentions)
@@ -318,22 +341,42 @@ class DiscordStreamRenderer:
     async def _on_flowchart_start(self, event: FlowchartStart) -> None:
         self._in_flowchart = True
         self._suppress_stream = False
+        self._fc_command = event.command or None
 
     async def _on_flowchart_end(self, event: FlowchartEnd) -> None:
         self._in_flowchart = False
         self._suppress_stream = False
+        self._fc_command = None
+
+    def _block_output_allowed(self) -> bool:
+        """Whether per-block progress should be posted for the running flowchart.
+
+        Mirrors discord_stream.py:1221 — quiet for /soul and /soul-flow (which
+        wrap every user message) unless the agent is in verbose mode.
+        """
+        if self._fc_command not in _FC_QUIET_COMMANDS:
+            return True
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+
+        session: Any = _agents_mod.agents.get(self._agent_name)
+        if session is None:
+            return False
+        return bool(discord_state(session).verbose)
 
     async def _on_block_start(self, event: BlockStart) -> None:
         if event.block_type in _SILENT_BLOCK_TYPES:
             return
         self._suppress_stream = event.block_type in ("prompt", "branch", "refresh")
+        if not self._block_output_allowed():
+            return
         label = f"**{event.block_name}**" if event.block_name else "?"
         block_type = f" (`{event.block_type}`)" if event.block_type else ""
         await self._send_system(f"▶ {label}{block_type}")
 
     async def _on_block_complete(self, event: BlockComplete) -> None:
         self._suppress_stream = False
-        if not event.success:
+        if not event.success and self._block_output_allowed():
             await self._send_system(f"❌ Block **{event.block_name}** failed")
 
     # --- System notifications ---
