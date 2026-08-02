@@ -293,8 +293,52 @@ class DiscordFrontend:
         if renderer:
             await renderer.handle(event)
 
+        # Interleaved with rendering, as the old stream loop did
+        # (discord_stream.py:1414). StreamEnd covers its post-loop drain at :1449.
+        await self._drain_stderr(agent_name)
+
         if isinstance(event, StreamEnd):
             self._stream_renderers.pop(agent_name, None)
+
+    async def _drain_stderr(self, agent_name: str) -> None:
+        """Drain the CLI stderr buffer, posting it when /debug is on.
+
+        The buffer lives on DiscordAgentState (axi_types.py:79-80), so it is
+        frontend-owned state and needs no hook in generic agenthub. Draining
+        every event also stops it sitting untouched for a whole turn: the hub
+        only drained at the START of the next turn (turn_hooks.before_turn),
+        throwing away whatever the CLI had written during this one.
+
+        Always drains even when quiet, so the buffer cannot grow unbounded —
+        matching _drain_and_send_stderr (discord_stream.py:105-121).
+        """
+        from axi import agents as _agents_mod
+        from axi.agents import drain_stderr
+        from axi.axi_types import discord_state
+
+        session: Any = _agents_mod.agents.get(agent_name)
+        if session is None:
+            return
+        messages = drain_stderr(session)
+        if not messages or not discord_state(session).debug:
+            return
+
+        from axi.channels import get_agent_channel
+        from axi.discord_wire import audited_channel_send
+        from discordquery import split_message
+
+        channel = await get_agent_channel(agent_name)
+        if channel is None:
+            return
+        for raw in messages:
+            text = raw.strip()
+            if not text:
+                continue
+            for part in split_message(f"```\n{text}\n```"):
+                try:
+                    await audited_channel_send(channel, part, operation="stream.stderr")
+                except Exception:
+                    log.debug("Failed to post stderr for '%s'", agent_name)
 
     # --- Interactive gates ---
 
