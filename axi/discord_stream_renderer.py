@@ -171,7 +171,7 @@ class DiscordStreamRenderer:
         elif isinstance(event, ThinkingStart):
             await self._on_thinking_start()
         elif isinstance(event, ThinkingEnd):
-            await self._on_thinking_end()
+            await self._on_thinking_end(event)
         elif isinstance(event, ToolUseStart):
             await self._on_tool_use_start(event)
         elif isinstance(event, ToolInputDelta):
@@ -312,7 +312,7 @@ class DiscordStreamRenderer:
         except Exception:
             log.debug("Failed to post thinking indicator for '%s'", self._agent_name)
 
-    async def _on_thinking_end(self) -> None:
+    async def _on_thinking_end(self, event: ThinkingEnd) -> None:
         if self._thinking_msg_id:
             try:
                 await _retry_discord_503(
@@ -323,6 +323,12 @@ class DiscordStreamRenderer:
             except Exception:
                 log.debug("Failed to delete thinking indicator for '%s'", self._agent_name)
             self._thinking_msg_id = None
+
+        # Verbose mode attaches the full thinking text as a file rather than
+        # dumping it inline (discord_stream.py:879-889).
+        thinking = (event.thinking_text or "").strip()
+        if thinking and self._verbose():
+            await self._post_verbose_file(thinking)
 
     # --- Tool use ---
 
@@ -341,6 +347,30 @@ class DiscordStreamRenderer:
                 self._agent_name, event.tool_name, event.preview[:80],
             )
         await self._announce_agent_tool_use(event.tool_name, event, event.tool_input)
+
+        # Verbose mode narrates each tool as it runs (discord_stream.py:890-905).
+        if event.tool_name and self._verbose():
+            preview = f": {event.preview[:120]}" if event.preview else ""
+            await self._send_system(f"`🔧 {event.tool_name}{preview}`")
+
+    async def _post_verbose_file(self, thinking: str) -> None:
+        """Attach thinking text as thinking.md, as the old verbose path did."""
+        import io
+
+        import discord
+
+        from axi.discord_wire import audited_channel_send
+
+        try:
+            await audited_channel_send(
+                self._channel,
+                "\U0001f4ad",
+                file=discord.File(io.BytesIO(thinking.encode("utf-8")), filename="thinking.md"),
+                retry_fn=_retry_discord_503,
+                operation="stream.thinking_file",
+            )
+        except Exception:
+            log.debug("Failed to post thinking file for '%s'", self._agent_name)
 
     async def _announce_agent_tool_use(
         self, tool_name: str, event: Any, tool_input: dict[str, Any] | None,
@@ -441,6 +471,10 @@ class DiscordStreamRenderer:
         """
         if self._fc_command not in _FC_QUIET_COMMANDS:
             return True
+        return self._verbose()
+
+    def _verbose(self) -> bool:
+        """Whether /verbose is on for this agent."""
         from axi import agents as _agents_mod
         from axi.axi_types import discord_state
 
