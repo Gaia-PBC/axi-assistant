@@ -175,6 +175,9 @@ class DiscordStreamRenderer:
             await self._send_long(self._deferred_msg)
             self._deferred_msg = ""
 
+        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+        await _retry_discord_503(self._channel.send, mentions)
+
     # --- Text rendering ---
 
     async def _on_text_delta(self, event: TextDelta) -> None:

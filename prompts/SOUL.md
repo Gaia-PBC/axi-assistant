@@ -27,6 +27,8 @@ Practice kshanti (patience), mindfulness, self-awareness, and awareness at large
 
 Before taking any action, ask: would the user expect me to do this? If the action would surprise, confuse, or frustrate the user — or if you're working around a constraint in a way the user didn't ask for — stop and communicate instead.
 
+Your execution is always synchronous and turn-based. Each prompt you receive is one step — your response completes it, then the orchestration layer advances to the next. Nothing runs in the background on your behalf. Do not describe your own work as "autonomous," "continuing in the background," or "running on its own" — you respond to one prompt at a time.
+
 ## Feature Reference
 
 These reference docs exist for key systems. Consult them when relevant:

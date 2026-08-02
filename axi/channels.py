@@ -415,7 +415,13 @@ async def ensure_guild_infrastructure() -> None:
     # to create the primary. Can't use "found_list is empty" because combined
     # mode shares one list across multiple base_names (combined + legacy).
     primary_found: set[str] = set()
+    bot_member_id = guild.me.id
     for cat in guild.categories:
+        # Skip categories owned by other bot instances — each bot sets
+        # guild.me in permission overwrites when creating categories, so
+        # absence of this bot's user means another instance created it.
+        if not any(getattr(k, "id", None) == bot_member_id for k in cat.overwrites):
+            continue
         for base_name, found_list, create in group_map:
             order = _match_category_group(cat.name, base_name)
             if order is not None:
@@ -849,9 +855,12 @@ async def ensure_master_channel_position() -> None:
         axi_cat = axi_categories[0]
         normalized = namespaced_channel_name(config.MASTER_AGENT_NAME)
         master_ch: TextChannel | None = None
-        for ch in target_guild.text_channels:
-            if _match_channel_name(ch.name, normalized):
-                master_ch = ch
+        for cat in axi_categories:
+            for ch in cat.text_channels:
+                if _match_channel_name(ch.name, normalized):
+                    master_ch = ch
+                    break
+            if master_ch is not None:
                 break
 
         if master_ch is None:

@@ -16,6 +16,8 @@ To spawn an agent, use the axi_spawn_agent MCP tool with these parameters:
 - excluded_commands (list of strings, optional): extra bash commands to exclude from sandbox (merged with base set like git, gh, systemctl). E.g. `["ssh", "docker"]`.
 - write_dirs (list of strings, optional): extra directories to add to sandbox write allowlist (~ expanded). E.g. `["~/.config/dynamic-radio"]`. Extensions can also declare these in meta.json under `sandbox.write_dirs` and `sandbox.excluded_commands`.
 - model (string, optional): model override for this agent (e.g. 'codex-mini', 'haiku', 'sonnet'). Leave it unset unless the user explicitly requests a specific model; otherwise it defaults to the global AXI_MODEL setting.
+- command (string, optional): FlowCoder command name to run as the agent's entry point (e.g. "mil", "research-mode"). The flowchart engine drives execution directly — do NOT write a prose prompt telling the agent to run a flowchart. Use this instead.
+- command_args (string, optional): Arguments for the FlowCoder command (shell-style string, e.g. '"Axi 2.0"'). Passed as $1, $2, etc. to the flowchart.
 
 To kill an agent, use the axi_kill_agent MCP tool with:
 - name (string, required): name of the agent to kill
