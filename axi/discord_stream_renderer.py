@@ -9,6 +9,7 @@ Uses the discord REST client and live-edit machinery from discord_stream.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -138,11 +139,11 @@ class DiscordStreamRenderer:
         elif isinstance(event, QueryResult):
             await self._on_query_result(event)
         elif isinstance(event, RateLimitHit):
-            pass  # rate limit handling is orchestration-level
+            await self.stop_typing()  # notice is orchestration-level; drop the indicator
         elif isinstance(event, TransientError):
-            pass  # retry handling is orchestration-level
+            await self.stop_typing()  # retry handling is orchestration-level
         elif isinstance(event, StreamKilled):
-            pass  # kill handling is orchestration-level
+            await self.stop_typing()  # kill handling is orchestration-level
         elif isinstance(event, CompactStart):
             await self._on_compact_start(event)
         elif isinstance(event, CompactComplete):
@@ -160,16 +161,45 @@ class DiscordStreamRenderer:
 
     # --- Lifecycle ---
 
-    async def _on_stream_start(self) -> None:
+    async def _keep_typing(self) -> None:
+        """Hold ``channel.typing()`` open until cancelled.
+
+        ``Typing.__aenter__`` sends one typing packet and spawns a task that
+        re-sends every 5s.  Discord expires the indicator after ~10s, so the
+        context manager must stay open for the whole turn: ``await``ing
+        ``channel.typing()`` once covers only the first 10s, and handing it to
+        ``create_task`` raises TypeError — it is a context manager, not a
+        coroutine.
+        """
         try:
-            self._typing_task = asyncio.create_task(self._channel.typing())
+            async with self._channel.typing():
+                await asyncio.Event().wait()
         except Exception:
-            log.debug("Failed to start typing for '%s'", self._agent_name)
+            log.warning(
+                "Typing indicator failed for '%s'", self._agent_name, exc_info=True
+            )
+
+    def start_typing(self) -> None:
+        """Start the typing indicator, unless one is already running."""
+        if self._typing_task is not None:
+            return
+        self._typing_task = asyncio.create_task(self._keep_typing())
+
+    async def stop_typing(self) -> None:
+        """Cancel the typing indicator and let the context manager unwind."""
+        task = self._typing_task
+        if task is None:
+            return
+        self._typing_task = None
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _on_stream_start(self) -> None:
+        self.start_typing()
 
     async def _on_stream_end(self, event: StreamEnd) -> None:
-        if self._typing_task:
-            self._typing_task.cancel()
-            self._typing_task = None
+        await self.stop_typing()
 
         if self._deferred_msg:
             await self._send_long(self._deferred_msg)
@@ -254,6 +284,9 @@ class DiscordStreamRenderer:
     # --- Query result ---
 
     async def _on_query_result(self, event: QueryResult) -> None:
+        # The old path stopped typing on the first ResultMessage regardless of
+        # flowchart-ness (discord_stream.py:1046, ahead of its flowchart check).
+        await self.stop_typing()
         if event.is_flowchart:
             return
         cost = f"${event.cost_usd:.4f}" if event.cost_usd else ""
