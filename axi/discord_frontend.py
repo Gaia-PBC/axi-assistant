@@ -107,7 +107,15 @@ class DiscordFrontend:
         pass  # Will delegate to Discord embed rendering in Phase 4
 
     async def set_typing(self, agent_name: str, is_typing: bool) -> None:
-        pass  # Will delegate to channel.typing() in Phase 3
+        # Only meaningful while a stream is in flight — the renderer owns the
+        # typing task. No renderer (agent idle) means nothing to toggle.
+        renderer = self._stream_renderers.get(agent_name)
+        if renderer is None:
+            return
+        if is_typing:
+            renderer.start_typing()
+        else:
+            await renderer.stop_typing()
 
     async def set_status(
         self, agent_name: str, status_text: str, emoji: str | None = None
@@ -332,6 +340,8 @@ class DiscordFrontend:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         ds.plan_approval_future = future  # type: ignore[assignment]
+        # The agent is blocked on the user now, not working — drop the indicator.
+        await self.set_typing(agent_name, False)
         schedule_status_update()
 
         try:
@@ -379,6 +389,9 @@ class DiscordFrontend:
         except Exception:
             log.exception("ask_question: failed to post header for '%s'", agent_name)
             return {}
+
+        # The agent is blocked on the user now, not working — drop the indicator.
+        await self.set_typing(agent_name, False)
 
         for i, q in enumerate(questions):
             try:
