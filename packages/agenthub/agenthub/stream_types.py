@@ -65,6 +65,11 @@ class ToolUseStart:
 
     tool_name: str
     index: int = 0
+    # Correlates start/end for one invocation so a frontend can update the
+    # message it already posted instead of posting a second one.
+    tool_use_id: str | None = None
+    # None for a top-level call; set when the tool runs inside a subagent.
+    parent_tool_use_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -81,6 +86,8 @@ class ToolUseEnd:
     tool_name: str
     tool_input: dict[str, Any] = field(default_factory=dict)
     preview: str | None = None  # short human-readable preview
+    tool_use_id: str | None = None  # pairs with the matching ToolUseStart
+    parent_tool_use_id: str | None = None
 
 
 @dataclass(slots=True)
