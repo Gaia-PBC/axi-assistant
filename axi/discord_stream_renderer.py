@@ -104,6 +104,7 @@ class DiscordStreamRenderer:
         "_last_flushed_msg_id",
         "_live_edit",
         "_saw_error",
+        "_stream_started_at",
         "_streaming_enabled",
         "_suppress_stream",
         "_task_last_status",
@@ -144,6 +145,8 @@ class DiscordStreamRenderer:
         self._in_flowchart = False
         self._suppress_stream = False
         self._fc_command: str | None = None
+        # Fallback wall-clock origin when the session has no query_started.
+        self._stream_started_at: float | None = None
         # Top-level Agent tool calls announced this stream, keyed by tool_use_id:
         # the Discord messages backing each announcement, and the short label
         # (also what R7 will need to prefix that subagent's task updates).
@@ -248,6 +251,7 @@ class DiscordStreamRenderer:
             await task
 
     async def _on_stream_start(self) -> None:
+        self._stream_started_at = time.monotonic()
         self.start_typing()
 
     async def _on_stream_end(self, event: StreamEnd) -> None:
@@ -421,28 +425,68 @@ class DiscordStreamRenderer:
 
     # --- Query result ---
 
+    def _elapsed_seconds(self) -> float | None:
+        """Wall-clock seconds since the turn was submitted.
+
+        The old path measured from session.activity.query_started
+        (discord_stream.py:1505), i.e. what the user actually waited, rather
+        than QueryResult.duration_ms which is model time only.
+        """
+        from datetime import UTC, datetime
+
+        from axi import agents as _agents_mod
+
+        session: Any = _agents_mod.agents.get(self._agent_name)
+        started = getattr(getattr(session, "activity", None), "query_started", None)
+        if started is not None:
+            return (datetime.now(UTC) - started).total_seconds()
+        if self._stream_started_at is not None:
+            return time.monotonic() - self._stream_started_at
+        return None
+
     async def _on_query_result(self, event: QueryResult) -> None:
         # The old path stopped typing on the first ResultMessage regardless of
         # flowchart-ness (discord_stream.py:1046, ahead of its flowchart check).
         await self.stop_typing()
         if event.is_flowchart:
             return
-        cost = f"${event.cost_usd:.4f}" if event.cost_usd else ""
-        duration = f"{event.duration_ms / 1000:.1f}s" if event.duration_ms else ""
-        parts = [p for p in [cost, duration] if p]
-        if parts:
-            suffix = f" ({', '.join(parts)})"
-            if self._last_flushed_msg_id and self._last_flushed_channel_id:
-                try:
-                    new_content = self._last_flushed_content + suffix
-                    await _retry_discord_503(
-                        config.discord_client.edit_message,
-                        self._last_flushed_channel_id,
-                        self._last_flushed_msg_id,
-                        new_content,
-                    )
-                except Exception:
-                    log.debug("Failed to append timing to last message for '%s'", self._agent_name)
+
+        from axi.agents import get_active_trace_tag
+
+        elapsed = self._elapsed_seconds()
+        parts: list[str] = []
+        if elapsed is not None:
+            parts.append(f"{elapsed:.1f}s")
+        if event.cost_usd:
+            parts.append(f"${event.cost_usd:.4f}")
+        if not parts:
+            return
+
+        tag = get_active_trace_tag(self._agent_name)
+        # Discord subtext on its own line, as before (discord_stream.py:1508).
+        suffix = f"\n-# {' · '.join(parts)}{' ' + tag if tag else ''}"
+
+        # Same three placements as the old path (:1510-1528).
+        if self._deferred_msg:
+            self._deferred_msg += suffix
+            return
+        if self._last_flushed_msg_id and self._last_flushed_channel_id:
+            try:
+                await _retry_discord_503(
+                    config.discord_client.edit_message,
+                    self._last_flushed_channel_id,
+                    self._last_flushed_msg_id,
+                    self._last_flushed_content + suffix,
+                )
+                return
+            except Exception:
+                log.warning(
+                    "Failed to edit last message to append timing for '%s'",
+                    self._agent_name, exc_info=True,
+                )
+        # Nothing to attach it to, or the edit failed — post it rather than
+        # dropping it silently, which is what the refactor did.
+        await self._send_system(suffix.lstrip("\n"))
 
     # --- Compaction ---
 
