@@ -32,7 +32,8 @@ class FakeFrontend:
     async def stop(self) -> None:
         self._record("stop")
 
-    async def post_message(self, agent_name: str, text: str) -> None:
+    async def post_message(self, agent_name: str, text: str, channel_ref: Any = None) -> None:
+        # channel_ref added by the Phase 9 Frontend protocol; accept + ignore it here.
         self._record("post_message", agent_name, text)
 
     async def post_system(self, agent_name: str, text: str) -> None:
