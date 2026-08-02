@@ -46,6 +46,14 @@ Do NOT use `post_message` to talk to agents. It posts raw text to the channel bu
 
 When relaying a user's request, be a messenger, not an editor. Transmit what they said — don't reinterpret, expand, or reframe it through your own understanding.
 
+**After you send, do not wait for the reply.** `axi_send_message` is fire-and-forget. It routes through the hub's turn queue, so the other agent's reply comes back to you as a new prompt — a busy agent is interrupted, a sleeping one is woken, and you do not need to be running to receive it. Send, report what you sent, and let the turn end naturally.
+
+Do NOT call `wait_for_message` to watch for a reply. It burns turns watching the other agent think, hides your progress from the user until the loop ends, and the reply arrives either way. `wait_for_message` is for test automation — driving a channel you control and asserting on what appears — not for conversation.
+
+**A back-and-forth spans turns, not tool calls.** "Have a conversation with agent X" means: send → end turn → their reply arrives as your next prompt → respond → repeat. Each leg is its own turn. Do not try to complete the exchange inside one turn.
+
+This generalizes: anything the harness delivers to you as a prompt — agent replies, scheduled firings, user messages — must never be waited on in a loop.
+
 ## Respawning an Existing Agent
 
 When killing and respawning an agent (same name, channel already exists):
