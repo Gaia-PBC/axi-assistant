@@ -1337,7 +1337,9 @@ async def _drain_inflight_stream(session: AgentSession) -> str | None:
             pending_compact=_pending_compact,
         ):
             t_last_event_ref[0] = time.monotonic()
-            drain_stderr(session)
+            # No drain_stderr here: DiscordFrontend.on_stream_event drains and
+            # posts it (b2cf244). Draining first would discard the buffer before
+            # the frontend could show it under /debug.
             await router.on_stream_event(session.name, event)
 
             if isinstance(event, TransientError):
@@ -1349,17 +1351,14 @@ async def _drain_inflight_stream(session: AgentSession) -> str | None:
         watchdog.cancel()
         _streaming_agent.reset(sa_token)
 
-    drain_stderr(session)
-
+    # The end-of-stream user ping is NOT posted here. StreamEnd is broadcast to
+    # the router above, and DiscordStreamRenderer._on_stream_end owns the ping —
+    # pinging again produced two mentions per reconnect drain. The renderer also
+    # suppresses it on rate-limit / transient-error streams (41df8a5), which
+    # this path never did.
     if got_kill:
-        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
-        await _get_router().post_message(session.name, mentions)
         await sleep_agent(session, force=True)
         return None
-
-    if error is None:
-        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
-        await _get_router().post_message(session.name, mentions)
 
     return error
 

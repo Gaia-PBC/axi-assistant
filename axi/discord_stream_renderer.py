@@ -202,7 +202,7 @@ class DiscordStreamRenderer:
         elif isinstance(event, CompactStart):
             await self._on_compact_start(event)
         elif isinstance(event, CompactComplete):
-            pass  # compact completion deferred to next query start
+            await self._on_compact_complete(event)
         elif isinstance(event, FlowchartStart):
             await self._on_flowchart_start(event)
         elif isinstance(event, FlowchartEnd):
@@ -417,9 +417,17 @@ class DiscordStreamRenderer:
     # --- Todo ---
 
     async def _on_todo_update(self, event: TodoUpdate) -> None:
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
         from axi.discord_ui import format_todo_list, _save_todo_items
 
         _save_todo_items(self._agent_name, event.todos)
+        # Keep the in-memory copy in step with the file. main.py renders
+        # discord_state(session).todo_items, which otherwise stays stale until
+        # the next wake reloads it from disk (old path: discord_ui.py:439).
+        session: Any = _agents_mod.agents.get(self._agent_name)
+        if session is not None:
+            discord_state(session).todo_items = event.todos
         body = f"**Todo List**\n{format_todo_list(event.todos)}"
         await self._send_system(body)
 
@@ -489,6 +497,18 @@ class DiscordStreamRenderer:
         await self._send_system(suffix.lstrip("\n"))
 
     # --- Compaction ---
+
+    async def _on_compact_complete(self, event: CompactComplete) -> None:
+        """Announce a compaction that carries no pre_tokens.
+
+        With pre_tokens the hub defers to AxiTurnHooks, which posts a richer
+        summary once post-compaction token counts land (_handle_pending_compact).
+        Without them nothing was recorded, so nothing was ever posted and the
+        compaction looked like it never happened (old path: :1197-1198).
+        """
+        if event.pre_tokens:
+            return
+        await self._send_system("\U0001f504 Context compacted")
 
     async def _on_compact_start(self, event: CompactStart) -> None:
         label = "Axi-triggered compaction" if event.self_triggered else "Compacting"
