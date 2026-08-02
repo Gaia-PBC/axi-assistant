@@ -208,6 +208,9 @@ class BlockStart:
 
     block_name: str = ""
     block_type: str = ""
+    # True when the block declares an output schema: its text is JSON produced
+    # for internal branching, not prose for the user, so frontends suppress it.
+    has_output_schema: bool = False
 
 
 @dataclass(slots=True)

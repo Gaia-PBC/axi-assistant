@@ -69,6 +69,11 @@ _fc_quiet_str = os.environ.get("FC_QUIET_COMMANDS", "soul,soul-flow")
 _FC_QUIET_COMMANDS: set[str] = {c.strip() for c in _fc_quiet_str.split(",") if c.strip()}
 
 
+def _show_output_schema() -> bool:
+    """Whether output-schema block text should be shown despite being internal JSON."""
+    return os.environ.get("FC_SHOW_OUTPUT_SCHEMA", "").lower() in ("1", "true", "yes")
+
+
 class DiscordStreamRenderer:
     """Stateful renderer that turns StreamOutput events into Discord messages.
 
@@ -252,6 +257,12 @@ class DiscordStreamRenderer:
             await self._do_live_edit_tick()
 
     async def _on_text_flush(self, event: TextFlush) -> None:
+        # Suppressed blocks must drop their flush too, not just their deltas —
+        # the old path skipped _flush_text entirely (discord_stream.py:1229-1232).
+        # Without this the internal JSON still lands in the channel at block end.
+        if self._suppress_stream:
+            self._text_buffer = ""
+            return
         text = event.text
         if not text.strip():
             return
@@ -420,7 +431,10 @@ class DiscordStreamRenderer:
     async def _on_block_start(self, event: BlockStart) -> None:
         if event.block_type in _SILENT_BLOCK_TYPES:
             return
-        self._suppress_stream = event.block_type in ("prompt", "branch", "refresh")
+        # A block with an output schema emits JSON for internal branching, not
+        # prose for the user (discord_stream.py:1206-1210). Keying this on
+        # block_type instead let that JSON reach the channel.
+        self._suppress_stream = event.has_output_schema and not _show_output_schema()
         if not self._block_output_allowed():
             return
         label = f"**{event.block_name}**" if event.block_name else "?"
@@ -450,6 +464,17 @@ class DiscordStreamRenderer:
             content = data.get("content", "")
             if content:
                 await self._send_system(content)
+        elif event.subtype == "block_timeout":
+            # A per-block timeout kills the CLI and halts the flowchart; without
+            # this the block just stops and looks like nothing happened.
+            data = event.data.get("data", {})
+            elapsed_ms = data.get("elapsed_ms", 0)
+            elapsed_s = elapsed_ms / 1000 if isinstance(elapsed_ms, (int, float)) else 0
+            await self._send_system(
+                f"⏱️ Block **{data.get('block_name', '?')}** "
+                f"(`{data.get('block_type', '?')}`) timed out after "
+                f"{elapsed_s:.0f}s (limit: {data.get('timeout_seconds', 0)}s)"
+            )
         elif event.subtype == "input_request":
             data = event.data.get("data", {})
             block_id = data.get("block_id", "")
