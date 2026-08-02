@@ -508,7 +508,11 @@ async def _handle_system_message(
         block_name = data.get("block_name", "?")
         block_type = data.get("block_type", "?")
         if block_type not in _SILENT_BLOCK_TYPES:
-            yield BlockStart(block_name=block_name, block_type=block_type)
+            yield BlockStart(
+                block_name=block_name,
+                block_type=block_type,
+                has_output_schema=bool(data.get("has_output_schema")),
+            )
 
     elif msg.subtype == "block_complete":
         if ctx.text_buffer.strip():

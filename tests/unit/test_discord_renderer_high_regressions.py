@@ -204,12 +204,27 @@ async def test_flowchart_end_clears_command(system_msgs: list[str]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_quiet_block_still_suppresses_stream_text(system_msgs: list[str]) -> None:
-    """Muting the announcement must not disturb output-suppression state."""
+async def test_quiet_gate_is_independent_of_output_suppression(
+    system_msgs: list[str],
+) -> None:
+    """Muting the announcement must not disturb output-suppression state.
+
+    The two gates are orthogonal: the quiet gate (R2) decides whether to post
+    "▶ block", while suppression (R11) decides whether the block's *text* is
+    internal JSON. This originally asserted that any prompt block suppresses,
+    which encoded the block_type predicate R11 replaced with has_output_schema.
+    """
     renderer = _renderer(_FakeChannel())
+    await renderer.handle(FlowchartStart(command="soul", block_count=2))
 
-    await renderer.handle(FlowchartStart(command="soul", block_count=1))
-    await renderer.handle(BlockStart(block_name="CLASSIFY", block_type="prompt"))
-
-    assert system_msgs == []
+    await renderer.handle(
+        BlockStart(block_name="CLASSIFY", block_type="prompt", has_output_schema=True)
+    )
+    assert system_msgs == [], "quiet command must still mute the announcement"
     assert renderer._suppress_stream is True
+
+    await renderer.handle(
+        BlockStart(block_name="WRITE", block_type="prompt", has_output_schema=False)
+    )
+    assert system_msgs == []
+    assert renderer._suppress_stream is False, "prose blocks must not be suppressed"
