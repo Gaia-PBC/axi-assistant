@@ -4,7 +4,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from axi import config
-from axi.prompts import _is_axi_dev_cwd, compute_prompt_hash, make_spawned_agent_system_prompt
+from axi.prompts import (
+    _is_axi_dev_cwd,
+    _load_prompt_file,
+    compute_prompt_hash,
+    make_spawned_agent_system_prompt,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -115,3 +120,28 @@ class TestMakeSpawnedAgentSystemPrompt:
         expected = str(REPO_ROOT / "prompts" / "refs" / "agent-spawning.md")
         assert expected in result["append"]
         assert "%(bot_dir)s/prompts/refs/agent-spawning.md" not in result["append"]
+
+
+class TestLoadPromptFile:
+    """Prompt prose may contain bare '%' — it must not be read as a format spec."""
+
+    def test_expands_known_placeholders(self, tmp_path: Path) -> None:
+        p = tmp_path / "p.md"
+        p.write_text("dir is %(bot_dir)s", encoding="utf-8")
+        assert _load_prompt_file(str(p), {"bot_dir": "/opt/axi"}) == "dir is /opt/axi"
+
+    def test_bare_percent_is_left_literal(self, tmp_path: Path) -> None:
+        # Regression: `git log %an`/`%ae` in SOUL.md crash-looped the bot at import.
+        p = tmp_path / "p.md"
+        p.write_text("use %an/%ae, 100% sure, %(bot_dir)s", encoding="utf-8")
+        result = _load_prompt_file(str(p), {"bot_dir": "/opt/axi"})
+        assert result == "use %an/%ae, 100% sure, /opt/axi"
+
+    def test_unknown_placeholder_is_left_alone(self, tmp_path: Path) -> None:
+        p = tmp_path / "p.md"
+        p.write_text("%(nope)s", encoding="utf-8")
+        assert _load_prompt_file(str(p), {"bot_dir": "/opt/axi"}) == "%(nope)s"
+
+    def test_real_soul_file_loads(self) -> None:
+        content = _load_prompt_file(str(REPO_ROOT / "prompts" / "SOUL.md"), {"bot_dir": "/opt/axi"})
+        assert content
