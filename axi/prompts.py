@@ -53,12 +53,20 @@ def compute_prompt_hash(system_prompt: SystemPromptPreset | str | None) -> str |
 # ---------------------------------------------------------------------------
 
 
+_PLACEHOLDER_RE = re.compile(r"%\((\w+)\)s")
+
+
 def _load_prompt_file(path: str, variables: dict[str, str] | None = None) -> str:
-    """Load a prompt .md file, optionally expanding %(var)s placeholders."""
+    """Load a prompt .md file, optionally expanding %(var)s placeholders.
+
+    Only known %(var)s placeholders are substituted. Every other '%' is left
+    literal, so prompt prose can mention things like `git log %an` without
+    turning the load into a TypeError at import time.
+    """
     with open(path, encoding="utf-8") as f:
         content = f.read()
     if variables:
-        content = content % variables
+        content = _PLACEHOLDER_RE.sub(lambda m: variables.get(m.group(1), m.group(0)), content)
     return content
 
 
