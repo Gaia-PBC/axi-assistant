@@ -7,7 +7,7 @@ import pytest
 
 from .helpers import Discord
 from .llm_judge import llm_assert
-from .conftest import agent_cwd
+from .conftest import agent_cwd, INSTANCE_NAME, AXI_PY_DIR
 
 # -- Tier 1: Core Features --
 
@@ -245,11 +245,10 @@ def test_startup_notification(discord: Discord, master_channel: str, instance_en
     # Record current latest message
     latest = discord.latest_message_id(master_channel)
 
-    # Restart the instance
-    axi_py_dir = pytest.importorskip("pathlib").Path(__file__).parent.parent
+    # Restart the instance-under-test (NOT hardcoded 'smoke-test'; correct path)
     subprocess.run(
-        ["uv", "run", "python", "../axi_test.py", "restart", "smoke-test"],
-        cwd=str(axi_py_dir),
+        ["uv", "run", "python", "axi_test.py", "restart", INSTANCE_NAME],
+        cwd=str(AXI_PY_DIR),
         capture_output=True,
         timeout=30,
     )
