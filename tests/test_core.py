@@ -36,14 +36,14 @@ def test_debug_toggle(discord: Discord, master_channel: str):
         master_channel, "/debug", sentinel=False, timeout=15.0
     )
     text = discord.bot_response_text(msgs)
-    assert "debug mode" in text.lower()
+    assert "debug output" in text.lower()
 
     # Toggle again
     msgs = discord.send_and_wait(
         master_channel, "/debug", sentinel=False, timeout=15.0
     )
     text = discord.bot_response_text(msgs)
-    assert "debug mode" in text.lower()
+    assert "debug output" in text.lower()
 
 
 def test_clear_context(discord: Discord, master_channel: str):

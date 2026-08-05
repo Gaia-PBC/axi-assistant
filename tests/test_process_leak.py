@@ -107,7 +107,7 @@ async def drain_response(client: ClaudeSDKClient) -> None:
 
 async def create_client() -> ClaudeSDKClient:
     options = ClaudeAgentOptions(
-        model="sonnet",
+        model="haiku",
         system_prompt="Reply with exactly: OK",
         max_turns=1,
         can_use_tool=allow_all,
