@@ -68,7 +68,7 @@ def _restart_bot(discord_client: "Discord | None" = None, channel_id: str | None
         return
     (INSTANCE_DIR / ".master_session_id").unlink(missing_ok=True)
     subprocess.run(
-        ["uv", "run", "python", "../axi_test.py", "restart", INSTANCE_NAME],
+        ["uv", "run", "python", "axi_test.py", "restart", INSTANCE_NAME],
         cwd=str(AXI_PY_DIR),
         capture_output=True,
         timeout=30,

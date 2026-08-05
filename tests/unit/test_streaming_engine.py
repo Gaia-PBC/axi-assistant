@@ -423,16 +423,18 @@ class TestStreamProperties:
             assert not kills
             assert not results
             assert not transient_errors
-            assert any(f.reason == "rate_limit" for f in flushes)
+            # a terminal flush exists iff there was non-whitespace buffered text to flush;
+            # the outcome itself is carried by the RateLimitHit event (asserted above), not the flush.
+            assert (any(f.reason == "rate_limit" for f in flushes)) == bool("".join(chunks).strip())
         elif terminal == "transient":
             assert len(transient_errors) == 1
             assert not kills
             assert not results
             assert not rate_limits
-            assert any(f.reason in {"assistant_error", "transient_error"} for f in flushes)
+            assert (any(f.reason in {"assistant_error", "transient_error"} for f in flushes)) == bool("".join(chunks).strip())
         else:
             assert len(kills) == 1
             assert not results
             assert not rate_limits
             assert not transient_errors
-            assert any(f.reason == "post_kill" for f in flushes)
+            assert (any(f.reason == "post_kill" for f in flushes)) == bool("".join(chunks).strip())
