@@ -193,12 +193,27 @@ def create_hub(
     discord_fe = DiscordFrontend(bot)
     router.add(discord_fe)
 
+    # AXI_STUB_MODEL=1: replace the LLM/flowcoder client with a deterministic
+    # in-process stub for the e2e B-tier suite. Everything else (queue,
+    # spawn/kill, lifecycle, permissions, channels) keeps running for real. The
+    # stub client yields raw SDK messages, so the real stream_factory consumes
+    # it unchanged.
+    from axi import stub_model
+
+    if stub_model.is_enabled():
+        log.warning("AXI_STUB_MODEL=1 — using deterministic in-process stub model")
+        create_client = stub_model.create_client
+        disconnect_client = stub_model.disconnect_client
+    else:
+        create_client = _create_client
+        disconnect_client = _disconnect_client
+
     hub = AgentHub(
         frontends=[router],
         max_awake=config.MAX_AWAKE_AGENTS,
         make_agent_options=_make_agent_options,
-        create_client=_create_client,
-        disconnect_client=_disconnect_client,
+        create_client=create_client,
+        disconnect_client=disconnect_client,
         stream_factory=_stream_factory,
         query_timeout=config.QUERY_TIMEOUT,
         max_attempts=config.API_ERROR_MAX_RETRIES,

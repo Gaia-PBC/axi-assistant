@@ -199,10 +199,11 @@ def test_emoji_reactions(discord: Discord, master_channel: str):
     discord.wait_for_bot(master_channel, after=msg_id, timeout=60.0)
     time.sleep(2)
 
-    # Check if the bot added a reaction to our message
-    resp = discord._bot.get(f"/channels/{master_channel}/messages/{msg_id}")
-    resp.raise_for_status()
-    msg_data = resp.json()
+    # Check if the bot added a reaction to our message. discord._bot.get()
+    # returns the already-parsed JSON dict (not an httpx.Response), so use it
+    # directly — the previous resp.raise_for_status()/resp.json() calls raised
+    # AttributeError on the dict.
+    msg_data = discord._bot.get(f"/channels/{master_channel}/messages/{msg_id}")
     reactions = msg_data.get("reactions", [])
 
     has_check = any(

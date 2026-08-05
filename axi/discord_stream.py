@@ -1491,8 +1491,11 @@ async def _stream_response_to_channel_impl(session: AgentSession, channel: TextC
         await _flush_text(ctx, session, channel, "post_kill")
         log.info("STREAM_END[%s] result=killed msgs=%d flushes=%d", stream_id, ctx.msg_total, ctx.flush_count)
         # Ping before sleeping — user needs to know the agent stopped
-        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
-        await _retry_discord_503(channel.send, mentions)
+        from axi import stub_model
+
+        if not stub_model.suppress_completion_ping():
+            mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+            await _retry_discord_503(channel.send, mentions)
         span.set_attributes({"stream.msg_total": ctx.msg_total, "stream.flush_count": ctx.flush_count})
         span.end()
         assert _sleep_agent_fn is not None
@@ -1534,8 +1537,11 @@ async def _stream_response_to_channel_impl(session: AgentSession, channel: TextC
         await _flush_text(ctx, session, channel, "post_loop")
     log.info("STREAM_END[%s] result=ok msgs=%d flushes=%d", stream_id, ctx.msg_total, ctx.flush_count)
 
-    mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
-    await _retry_discord_503(channel.send, mentions)
+    from axi import stub_model
+
+    if not stub_model.suppress_completion_ping():
+        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+        await _retry_discord_503(channel.send, mentions)
 
     ttfe_ms = (t_first_event - t0) * 1000 if t_first_event is not None else -1
     span.set_attributes({

@@ -179,23 +179,35 @@ class DiscordFrontend:
                 )
             session.system_prompt_hash = current_hash
 
+        # Under the stub, skip the first-wake system-prompt post and the model
+        # warning. Both are pure noise for the deterministic suite, and cutting
+        # them keeps the startup message burst small — otherwise Discord's
+        # per-channel rate limit delays the first real turn's sends and flakes
+        # timing-sensitive tests (emoji reaction, /clear-while-busy) that read
+        # the agent as briefly "busy".
+        from axi import stub_model
+
+        stub = stub_model.is_enabled()
+
         # Post the system prompt on first wake
         ds = discord_state(session)
         if not ds.system_prompt_posted and ds.channel_id:
             ds.system_prompt_posted = True
-            try:
-                await post_system_prompt_to_channel(
-                    agent_name,
-                    session.system_prompt,
-                    is_resume=bool(resume_id),
-                    prompt_changed=prompt_changed,
-                    session_id=session.session_id or resume_id,
-                )
-                log.info("on_wake: posted system prompt to '%s' on first wake", agent_name)
-            except Exception:
-                log.warning("Failed to post system prompt for '%s'", agent_name, exc_info=True)
+            if not stub:
+                try:
+                    await post_system_prompt_to_channel(
+                        agent_name,
+                        session.system_prompt,
+                        is_resume=bool(resume_id),
+                        prompt_changed=prompt_changed,
+                        session_id=session.session_id or resume_id,
+                    )
+                    log.info("on_wake: posted system prompt to '%s' on first wake", agent_name)
+                except Exception:
+                    log.warning("Failed to post system prompt for '%s'", agent_name, exc_info=True)
 
-        await _post_model_warning(session)
+        if not stub:
+            await _post_model_warning(session)
         log.debug("Discord: agent '%s' woke", agent_name)
 
     async def on_sleep(self, agent_name: str) -> None:
