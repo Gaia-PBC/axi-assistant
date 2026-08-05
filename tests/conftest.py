@@ -168,16 +168,41 @@ def data_dir():
     return str(DATA_DIR)
 
 
+def _bot_is_responsive(discord: Discord, channel_id: str, timeout: float = 20.0) -> bool:
+    """Quick health check: does the bot still answer a ping?
+
+    An ordinary assertion failure leaves the bot perfectly healthy — the model
+    returned a response, it was merely judged wrong. Only a genuinely *stuck* bot
+    (e.g. a spawn test that hung mid-processing) needs the ~21s recovery restart.
+    Probing responsiveness first lets us skip that restart for the common case,
+    which matters enormously when a run expects many failures (e.g. a weak-model
+    curriculum tier).
+    """
+    try:
+        msgs = discord.send_and_wait(
+            channel_id, "Say exactly: HEALTHCHECK_OK", timeout=timeout
+        )
+        return "HEALTHCHECK_OK" in discord.bot_response_text(msgs)
+    except Exception:
+        return False
+
+
 @pytest.fixture(autouse=True)
 def _recover_after_failure(warmup, discord: Discord, master_channel: str):
-    """Recover from a stuck bot after a failed test.
+    """Recover from a *stuck* bot after a failed test.
 
-    If the previous test failed (e.g., a spawn test that timed out), the bot
-    might be stuck processing. Restart it so the next test starts clean.
+    If the previous test failed, the bot might be stuck processing (e.g. a spawn
+    test that timed out). But an ordinary assertion failure leaves the bot healthy,
+    so probe responsiveness first and only pay the ~21s restart when the bot is
+    genuinely unresponsive.
     """
     global _last_test_failed
     if _last_test_failed:
         _last_test_failed = False
+        # Healthy bot (ordinary assertion failure) → no restart needed.
+        if _bot_is_responsive(discord, master_channel):
+            return
+        # Bot is unresponsive → restart and verify recovery.
         latest = discord.latest_message_id(master_channel) or "0"
         _restart_bot(discord, master_channel)
         discord.poll_history(master_channel, after=latest, check="ready", timeout=45.0)
