@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from .conftest import agent_cwd
+from tests.conftest import agent_cwd
 
 if TYPE_CHECKING:
-    from .helpers import Discord
+    from tests.helpers import Discord
 
 AXI_PY_DIR = Path(__file__).parent.parent
 

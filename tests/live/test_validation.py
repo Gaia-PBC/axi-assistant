@@ -2,9 +2,9 @@
 
 import time
 
-from .helpers import Discord
-from .llm_judge import llm_assert
-from .conftest import agent_cwd
+from tests.helpers import Discord
+from tests.llm_judge import llm_assert
+from tests.conftest import agent_cwd
 
 # -- Tier 7: Spawn Validation --
 

@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from .helpers import Discord
-from .llm_judge import llm_assert
+from tests.helpers import Discord
+from tests.llm_judge import llm_assert
 
 DATA_DIR = Path(__file__).parent.parent.parent / f"{Path(__file__).parent.parent.name}-data"
 

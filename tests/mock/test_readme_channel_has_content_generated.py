@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from .conftest import INSTANCE_DIR
+from tests.conftest import INSTANCE_DIR
 
 if TYPE_CHECKING:
-    from .helpers import Discord
+    from tests.helpers import Discord
 
 
 def test_readme_channel_exists_and_has_content(discord: Discord) -> None:

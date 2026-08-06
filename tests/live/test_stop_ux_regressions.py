@@ -7,7 +7,7 @@ import time
 import pytest
 
 if False:  # pragma: no cover
-    from .helpers import Discord
+    from tests.helpers import Discord
 
 
 @pytest.mark.slow
