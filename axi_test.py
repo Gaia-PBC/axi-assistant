@@ -405,6 +405,7 @@ def _write_env(
         f"HTTP_API_PORT=8787\n"
         f"DAY_BOUNDARY_HOUR={defaults.get('day_boundary_hour', '0')}\n"
         f"AXI_MODEL=haiku\n"
+        f"BOT_NAMESPACE=off\n"
     )
     if rs_binary:
         env_content += f"AXI_RS_BINARY={rs_binary}\n"
@@ -723,14 +724,26 @@ def _normalize_channel_name(name: str) -> str:
     return re.sub(r"[^a-z0-9\-_]", "", name)
 
 
-def _find_channel_by_name(client: DiscordClient, guild_id: str, name: str) -> dict[str, Any] | None:
+def _instance_namespace(name: str) -> str:
+    """Return the instance's BOT_NAMESPACE (default 'off')."""
+    return get_instance_env(name).get("BOT_NAMESPACE", "off") or "off"
+
+
+def _ns(name: str, namespace: str) -> str:
+    """Prefix a channel/category name with the instance namespace."""
+    return f"{namespace}-{name}" if namespace != "off" else name
+
+
+def _find_channel_by_name(
+    client: DiscordClient, guild_id: str, name: str, namespace: str = "off"
+) -> dict[str, Any] | None:
     """Find a text channel by name in the Active category."""
-    normalized = _normalize_channel_name(name)
+    normalized = _ns(_normalize_channel_name(name), namespace)
     channels: list[dict[str, Any]] = client.get(f"/guilds/{guild_id}/channels")
     # Find Active category ID
     active_cat_id = None
     for ch in channels:
-        if ch.get("type") == 4 and ch.get("name", "").lower() == "active":
+        if ch.get("type") == 4 and ch.get("name", "").lower() == _ns("active", namespace).lower():
             active_cat_id = ch["id"]
             break
     for ch in channels:
@@ -743,20 +756,21 @@ def _find_channel_by_name(client: DiscordClient, guild_id: str, name: str) -> di
     return None
 
 
-def _find_killed_category(client: DiscordClient, guild_id: str) -> str | None:
+def _find_killed_category(client: DiscordClient, guild_id: str, namespace: str = "off") -> str | None:
     """Find a Killed category with room (<50 channels) in a guild.
 
     Checks primary "Killed" and overflow categories ("Killed 2", etc.).
     Returns the ID of the first category with room, or None if all are full.
     """
+    base = _ns("killed", namespace).lower()
     all_channels: list[dict[str, Any]] = client.get(f"/guilds/{guild_id}/channels")
     killed_cats: list[tuple[int, dict[str, Any]]] = []
     for ch in all_channels:
         if ch.get("type") == 4:
             name = ch.get("name", "")
-            if name.lower() == "killed":
+            if name.lower() == base:
                 killed_cats.append((1, ch))
-            elif re.match(r"^killed\s+\d+$", name.lower()):
+            elif re.match(rf"^{re.escape(base)}\s+\d+$", name.lower()):
                 killed_cats.append((int(name.split()[-1]), ch))
     killed_cats.sort(key=lambda x: x[0])
 
@@ -767,19 +781,21 @@ def _find_killed_category(client: DiscordClient, guild_id: str) -> str | None:
     return None
 
 
-def find_master_channel(client: DiscordClient, guild_id: str) -> str:
+def find_master_channel(client: DiscordClient, guild_id: str, namespace: str = "off") -> str:
     """Find the axi-master channel (or first text channel in Active category)."""
+    master_name = _ns("axi-master", namespace)
+    active_name = _ns("active", namespace)
     channels: list[dict[str, Any]] = client.get(f"/guilds/{guild_id}/channels")
 
     # Look for channel named "axi-master"
     for ch in channels:
-        if ch.get("name") == "axi-master" and ch.get("type") == 0:
+        if ch.get("name") == master_name and ch.get("type") == 0:
             return ch["id"]
 
     # Fall back to first text channel in a category named "Active"
     active_cat_id = None
     for ch in channels:
-        if ch.get("type") == 4 and ch.get("name", "").lower() == "active":
+        if ch.get("type") == 4 and ch.get("name", "").lower() == active_name.lower():
             active_cat_id = ch["id"]
             break
     if active_cat_id:
@@ -844,8 +860,10 @@ def cmd_msg(args: argparse.Namespace) -> None:
 
     sender_token = get_sender_token()
 
+    namespace = _instance_namespace(name)
+
     with DiscordClient(sender_token, timeout=10.0) as client:
-        channel_id = find_master_channel(client, guild_id)
+        channel_id = find_master_channel(client, guild_id, namespace)
 
         # Send message
         sent = client.post(f"/channels/{channel_id}/messages", json={"content": message})
@@ -1178,11 +1196,12 @@ def cmd_clean(args: argparse.Namespace) -> None:
         prime_env = _get_prime_env(main_repo)
         token = prime_env.get("DISCORD_TOKEN")
         guild_id = prime_env.get("DISCORD_GUILD_ID")
+        namespace = prime_env.get("BOT_NAMESPACE", "off") or "off"
         if token and guild_id:
             with DiscordClient(token, timeout=10.0) as client:
-                ch = _find_channel_by_name(client, guild_id, name)
+                ch = _find_channel_by_name(client, guild_id, name, namespace)
                 if ch:
-                    killed_cat = _find_killed_category(client, guild_id)
+                    killed_cat = _find_killed_category(client, guild_id, namespace)
                     if killed_cat:
                         client.request("PATCH", f"/channels/{ch['id']}", json={"parent_id": killed_cat})
                         print(f"Moved channel #{ch['name']} to Killed")

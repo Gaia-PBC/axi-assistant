@@ -310,6 +310,13 @@ async def on_message(message: discord.Message) -> None:
 
     channel = message.channel
 
+    # Only process channels in this bot's namespace. Category membership is the
+    # primary boundary (our channels always parse); the name parse also covers
+    # the uncategorized pinned-master case and foreign channels in our category.
+    if channels.parse_agent_from_channel_name(channels.strip_status_prefix(channel.name)) is None:
+        observe_inbound_discord_event("message", "ignored_other_namespace")
+        return
+
     # Track channel activity for recency reordering
     channels.mark_channel_active(channel.id)
 
@@ -1421,7 +1428,7 @@ async def spawn_agent_cmd(
                 await agents.reclaim_agent_name(agent_name)
             await agents.spawn_agent(agent_name, agent_cwd, prompt, resume=resume, model=agent_model)
         except Exception:
-            channels.bot_creating_channels.discard(channels.normalize_channel_name(agent_name))
+            channels.bot_creating_channels.discard(channels.namespaced_channel_name(agent_name))
             log.exception("Error in background spawn of agent '%s'", agent_name)
             try:
                 channel = await agents.get_agent_channel(agent_name)
@@ -1430,7 +1437,7 @@ async def spawn_agent_cmd(
             except Exception:
                 pass
 
-    channels.bot_creating_channels.add(channels.normalize_channel_name(agent_name))
+    channels.bot_creating_channels.add(channels.namespaced_channel_name(agent_name))
     asyncio.create_task(_do_spawn())
     model_suffix = f" using **{agent_model}**" if agent_model else ""
     await audited_interaction_followup_send(
@@ -2389,7 +2396,9 @@ async def _set_channel_topic(channel: TextChannel, cwd: str, prompt_hash: str | 
 
 async def _handle_active_channel_create(channel: TextChannel) -> None:
     """Handle a channel created in the Active category — general-purpose agent."""
-    agent_name = channel.name
+    agent_name = channels.parse_agent_from_channel_name(channels.strip_status_prefix(channel.name))
+    if agent_name is None:
+        return
     cwd = os.path.join(config.AXI_USER_DATA, "agents", agent_name)
     os.makedirs(cwd, exist_ok=True)
 
@@ -2412,7 +2421,9 @@ def _create_worktree(name: str) -> str | None:
 
 async def _handle_axi_channel_create(channel: TextChannel) -> None:
     """Handle a channel created in the Axi category — codebase dev agent with worktree."""
-    agent_name = channel.name
+    agent_name = channels.parse_agent_from_channel_name(channels.strip_status_prefix(channel.name))
+    if agent_name is None:
+        return
     worktree_path = _create_worktree(agent_name)
 
     if worktree_path is None:
@@ -2443,8 +2454,9 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel) -> None:
         return
     if channel.name in channels.bot_creating_channels:
         return
-    if channel.name == agents.normalize_channel_name(config.MASTER_AGENT_NAME):
-        return
+    agent_name = channels.parse_agent_from_channel_name(channels.strip_status_prefix(channel.name))
+    if agent_name is None or agent_name == config.MASTER_AGENT_NAME:
+        return  # foreign-namespace channel or master — not claimable
 
     if channels.is_axi_channel(channel):
         await _handle_axi_channel_create(channel)

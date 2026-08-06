@@ -16,6 +16,7 @@ __all__ = [
     "AXI_CATEGORY_NAME",
     "AXI_USER_DATA",
     "BOT_DIR",
+    "BOT_NAMESPACE",
     "BOT_WORKTREES_DIR",
     "BRIDGE_SOCKET_PATH",
     "CHANNEL_STATUS_ENABLED",
@@ -43,6 +44,7 @@ __all__ = [
     "MASTER_SESSION_PATH",
     "MAX_AWAKE_AGENTS",
     "MCP_SERVERS_PATH",
+    "NAMESPACE_OFF",
     "QUERY_TIMEOUT",
     "RATE_LIMIT_HISTORY_PATH",
     "README_CONTENT_PATH",
@@ -589,6 +591,33 @@ AXI_CATEGORY_NAME = os.environ.get("AXI_CATEGORY_NAME", "Axi")
 KILLED_CATEGORY_NAME = os.environ.get("AXI_KILLED_CATEGORY_NAME", "Killed")
 COMBINE_LIVE_CATEGORIES = os.environ.get("AXI_COMBINE_LIVE_CATEGORIES", "0") == "1"
 COMBINED_CATEGORY_NAME = os.environ.get("AXI_COMBINED_CATEGORY_NAME", AXI_CATEGORY_NAME)
+
+# ---------------------------------------------------------------------------
+# Namespace (multi-bot guild isolation)
+# ---------------------------------------------------------------------------
+
+NAMESPACE_OFF = "off"
+
+
+def _validate_namespace(ns: str) -> str:
+    if not ns:
+        raise ValueError(
+            "BOT_NAMESPACE is required. Set it to 'off' for un-namespaced "
+            "(legacy) mode, or a lowercase alphanumeric+hyphen value."
+        )
+    if ns == NAMESPACE_OFF:
+        return ns
+    if len(ns) > 20:
+        raise ValueError(f"BOT_NAMESPACE too long ({len(ns)} chars, max 20)")
+    if not re.match(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$", ns):
+        raise ValueError(
+            "BOT_NAMESPACE must be lowercase alphanumeric + hyphens, "
+            "starting and ending with alphanumeric"
+        )
+    return ns
+
+
+BOT_NAMESPACE = _validate_namespace(os.environ.get("BOT_NAMESPACE", ""))
 
 # ---------------------------------------------------------------------------
 # Discord REST API client

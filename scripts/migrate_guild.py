@@ -23,7 +23,15 @@ load_dotenv()
 
 from discordquery.client import DiscordClient
 
-CATEGORY_NAMES = {"Axi", "Active", "Killed"}
+NS = os.environ.get("BOT_NAMESPACE") or "off"
+
+
+def _cat(name: str) -> str:
+    return f"{NS}-{name}" if NS != "off" else name
+
+
+CATEGORY_NAMES = {_cat("Axi"), _cat("Active"), _cat("Killed")}
+MASTER_CHANNEL_NAME = _cat("axi-master")
 # Match overflow categories like "Killed 2", "Active 3"
 def _is_axi_category(name: str) -> bool:
     for base in CATEGORY_NAMES:
@@ -54,8 +62,9 @@ def migrate(token: str, source_guild: str, target_guild: str, *, dry_run: bool =
         }
 
         # Identify killed categories to exclude from migration
+        killed_base = _cat("Killed")
         killed_cat_ids = {cid for cid, name in source_cats.items()
-                         if name == "Killed" or (name.startswith("Killed ") and name[7:].isdigit())}
+                         if name == killed_base or (name.startswith(killed_base + " ") and name[len(killed_base) + 1:].isdigit())}
 
         # Step 1: Ensure categories exist in target
         cat_id_map: dict[str, str] = {}  # source_cat_id -> target_cat_id
@@ -90,7 +99,7 @@ def migrate(token: str, source_guild: str, target_guild: str, *, dry_run: bool =
             parent = ch.get("parent_id")
             if parent in axi_cat_ids and parent not in killed_cat_ids:
                 channels_to_copy.append(ch)
-            elif parent is None and ch["name"] in ("axi-master",):
+            elif parent is None and ch["name"] == MASTER_CHANNEL_NAME:
                 # Uncategorized master channel
                 channels_to_copy.append(ch)
 

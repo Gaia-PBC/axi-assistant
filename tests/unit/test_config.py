@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from axi.config import (
     CHATGPT_PROXY_DEFAULT_ENV,
     VALID_HARNESSES,
@@ -14,6 +16,44 @@ from axi.config import (
     set_model,
     uses_chatgpt_proxy,
 )
+
+
+class TestValidateNamespace:
+    def test_off_allowed(self) -> None:
+        from axi import config
+
+        assert config._validate_namespace("off") == "off"
+
+    def test_valid_namespace(self) -> None:
+        from axi import config
+
+        assert config._validate_namespace("dev") == "dev"
+
+    def test_empty_rejected(self) -> None:
+        from axi import config
+
+        with pytest.raises(ValueError, match="BOT_NAMESPACE is required"):
+            config._validate_namespace("")
+
+    def test_too_long_rejected(self) -> None:
+        from axi import config
+
+        with pytest.raises(ValueError, match="too long"):
+            config._validate_namespace("a" * 21)
+
+    @pytest.mark.parametrize("bad", ["Dev", "dev_1", "-dev", "dev-", "dev name", "déjà"])
+    def test_invalid_chars_rejected(self, bad: str) -> None:
+        from axi import config
+
+        with pytest.raises(ValueError, match="lowercase alphanumeric"):
+            config._validate_namespace(bad)
+
+    def test_module_constant_defaults_to_off(self) -> None:
+        # Set by tests/unit/conftest.py before import.
+        from axi import config
+
+        assert config.BOT_NAMESPACE == "off"
+
 
 
 class TestHarness:
