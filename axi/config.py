@@ -609,8 +609,11 @@ def _validate_namespace(ns: str) -> str:
         return ns
     if len(ns) > 20:
         raise ValueError(f"BOT_NAMESPACE too long ({len(ns)} chars, max 20)")
-    if not re.match(r"^[a-z0-9][a-z0-9-]*$", ns):
-        raise ValueError("BOT_NAMESPACE must be lowercase alphanumeric + hyphens only")
+    if not re.match(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$", ns):
+        raise ValueError(
+            "BOT_NAMESPACE must be lowercase alphanumeric + hyphens, "
+            "starting and ending with alphanumeric"
+        )
     return ns
 
 
