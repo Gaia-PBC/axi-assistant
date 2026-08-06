@@ -59,3 +59,4 @@
 
 # --- Explicit exclusions inside allowlisted directories ---
 /scripts/replay_minflow_ops.py
+test-audit/

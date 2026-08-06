@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from discordquery import DiscordClient
-from discordquery.wait import DEFAULT_STABLE_POLLS, wait_for_messages
+from discordquery.wait import DEFAULT_STABLE_POLLS, is_system_message, wait_for_messages
 
 
 @dataclass(slots=True)
@@ -225,13 +225,19 @@ class DiscordE2EClient:
                     author_id = str(message["author"]["id"])
                     if author_id == sender_user_id or int(message_id) <= int(last_seen_id):
                         continue
-                    collected.append(message)
                     last_seen_id = message_id
                     if sentinel in message.get("content", ""):
-                        filtered = [
-                            entry for entry in collected if sentinel not in entry.get("content", "")
-                        ]
-                        return WaitResult(messages=filtered, cursor=last_seen_id)
+                        # Sentinel = the flowchart returned control (agent idle).
+                        # `collected` already holds only the real replies: the
+                        # sentinel is excluded (we return before appending it) and
+                        # any *System:* lines were skipped below.
+                        return WaitResult(messages=collected, cursor=last_seen_id)
+                    if effective_ignore_system and is_system_message(message):
+                        # Drop busy-queue acks and "Flowchart completed" pings —
+                        # they are not the agent's reply and otherwise poison the
+                        # captured text the assertions/LLM-judge run against.
+                        continue
+                    collected.append(message)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break

@@ -1,8 +1,42 @@
 """Discord API helpers for smoke tests."""
 
+import json
+
 from discord_e2e import DiscordChannel, DiscordE2EClient
 
 TEST_SENTINEL = "awaiting input"
+
+# axi/discord_stream.py renders flowchart + agent UI chrome with these structural
+# prefixes. None of it is the agent's own reply, so it must be stripped from the text
+# the assertions / LLM-judge run against. (Mirrors the emit sites in discord_stream.py.)
+_CHROME_PREFIXES = (
+    "▶ ",  # "▶ **BLOCK** (`type`)"  block-progress marker
+    "`\U0001f527",  # "`🔧 tool`"          tool-call marker
+    "\U0001f504 ",  # "🔄 Compacting…"     context-compaction notice
+    "-# ",  # "-# 12.3s"                   trailing timing line
+)
+
+
+def _is_renderer_chrome(content: str) -> bool:
+    """True if the message is discord_stream UI chrome, not agent content."""
+    return content.startswith(_CHROME_PREFIXES) or (
+        content.startswith(">") and content.endswith("**FAILED**")
+    )
+
+
+def _is_structured_step_output(content: str) -> bool:
+    """True if the message is *entirely* a fenced ```json block — i.e. a flowchart
+    output_schema step (CLASSIFY / GATHER_NEXT_ACTION / TEST_COMPLETION) whose JSON is
+    internal branching data, not a reply. Detected structurally (it parses as JSON), not
+    by matching specific keys, so it never strips a genuine prose reply.
+    """
+    if not (content.startswith("```json") and content.endswith("```")):
+        return False
+    try:
+        json.loads(content[len("```json") : -len("```")].strip())
+    except ValueError:
+        return False
+    return True
 
 
 def _ns_name(namespace: str, name: str) -> str:
@@ -71,7 +105,16 @@ class Discord(DiscordE2EClient):
         return result.messages
 
     def bot_response_text(self, messages: list[dict]) -> str:
-        return "\n".join(message.get("content", "") for message in messages)
+        """Join the agent's prose reply, dropping renderer chrome (block/tool/compaction/
+        timing markers) and flowchart output_schema JSON step outputs. `*System:*` lines
+        are already excluded upstream by the sentinel-mode capture.
+        """
+        parts: list[str] = []
+        for message in messages:
+            content = str(message.get("content", "")).strip()
+            if content and not _is_renderer_chrome(content) and not _is_structured_step_output(content):
+                parts.append(content)
+        return "\n".join(parts)
 
     def poll_history(
         self,
