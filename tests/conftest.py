@@ -120,6 +120,7 @@ def discord(test_config, instance_env) -> Discord:
         bot_token=bot_token,
         sender_token=sender_token,
         guild_id=guild_id,
+        namespace=instance_env.get("BOT_NAMESPACE", "off"),
     )
     yield d
     d.close()

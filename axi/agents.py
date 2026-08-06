@@ -50,6 +50,7 @@ from axi.channels import (
     get_master_channel,
     mark_channel_active,
     move_channel_to_killed,
+    namespaced_channel_name,
     normalize_channel_name,
     schedule_status_update,
 )
@@ -1233,9 +1234,12 @@ async def reconstruct_agents_from_channels() -> int:
 
     for cat in categories:
         for ch in cat.text_channels:
-            agent_name = _channels_mod.strip_status_prefix(ch.name) if config.CHANNEL_STATUS_ENABLED else ch.name
-
-            if agent_name == normalize_channel_name(config.MASTER_AGENT_NAME):
+            agent_name = _channels_mod.parse_agent_from_channel_name(
+                _channels_mod.strip_status_prefix(ch.name)
+            )
+            if agent_name is None:
+                continue  # foreign channel in our category — silently ignore
+            if agent_name == config.MASTER_AGENT_NAME:
                 channel_to_agent[ch.id] = config.MASTER_AGENT_NAME
                 continue
 
@@ -1646,7 +1650,7 @@ async def spawn_agent(
         set_agent_context(name)
         set_trigger("spawn", detail=f"type={agent_type}")
 
-        normalized = normalize_channel_name(name)
+        normalized = namespaced_channel_name(name)
         _channels_mod.bot_creating_channels.add(normalized)
         channel = await ensure_agent_channel(name, cwd=cwd)
 
@@ -2325,6 +2329,7 @@ __all__ = [
     "make_shutdown_coordinator",
     "make_stderr_callback",
     "move_channel_to_killed",
+    "namespaced_channel_name",
     "normalize_channel_name",
     "process_message",
     "process_message_queue",

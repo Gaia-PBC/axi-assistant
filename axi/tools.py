@@ -307,7 +307,7 @@ async def axi_spawn_agent(args: McpArgs) -> McpResult:
                 model=agent_model,
             )
         except Exception:
-            channels.bot_creating_channels.discard(agents.normalize_channel_name(agent_name))
+            channels.bot_creating_channels.discard(agents.namespaced_channel_name(agent_name))
             log.exception("Error in background spawn of agent '%s'", agent_name)
             try:
                 channel = await agents.get_agent_channel(agent_name)
@@ -337,7 +337,7 @@ async def axi_spawn_agent(args: McpArgs) -> McpResult:
     # Guard against on_guild_channel_create race: mark channel as bot-created
     # BEFORE the background task runs, so the guard is already set when the
     # gateway event fires.  spawn_agent will discard it after agents[name] is set.
-    channels.bot_creating_channels.add(agents.normalize_channel_name(agent_name))
+    channels.bot_creating_channels.add(agents.namespaced_channel_name(agent_name))
     agents.fire_and_forget(_do_spawn())
     return {
         "content": [

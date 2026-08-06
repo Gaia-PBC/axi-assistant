@@ -80,6 +80,36 @@ def normalize_channel_name(name: str) -> str:
     return name[:100]
 
 
+def namespaced_channel_name(agent_name: str) -> str:
+    """Discord channel name for an agent: '{ns}-{normalized}', or bare when BOT_NAMESPACE=off."""
+    base = normalize_channel_name(agent_name)
+    if config.BOT_NAMESPACE == config.NAMESPACE_OFF:
+        return base
+    return f"{config.BOT_NAMESPACE}-{base}"
+
+
+def parse_agent_from_channel_name(namespaced: str) -> str | None:
+    """Recover the agent name by stripping the '{ns}-' prefix.
+
+    Returns None when the name is not in this bot's namespace or is exactly
+    the bare prefix ('dev-' with empty remainder). When BOT_NAMESPACE=off,
+    returns ``namespaced`` unchanged (no prefix to strip).
+    """
+    if config.BOT_NAMESPACE == config.NAMESPACE_OFF:
+        return namespaced
+    prefix = f"{config.BOT_NAMESPACE}-"
+    if namespaced.startswith(prefix) and len(namespaced) > len(prefix):
+        return namespaced[len(prefix):]
+    return None
+
+
+def _category_name(base: str) -> str:
+    """On-Discord category name: '{ns}-{base}', or bare when BOT_NAMESPACE=off."""
+    if config.BOT_NAMESPACE == config.NAMESPACE_OFF:
+        return base
+    return f"{config.BOT_NAMESPACE}-{base}"
+
+
 def format_channel_topic(
     cwd: str,
     session_id: str | None = None,
@@ -244,7 +274,7 @@ async def _get_category_with_room(
 
     # All full — create overflow
     next_num = len(categories) + 1
-    overflow_name = f"{base_name} {next_num}"
+    overflow_name = f"{_category_name(base_name)} {next_num}"
     assert target_guild is not None
     overwrites = _build_category_overwrites(target_guild, killed=killed)
     cat = await target_guild.create_category(overflow_name, overwrites=overwrites)
@@ -355,23 +385,23 @@ async def ensure_guild_infrastructure() -> None:
     # Each tuple: (base_name, found_list, create_if_missing)
     if config.COMBINE_LIVE_CATEGORIES:
         group_map: list[tuple[str, list[tuple[int, CategoryChannel]], bool]] = [
-            (config.COMBINED_CATEGORY_NAME, axi_found, True),
+            (_category_name(config.COMBINED_CATEGORY_NAME), axi_found, True),
         ]
         legacy_names: list[str] = []
         if config.AXI_CATEGORY_NAME != config.COMBINED_CATEGORY_NAME:
-            legacy_names.append(config.AXI_CATEGORY_NAME)
+            legacy_names.append(_category_name(config.AXI_CATEGORY_NAME))
         if (
             config.ACTIVE_CATEGORY_NAME != config.COMBINED_CATEGORY_NAME
             and config.ACTIVE_CATEGORY_NAME != config.AXI_CATEGORY_NAME
         ):
-            legacy_names.append(config.ACTIVE_CATEGORY_NAME)
+            legacy_names.append(_category_name(config.ACTIVE_CATEGORY_NAME))
         group_map.extend((name, axi_found, False) for name in legacy_names)
-        group_map.append((config.KILLED_CATEGORY_NAME, killed_found, True))
+        group_map.append((_category_name(config.KILLED_CATEGORY_NAME), killed_found, True))
     else:
         group_map = [
-            (config.AXI_CATEGORY_NAME, axi_found, True),
-            (config.ACTIVE_CATEGORY_NAME, active_found, True),
-            (config.KILLED_CATEGORY_NAME, killed_found, True),
+            (_category_name(config.AXI_CATEGORY_NAME), axi_found, True),
+            (_category_name(config.ACTIVE_CATEGORY_NAME), active_found, True),
+            (_category_name(config.KILLED_CATEGORY_NAME), killed_found, True),
         ]
 
     # Deduplicate by category id — same category can be matched by multiple
@@ -402,7 +432,7 @@ async def ensure_guild_infrastructure() -> None:
     # Legacy discover-only entries (combined mode's AXI/ACTIVE) skip creation but still
     # get permission sync so existing channels inherit correct access.
     for base_name, found_list, create_if_missing in group_map:
-        desired = killed_overwrites if base_name == config.KILLED_CATEGORY_NAME else overwrites
+        desired = killed_overwrites if base_name == _category_name(config.KILLED_CATEGORY_NAME) else overwrites
         if base_name not in primary_found:
             if create_if_missing:
                 cat = await guild.create_category(base_name, overwrites=desired)
@@ -440,7 +470,7 @@ async def ensure_guild_infrastructure() -> None:
         axi_found.sort(key=lambda x: x[0])
         legacy_cats: list[CategoryChannel] = []
         for _, cat in axi_found:
-            if _match_category_group(cat.name, config.COMBINED_CATEGORY_NAME) is not None:
+            if _match_category_group(cat.name, _category_name(config.COMBINED_CATEGORY_NAME)) is not None:
                 combined_cats_list.append(cat)
             else:
                 legacy_cats.append(cat)
@@ -450,7 +480,7 @@ async def ensure_guild_infrastructure() -> None:
             total_channels = sum(len(c.text_channels) for c in legacy_cats)
             log.info(
                 "Combine-categories migration: moving %d channel(s) from legacy category(s) [%s] into '%s'",
-                total_channels, legacy_names_log, config.COMBINED_CATEGORY_NAME,
+                total_channels, legacy_names_log, _category_name(config.COMBINED_CATEGORY_NAME),
             )
 
         for legacy_cat in legacy_cats:
@@ -529,7 +559,7 @@ async def ensure_agent_channel(agent_name: str, cwd: str | None = None) -> TextC
     """
     assert _channel_to_agent is not None
     _tracer.start_span("ensure_agent_channel", attributes={"agent.name": agent_name}).end()
-    normalized = normalize_channel_name(agent_name)
+    normalized = namespaced_channel_name(agent_name)
 
     if config.COMBINE_LIVE_CATEGORIES:
         is_axi = True
@@ -618,7 +648,7 @@ async def move_channel_to_killed(agent_name: str) -> None:
         return
     _tracer.start_span("move_channel_to_killed", attributes={"agent.name": agent_name}).end()
 
-    normalized = normalize_channel_name(agent_name)
+    normalized = namespaced_channel_name(agent_name)
     for cat in axi_categories + active_categories:
         for ch in cat.text_channels:
             if _match_channel_name(ch.name, normalized):
@@ -654,7 +684,7 @@ async def get_agent_channel(
             ch = _bot.get_channel(ds.channel_id)
             if isinstance(ch, TextChannel):
                 return ch
-    normalized = normalize_channel_name(agent_name)
+    normalized = namespaced_channel_name(agent_name)
     cats = axi_categories + active_categories
     if include_killed:
         cats = cats + killed_categories
@@ -670,7 +700,7 @@ async def deduplicate_master_channel() -> None:
 
     Called once during startup before ensure_agent_channel() for master.
     """
-    normalized = normalize_channel_name(config.MASTER_AGENT_NAME)
+    normalized = namespaced_channel_name(config.MASTER_AGENT_NAME)
     seen_ids: set[int] = set()
     master_channels: list[TextChannel] = []
     for cat in axi_categories + active_categories + killed_categories:
@@ -743,7 +773,7 @@ async def position_agent_channel_top(
     Skips the master channel itself — its position is owned by
     ensure_master_channel_position (always 0).
     """
-    master_normalized = normalize_channel_name(config.MASTER_AGENT_NAME)
+    master_normalized = namespaced_channel_name(config.MASTER_AGENT_NAME)
     if _match_channel_name(channel.name, master_normalized):
         return
 
@@ -817,7 +847,7 @@ async def ensure_master_channel_position() -> None:
 
     async with _master_position_lock:
         axi_cat = axi_categories[0]
-        normalized = normalize_channel_name(config.MASTER_AGENT_NAME)
+        normalized = namespaced_channel_name(config.MASTER_AGENT_NAME)
         master_ch: TextChannel | None = None
         for ch in target_guild.text_channels:
             if _match_channel_name(ch.name, normalized):
@@ -900,7 +930,7 @@ async def reorder_channels_by_recency() -> None:
 async def _do_reorder() -> None:
     """Perform the actual reorder for both Axi and Active categories."""
     assert target_guild is not None
-    master_normalized = normalize_channel_name(config.MASTER_AGENT_NAME)
+    master_normalized = namespaced_channel_name(config.MASTER_AGENT_NAME)
 
     for category in axi_categories + active_categories:
         text_channels = list(category.text_channels)
@@ -989,7 +1019,7 @@ def compute_agent_status(session: AgentSession) -> str:
 
 def _build_status_channel_name(agent_name: str, status: str) -> str:
     """Build a channel name with status emoji prefix."""
-    base = normalize_channel_name(agent_name)
+    base = namespaced_channel_name(agent_name)
     # If there's an emoji override, use it directly (not from STATUS_PREFIXES)
     if status == "custom":
         override_emoji = _status_overrides.get(agent_name)

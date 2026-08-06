@@ -5,13 +5,33 @@ from discord_e2e import DiscordChannel, DiscordE2EClient
 TEST_SENTINEL = "awaiting input"
 
 
+def _ns_name(namespace: str, name: str) -> str:
+    """Prefix a channel/category lookup name with the instance namespace."""
+    if not namespace or namespace == "off":
+        return name
+    return f"{namespace}-{name}"
+
+
 class Discord(DiscordE2EClient):
     """Axi-specific test adapter built on the generic Discord E2E client."""
 
-    def __init__(self, bot_token: str, sender_token: str, guild_id: str):
+    def __init__(self, bot_token: str, sender_token: str, guild_id: str, namespace: str = "off"):
         super().__init__(reader_token=bot_token, sender_token=sender_token, guild_id=guild_id)
         self._bot = self._reader
         self._sender = self._sender_client
+        self.namespace = namespace
+
+    def _ns(self, name: str) -> str:
+        return _ns_name(self.namespace, name)
+
+    def find_channel(self, name: str) -> str | None:
+        return super().find_channel(self._ns(name))
+
+    def find_category(self, name: str) -> str | None:
+        return super().find_category(self._ns(name))
+
+    def find_channel_by_prefix(self, prefix: str) -> dict | None:
+        return super().find_channel_by_prefix(self._ns(prefix))
 
     def require_channel(self, name: str) -> DiscordChannel:
         return super().require_channel(name)

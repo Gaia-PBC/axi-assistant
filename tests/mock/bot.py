@@ -25,8 +25,15 @@ from discordquery import AsyncDiscordClient
 SENTINEL = "awaiting input"
 READY_MSG = "Axi ready"
 MOCK_RESTART = "[MOCK_RESTART]"
-MASTER_CHANNEL = "axi-master"
-README_CHANNEL = "readme"
+BOT_NAMESPACE = os.environ.get("BOT_NAMESPACE", "off")
+
+
+def _ns(name: str) -> str:
+    return f"{BOT_NAMESPACE}-{name}" if BOT_NAMESPACE != "off" else name
+
+
+MASTER_CHANNEL = _ns("axi-master")
+README_CHANNEL = "readme"  # shared, un-namespaced
 POLL_INTERVAL = 0.5
 CHECKMARK = "\u2705"
 
@@ -318,7 +325,8 @@ class MockBot:
 def _channel_name(raw: str) -> str:
     cleaned = re.sub(r"[^a-z0-9\-]", "-", raw.lower())
     cleaned = re.sub(r"-+", "-", cleaned).strip("-")
-    return cleaned or "agent"
+    cleaned = cleaned or "agent"
+    return _ns(cleaned)
 
 
 async def _amain() -> int:
