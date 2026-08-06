@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from .helpers import Discord
-from .conftest import agent_cwd
+from tests.helpers import Discord
+from tests.conftest import agent_cwd
 
 AXI_PY_DIR = Path(__file__).parent.parent
 WORKTREE_DIR = AXI_PY_DIR.parent

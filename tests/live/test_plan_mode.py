@@ -1,7 +1,7 @@
 """Plan mode tests — Tier 5: enter, approve, reject, feedback."""
 
-from .helpers import Discord
-from .llm_judge import llm_assert
+from tests.helpers import Discord
+from tests.llm_judge import llm_assert
 
 
 def test_enter_plan_mode(discord: Discord, master_channel: str):

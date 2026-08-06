@@ -6,11 +6,11 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from .axi_e2e import AxiDiscordEntrypoints
-from .conftest import agent_cwd
+from tests.axi_e2e import AxiDiscordEntrypoints
+from tests.conftest import agent_cwd
 
 if TYPE_CHECKING:
-    from .helpers import Discord
+    from tests.helpers import Discord
 
 
 DUPLICATE_PHRASES = ("already", "exists", "duplicate", "in use")

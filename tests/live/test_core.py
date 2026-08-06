@@ -5,9 +5,9 @@ import time
 
 import pytest
 
-from .helpers import Discord
-from .llm_judge import llm_assert
-from .conftest import agent_cwd, INSTANCE_NAME, AXI_PY_DIR
+from tests.helpers import Discord
+from tests.llm_judge import llm_assert
+from tests.conftest import agent_cwd, INSTANCE_NAME, AXI_PY_DIR
 
 # -- Tier 1: Core Features --
 

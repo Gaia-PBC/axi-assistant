@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .helpers import Discord
+    from tests.helpers import Discord
 
 
 def test_master_echoes_sentinel(
