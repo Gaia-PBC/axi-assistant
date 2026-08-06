@@ -68,18 +68,19 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
         include_partial_messages=True,
         stderr=make_stderr_callback(session),
         resume=resume_id,
-        sandbox={
-            "enabled": True,
-            "autoAllowBashIfSandboxed": True,
-            "allowUnsandboxedCommands": False,
-            "excludedCommands": ["git", "systemctl", "uv", "ts-ssh", "ts-curl", *session.extra_excluded_commands],
-            "network": {
-                "allowAllUnixSockets": True,
-                "allowUnixSockets": [
-                    str(config.BRIDGE_SOCKET_PATH),
-                ],
-            },
-        },
+        # bwrap sandbox DISABLED (YOLO) - no sandbox config passed to CLI.
+        # sandbox={
+        #     "enabled": True,
+        #     "autoAllowBashIfSandboxed": True,
+        #     "allowUnsandboxedCommands": False,
+        #     "excludedCommands": ["git", "systemctl", "uv", "ts-ssh", "ts-curl", *session.extra_excluded_commands],
+        #     "network": {
+        #         "allowAllUnixSockets": True,
+        #         "allowUnixSockets": [
+        #             str(config.BRIDGE_SOCKET_PATH),
+        #         ],
+        #     },
+        # },
         add_dirs=[
             config.AXI_USER_DATA,
             config.BOT_WORKTREES_DIR,
