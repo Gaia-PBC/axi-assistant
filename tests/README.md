@@ -34,6 +34,8 @@ So any test placed under `tests/unit/` stays instance-free automatically; anythi
 
 Recommended flags for every tier: `--timeout=300` (per-test, 5 min) · `--session-timeout=600` (whole run, 10 min). For reports/profiling add `--junitxml=… --html=… --durations=25`.
 
+> **The e2e tiers are disabled by default.** `tests/live/` and `tests/mock/` are excluded from the default `pytest` collection (`collect_ignore` in `tests/conftest.py`) — they need a running bot and the live tier is currently unreliable (the `send_and_wait` sentinel/queuing work is still in progress). So a bare `pytest` runs only the instance-free `tests/unit/` tier. **To run an e2e tier, set `AXI_RUN_E2E=1`** (shown in the Live/Mock commands below).
+
 ### Unit — fast, no setup
 ```bash
 uv run python -m pytest tests/unit/ -n auto --timeout=300
@@ -47,8 +49,8 @@ Run **serially** (shared single bot; do **not** use `-n`).
 uv run python axi_test.py up <name>
 uv run python axi_test.py restart <name>
 
-# 2. point the tests at it
-AXI_TEST_INSTANCE_NAME=<name> AXI_TEST_INSTANCE_DIR=~/axi-tests/<name> \
+# 2. point the tests at it (AXI_RUN_E2E=1 re-enables the disabled-by-default tier)
+AXI_RUN_E2E=1 AXI_TEST_INSTANCE_NAME=<name> AXI_TEST_INSTANCE_DIR=~/axi-tests/<name> \
   uv run python -m pytest tests/live/ --timeout=300 --session-timeout=600
 ```
 Slow (real Discord round-trips + real model). Parallelism is capped by the number of test-bot slots.
@@ -60,8 +62,8 @@ The mock tests talk to a **standalone MockBot** run as its own process (it needs
 set -a; source ~/axi-tests/<name>/.env; set +a
 uv run python tests/mock/bot.py &
 
-# 2. run the tests in mock mode
-AXI_MOCK_MODE=1 AXI_TEST_INSTANCE_NAME=<name> \
+# 2. run the tests in mock mode (AXI_RUN_E2E=1 re-enables the disabled-by-default tier)
+AXI_RUN_E2E=1 AXI_MOCK_MODE=1 AXI_TEST_INSTANCE_NAME=<name> \
   uv run python -m pytest tests/mock/ --timeout=300
 ```
 `AXI_MOCK_MODE=1` tells the conftest to send the MockBot a `[MOCK_RESTART]` control message instead of restarting real axi.

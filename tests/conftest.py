@@ -20,6 +20,16 @@ TEST_CONFIG = Path.home() / ".config/axi/test-config.json"
 DEFAULT_TIMEOUT = 120.0
 SPAWN_TIMEOUT = 180.0
 
+# --- e2e tiers disabled by default -------------------------------------------
+# The live (real-instance) and mock (fake-bot) e2e tiers require a running bot
+# and are currently unreliable (the send_and_wait sentinel/queuing work is still
+# in progress — captures are timeout-masked and leftover-state-dependent). They
+# are excluded from the default `pytest` collection so the default run is the
+# instance-free unit tier only. Run them explicitly with AXI_RUN_E2E=1, e.g.
+# `AXI_RUN_E2E=1 pytest tests/live/`. See tests/README.md.
+if os.environ.get("AXI_RUN_E2E") != "1":
+    collect_ignore = ["live", "mock"]
+
 
 def agent_cwd(name: str) -> str:
     """Return the CWD path for a test agent."""
