@@ -80,7 +80,7 @@ Tag a genuinely unstable test (a timing or teardown race) with `@pytest.mark.fla
 - **A `flaky` tag is a tracking label, not a fix.** It means "quarantined until root-caused," **not** "silenced forever." Do **not** retry-until-green, `xfail`, `skip`, or delete the assertion — open a follow-up to fix the underlying race.
 
 Currently tagged:
-- `tests/unit/test_process_leak.py::test` — tears down a real `ClaudeSDKClient` subprocess and hits an asyncio `CancelledError` teardown race (failed 2/2 in the 2026-08-05 audit, serial *and* parallel). It also spins up real claude + haiku, so it's really an **integration** test miscategorized under `unit/` — relocating it is part of the fix.
+- `tests/live/test_process_leak.py::test` — tears down a real `ClaudeSDKClient` subprocess and hits an asyncio `CancelledError` teardown race (failed 2/2 in the 2026-08-05 audit, serial *and* parallel). It spins up real claude + haiku, so it now lives in `tests/live/` (instance-gated — skips without a bot) instead of the instance-free `unit/` tier. Still open: root-cause the teardown race.
 
 ## Coming soon: a runner script
 
