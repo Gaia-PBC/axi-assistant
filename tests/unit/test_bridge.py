@@ -31,8 +31,26 @@ try:
     from procmux import ProcmuxServer as BridgeServer
     from procmux import connect as connect_to_bridge
     from procmux import ensure_running as ensure_bridge
+
+    _BRIDGE_IMPORT_OK = True
 except ImportError:
-    pytestmark = pytest.mark.skip("Python bridge packages not available (Rust rewrite)")
+    _BRIDGE_IMPORT_OK = False
+
+# xdist parallel-safety: every test here forks a REAL Python-interpreter
+# subprocess and then relies on a fixed short `asyncio.sleep(...)` for it to
+# start / emit / exit. Under `-n auto`, many workers spawn interpreters at once,
+# oversubscribing the CPU so those fixed waits become insufficient — assertions
+# like `status == "exited"` or `buffered_msgs > 0` then race and fail
+# non-deterministically (the tests pass 100% serially). The sockets are already
+# unique per test, so this is CPU/spawn contention, not a shared-name collision.
+# Pin the whole module to ONE xdist group so its tests run serially on a single
+# worker while the rest of the unit suite stays parallel. Requires
+# `--dist loadgroup` (set in pytest.ini addopts) for the group to be honored.
+pytestmark = [pytest.mark.xdist_group("bridge_serial")]
+if not _BRIDGE_IMPORT_OK:
+    pytestmark.append(
+        pytest.mark.skip(reason="Python bridge packages not available (Rust rewrite)")
+    )
 
 
 # Override conftest's autouse Discord fixtures — bridge tests don't need Discord.
@@ -141,6 +159,28 @@ def _list_processes(result: object) -> dict[str, object]:
         return processes
     agents = getattr(result, "agents", None)
     return agents or {}
+
+
+async def _wait_exited(conn, *names: str, timeout: float = 20.0, interval: float = 0.05):
+    """Poll the read-only ``list`` command until every named process reports
+    ``status == "exited"`` (so all of its output has finished buffering), then
+    return the final ``list`` result.
+
+    A fixed ``asyncio.sleep(...)`` before checking races under the parallel
+    (``-n auto``) runner: each test forks a real Python-interpreter subprocess,
+    and under CPU oversubscription that process can take longer than the wait to
+    actually exit. ``list`` neither subscribes nor drains buffers, so polling it
+    is side-effect-free — it just replaces a blind sleep with "wait until the
+    state the test asserts is actually true (or time out and let it fail)".
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while True:
+        ls = await asyncio.wait_for(conn.send_command("list"), timeout=3)
+        procs = _list_processes(ls)
+        if all(procs.get(n, {}).get("status") == "exited" for n in names) or loop.time() >= deadline:
+            return ls
+        await asyncio.sleep(interval)
 
 
 # ---------------------------------------------------------------------------
@@ -1160,11 +1200,10 @@ class TestClientReconnection:
             # Kill connection
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(0.5)  # let agent finish and buffer
-
-            # Reconnect
+            # Reconnect, then poll until "rc" has exited so its buffer is stable
+            # (fixed sleep races under the parallel runner; list is read-only).
             conn2 = await _connect(sock)
-            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
+            ls = await _wait_exited(conn2, "rc")
             buffered = _list_processes(ls)["rc"]["buffered_msgs"]
             assert buffered > 0
 
@@ -1227,11 +1266,10 @@ class TestExitDuringDisconnect:
 
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(0.5)  # let agent exit and buffer
-
-            # Reconnect
+            # Reconnect, then poll until "de" has actually exited — a fixed sleep
+            # races under the parallel runner; list is read-only (no drain).
             conn2 = await _connect(sock)
-            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
+            ls = await _wait_exited(conn2, "de")
             assert _list_processes(ls)["de"]["status"] == "exited"
             assert _list_processes(ls)["de"]["buffered_msgs"] > 0
 
@@ -1483,10 +1521,10 @@ class TestBufferReplayOrder:
             # Don't subscribe — let everything buffer
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(0.5)  # let agent finish
-
-            # Reconnect and subscribe
+            # Reconnect, then poll until "ord" has exited so all output + the
+            # exit message are buffered (fixed sleep races under -n auto).
             conn2 = await _connect(sock)
+            await _wait_exited(conn2, "ord")
             q = conn2.register_process("ord")
             await asyncio.wait_for(conn2.send_command("subscribe", name="ord"), timeout=3)
 
@@ -1542,9 +1580,9 @@ class TestSubscribeToExited:
                 ),
                 timeout=3,
             )
-            await asyncio.sleep(0.5)  # let it exit
-
-            # Subscribe
+            # Poll until "se" has exited before subscribing (fixed sleep races
+            # under the parallel runner; list is read-only, no drain).
+            await _wait_exited(conn, "se")
             q = conn.register_process("se")
             result = await asyncio.wait_for(conn.send_command("subscribe", name="se"), timeout=3)
             assert result.ok is True
@@ -2129,11 +2167,10 @@ class TestReconnectScenarios:
             # Disconnect immediately — agent will finish and exit
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(0.5)
-
-            # Reconnect
+            # Reconnect, then poll until "short" has exited (fixed sleep races
+            # under the parallel runner; list is read-only, no drain).
             conn2 = await _connect(sock)
-            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
+            ls = await _wait_exited(conn2, "short")
             assert _list_processes(ls)["short"]["status"] == "exited"
             assert _list_processes(ls)["short"]["exit_code"] == 0
             assert _list_processes(ls)["short"]["buffered_msgs"] > 0
@@ -2174,11 +2211,10 @@ class TestReconnectScenarios:
             # Don't subscribe — disconnect immediately
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(0.5)
-
-            # Reconnect
+            # Reconnect, then poll until "crash" has exited (fixed sleep races
+            # under the parallel runner; list is read-only, no drain).
             conn2 = await _connect(sock)
-            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
+            ls = await _wait_exited(conn2, "crash")
             assert _list_processes(ls)["crash"]["status"] == "exited"
             assert _list_processes(ls)["crash"]["exit_code"] == 7
 
@@ -2287,11 +2323,10 @@ class TestReconnectScenarios:
             # Disconnect
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(0.5)  # let "done" exit and output buffer
-
-            # Reconnect
+            # Reconnect, then poll until "done" has exited (active/silent stay
+            # running; fixed sleep races under -n auto, list is read-only).
             conn2 = await _connect(sock)
-            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
+            ls = await _wait_exited(conn2, "done")
 
             # "active" should be running with buffered output
             assert _list_processes(ls)["active"]["status"] == "running"
