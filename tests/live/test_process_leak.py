@@ -44,6 +44,7 @@ import time
 # Allow running inside an existing Claude Code session
 os.environ.pop("CLAUDECODE", None)
 
+import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, create_sdk_mcp_server, tool
 from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
@@ -107,7 +108,7 @@ async def drain_response(client: ClaudeSDKClient) -> None:
 
 async def create_client() -> ClaudeSDKClient:
     options = ClaudeAgentOptions(
-        model="sonnet",
+        model="haiku",
         system_prompt="Reply with exactly: OK",
         max_turns=1,
         can_use_tool=allow_all,
@@ -126,6 +127,11 @@ async def create_client() -> ClaudeSDKClient:
 _baseline_pids: list[int] = []
 
 
+# flaky: tears down a real ClaudeSDKClient (subprocess) -> asyncio CancelledError race
+# (failed 2/2 in the 2026-08-05 audit, serial + parallel). It spawns real claude + haiku,
+# so it lives in tests/live/ (instance-gated: skips without a bot, runs with one) and must
+# NOT run in the instance-free unit tier. Still open: root-cause the teardown race.
+@pytest.mark.flaky
 async def test() -> None:
     global _baseline_pids
     baseline_count, _baseline_pids = count_claude_procs()

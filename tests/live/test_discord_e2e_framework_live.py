@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from .axi_e2e import AxiDiscordEntrypoints
-from .conftest import agent_cwd
+from tests.axi_e2e import AxiDiscordEntrypoints
+from tests.conftest import agent_cwd
 
 if TYPE_CHECKING:
-    from .helpers import Discord
+    from tests.helpers import Discord
 
 
 @pytest.mark.slow

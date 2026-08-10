@@ -1,0 +1,156 @@
+{
+  "id": "tb000000-flow-4000-8000-testbatch00001",
+  "name": "test-batch",
+  "description": "Resumable batch test runner. Collects pytest node-ids for a target, runs them in batches of N from a start index, and on the FIRST failing batch writes a report (with the exact relaunch command_args) + messages the requesting agent, then stops. Relaunch with the reported start index after fixing.",
+  "arguments": [
+    {
+      "name": "start",
+      "description": "Start index into the collected node-id list (resume point). $1. Default 0.",
+      "required": true
+    },
+    {
+      "name": "batch",
+      "description": "How many node-ids to run per batch. $2.",
+      "required": true
+    },
+    {
+      "name": "target",
+      "description": "pytest target to collect+run (path/dir/marker), e.g. tests/test_mcp_tools.py. $3.",
+      "required": true
+    },
+    {
+      "name": "notify",
+      "description": "Agent name to message on stop (fail or all-passed), e.g. ux-audit. Also the state-file key. $4.",
+      "required": true
+    },
+    {
+      "name": "instance",
+      "description": "Test instance name to run against (AXI_TEST_INSTANCE_NAME/DIR=~/axi-tests/<instance>), e.g. smoke-test. Must be UP. $5.",
+      "required": true
+    }
+  ],
+  "flowchart": {
+    "start_block_id": "tb000001-strt-4000-8000-000000000001",
+    "blocks": {
+      "tb000001-strt-4000-8000-000000000001": {
+        "id": "tb000001-strt-4000-8000-000000000001",
+        "type": "start",
+        "name": "START",
+        "position": {
+          "x": 0,
+          "y": 0
+        }
+      },
+      "tb000002-setp-4000-8000-000000000002": {
+        "id": "tb000002-setp-4000-8000-000000000002",
+        "type": "bash",
+        "name": "SETUP: collect + init",
+        "position": {
+          "x": 0,
+          "y": 120
+        },
+        "command": "D=\"${TMPDIR:-/tmp}\"; N=\"$D/test-batch-$4-nodes.txt\"; P=\"$D/test-batch-$4-pos.txt\"; R=\"$D/test-batch-$4-report.txt\"\nuv run python -m pytest --collect-only -q \"$3\" 2>/dev/null | grep -E \"::\" > \"$N\" || true\necho \"${1:-0}\" > \"$P\"; : > \"$R\"\necho \"collected $(wc -l < \"$N\" | tr -d ' ') test node-ids from '$3'; start=${1:-0} batch=$2 notify=$4 instance=$5\"",
+        "capture_output": true,
+        "output_variable": "setup_info",
+        "output_type": "string"
+      },
+      "tb000003-runb-4000-8000-000000000003": {
+        "id": "tb000003-runb-4000-8000-000000000003",
+        "type": "bash",
+        "name": "RUN BATCH",
+        "position": {
+          "x": 0,
+          "y": 240
+        },
+        "command": "D=\"${TMPDIR:-/tmp}\"; N=\"$D/test-batch-$4-nodes.txt\"; P=\"$D/test-batch-$4-pos.txt\"; R=\"$D/test-batch-$4-report.txt\"\np=$(cat \"$P\"); total=$(wc -l < \"$N\" | tr -d ' ')\nif [ \"$p\" -ge \"$total\" ]; then\n  printf 'ALL PASSED: ran node-ids through %s of %s, no failures.\\n' \"$total\" \"$total\" > \"$R\"\n  printf 'stop'; exit 0\nfi\nend=$((p + $2)); [ \"$end\" -gt \"$total\" ] && end=\"$total\"\nbatch=$(sed -n \"$((p+1)),${end}p\" \"$N\")\nexport AXI_TEST_INSTANCE_NAME=\"$5\" AXI_TEST_INSTANCE_DIR=\"$HOME/axi-tests/$5\"\nout=$(uv run python -m pytest $batch -p no:cacheprovider -q --timeout=180 2>&1); rc=$?\nif [ \"$rc\" -ne 0 ]; then\n  { printf 'FAILURE in batch at index %s (node-ids %s-%s of %s).\\n\\n' \"$p\" \"$((p+1))\" \"$end\" \"$total\"\n    printf 'RELAUNCH after fixing:  command_args=\"%s %s %s %s %s\"\\n\\n' \"$p\" \"$2\" \"$3\" \"$4\" \"$5\"\n    printf -- '--- batch node-ids ---\\n%s\\n\\n--- pytest output (tail) ---\\n' \"$batch\"\n    printf '%s\\n' \"$out\" | tail -45; } > \"$R\"\n  printf 'stop'; exit 0\nfi\necho \"$end\" > \"$P\"; printf '' ",
+        "capture_output": true,
+        "output_variable": "stop",
+        "output_type": "string"
+      },
+      "tb000004-stpq-4000-8000-000000000004": {
+        "id": "tb000004-stpq-4000-8000-000000000004",
+        "type": "branch",
+        "name": "STOP?",
+        "position": {
+          "x": 0,
+          "y": 360
+        },
+        "condition": "stop"
+      },
+      "tb000005-noti-4000-8000-000000000005": {
+        "id": "tb000005-noti-4000-8000-000000000005",
+        "type": "prompt",
+        "name": "NOTIFY REQUESTER",
+        "position": {
+          "x": 0,
+          "y": 480
+        },
+        "prompt": "[Automated flowchart step \u2014 not a user message.]\n\nThe batch runner has stopped (a failure, or all tests passed). Relay the report to the requesting agent:\n\n1. Run:  cat \"${TMPDIR:-/tmp}/test-batch-$4-report.txt\"\n2. Send that exact content to the agent named \"$4\" via the axi_send_message tool (agent_name=\"$4\", sender = your own agent name), prefixed with \"[test-batch $3] \".\n3. Do NOT run any tests yourself. You are done after sending.",
+        "output_variable": "notify_done"
+      },
+      "tb000006-done-4000-8000-000000000006": {
+        "id": "tb000006-done-4000-8000-000000000006",
+        "type": "end",
+        "name": "DONE",
+        "position": {
+          "x": 200,
+          "y": 480
+        }
+      }
+    },
+    "connections": [
+      {
+        "source_block_id": "tb000001-strt-4000-8000-000000000001",
+        "target_block_id": "tb000002-setp-4000-8000-000000000002",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "source_block_id": "tb000002-setp-4000-8000-000000000002",
+        "target_block_id": "tb000003-runb-4000-8000-000000000003",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "source_block_id": "tb000003-runb-4000-8000-000000000003",
+        "target_block_id": "tb000004-stpq-4000-8000-000000000004",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "source_block_id": "tb000004-stpq-4000-8000-000000000004",
+        "target_block_id": "tb000005-noti-4000-8000-000000000005",
+        "source_port": "true",
+        "target_port": "in",
+        "is_true_path": true,
+        "label": "stop (fail or done)"
+      },
+      {
+        "source_block_id": "tb000004-stpq-4000-8000-000000000004",
+        "target_block_id": "tb000003-runb-4000-8000-000000000003",
+        "source_port": "false",
+        "target_port": "in",
+        "is_true_path": false,
+        "label": "passed -> next batch"
+      },
+      {
+        "source_block_id": "tb000005-noti-4000-8000-000000000005",
+        "target_block_id": "tb000006-done-4000-8000-000000000006",
+        "source_port": "out",
+        "target_port": "in"
+      }
+    ]
+  },
+  "metadata": {
+    "created": "2026-08-05",
+    "modified": "2026-08-05",
+    "version": "1.0",
+    "author": "ux-audit",
+    "tags": [
+      "testing",
+      "batch",
+      "resumable",
+      "axi"
+    ]
+  }
+}

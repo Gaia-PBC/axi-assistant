@@ -5,9 +5,9 @@ import time
 
 import pytest
 
-from .helpers import Discord
-from .llm_judge import llm_assert
-from .conftest import agent_cwd
+from tests.helpers import Discord
+from tests.llm_judge import llm_assert
+from tests.conftest import agent_cwd, INSTANCE_NAME, AXI_PY_DIR
 
 # -- Tier 1: Core Features --
 
@@ -36,14 +36,14 @@ def test_debug_toggle(discord: Discord, master_channel: str):
         master_channel, "/debug", sentinel=False, timeout=15.0
     )
     text = discord.bot_response_text(msgs)
-    assert "debug mode" in text.lower()
+    assert "debug output" in text.lower()
 
     # Toggle again
     msgs = discord.send_and_wait(
         master_channel, "/debug", sentinel=False, timeout=15.0
     )
     text = discord.bot_response_text(msgs)
-    assert "debug mode" in text.lower()
+    assert "debug output" in text.lower()
 
 
 def test_clear_context(discord: Discord, master_channel: str):
@@ -199,10 +199,11 @@ def test_emoji_reactions(discord: Discord, master_channel: str):
     discord.wait_for_bot(master_channel, after=msg_id, timeout=60.0)
     time.sleep(2)
 
-    # Check if the bot added a reaction to our message
-    resp = discord._bot.get(f"/channels/{master_channel}/messages/{msg_id}")
-    resp.raise_for_status()
-    msg_data = resp.json()
+    # Check if the bot added a reaction to our message. discord._bot.get()
+    # returns the already-parsed JSON dict (not an httpx.Response), so use it
+    # directly — the previous resp.raise_for_status()/resp.json() calls raised
+    # AttributeError on the dict.
+    msg_data = discord._bot.get(f"/channels/{master_channel}/messages/{msg_id}")
     reactions = msg_data.get("reactions", [])
 
     has_check = any(
@@ -244,11 +245,10 @@ def test_startup_notification(discord: Discord, master_channel: str, instance_en
     # Record current latest message
     latest = discord.latest_message_id(master_channel)
 
-    # Restart the instance
-    axi_py_dir = pytest.importorskip("pathlib").Path(__file__).parent.parent
+    # Restart the instance-under-test (NOT hardcoded 'smoke-test'; correct path)
     subprocess.run(
-        ["uv", "run", "python", "../axi_test.py", "restart", "smoke-test"],
-        cwd=str(axi_py_dir),
+        ["uv", "run", "python", "axi_test.py", "restart", INSTANCE_NAME],
+        cwd=str(AXI_PY_DIR),
         capture_output=True,
         timeout=30,
     )

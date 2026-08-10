@@ -267,6 +267,10 @@ class DiscordStreamRenderer:
         if self._saw_error:
             return
 
+        from axi import stub_model
+
+        if stub_model.suppress_completion_ping():
+            return
         mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
         await _retry_discord_503(self._channel.send, mentions)
 

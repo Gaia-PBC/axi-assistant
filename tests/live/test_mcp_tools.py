@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from .helpers import Discord
-from .llm_judge import llm_assert
+from tests.helpers import Discord
+from tests.llm_judge import llm_assert
 
 
 def test_discord_send_file(discord: Discord, master_channel: str):

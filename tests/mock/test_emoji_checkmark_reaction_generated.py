@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .helpers import Discord
+    from tests.helpers import Discord
 
 
 CHECKMARK_NAMES = ("\u2705", "\u2611\ufe0f", "\u2611", "\u2713", "white_check_mark")

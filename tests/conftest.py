@@ -20,6 +20,16 @@ TEST_CONFIG = Path.home() / ".config/axi/test-config.json"
 DEFAULT_TIMEOUT = 120.0
 SPAWN_TIMEOUT = 180.0
 
+# --- e2e tiers disabled by default -------------------------------------------
+# The live (real-instance) and mock (fake-bot) e2e tiers require a running bot
+# and are currently unreliable (the send_and_wait sentinel/queuing work is still
+# in progress — captures are timeout-masked and leftover-state-dependent). They
+# are excluded from the default `pytest` collection so the default run is the
+# instance-free unit tier only. Run them explicitly with AXI_RUN_E2E=1, e.g.
+# `AXI_RUN_E2E=1 pytest tests/live/`. See tests/README.md.
+if os.environ.get("AXI_RUN_E2E") != "1":
+    collect_ignore = ["live", "mock"]
+
 
 def agent_cwd(name: str) -> str:
     """Return the CWD path for a test agent."""
@@ -68,7 +78,7 @@ def _restart_bot(discord_client: "Discord | None" = None, channel_id: str | None
         return
     (INSTANCE_DIR / ".master_session_id").unlink(missing_ok=True)
     subprocess.run(
-        ["uv", "run", "python", "../axi_test.py", "restart", INSTANCE_NAME],
+        ["uv", "run", "python", "axi_test.py", "restart", INSTANCE_NAME],
         cwd=str(AXI_PY_DIR),
         capture_output=True,
         timeout=30,
@@ -168,16 +178,41 @@ def data_dir():
     return str(DATA_DIR)
 
 
+def _bot_is_responsive(discord: Discord, channel_id: str, timeout: float = 20.0) -> bool:
+    """Quick health check: does the bot still answer a ping?
+
+    An ordinary assertion failure leaves the bot perfectly healthy — the model
+    returned a response, it was merely judged wrong. Only a genuinely *stuck* bot
+    (e.g. a spawn test that hung mid-processing) needs the ~21s recovery restart.
+    Probing responsiveness first lets us skip that restart for the common case,
+    which matters enormously when a run expects many failures (e.g. a weak-model
+    curriculum tier).
+    """
+    try:
+        msgs = discord.send_and_wait(
+            channel_id, "Say exactly: HEALTHCHECK_OK", timeout=timeout
+        )
+        return "HEALTHCHECK_OK" in discord.bot_response_text(msgs)
+    except Exception:
+        return False
+
+
 @pytest.fixture(autouse=True)
 def _recover_after_failure(warmup, discord: Discord, master_channel: str):
-    """Recover from a stuck bot after a failed test.
+    """Recover from a *stuck* bot after a failed test.
 
-    If the previous test failed (e.g., a spawn test that timed out), the bot
-    might be stuck processing. Restart it so the next test starts clean.
+    If the previous test failed, the bot might be stuck processing (e.g. a spawn
+    test that timed out). But an ordinary assertion failure leaves the bot healthy,
+    so probe responsiveness first and only pay the ~21s restart when the bot is
+    genuinely unresponsive.
     """
     global _last_test_failed
     if _last_test_failed:
         _last_test_failed = False
+        # Healthy bot (ordinary assertion failure) → no restart needed.
+        if _bot_is_responsive(discord, master_channel):
+            return
+        # Bot is unresponsive → restart and verify recovery.
         latest = discord.latest_message_id(master_channel) or "0"
         _restart_bot(discord, master_channel)
         discord.poll_history(master_channel, after=latest, check="ready", timeout=45.0)

@@ -574,6 +574,22 @@ def cleanup_orphan_services() -> int:
 # --- Subcommands ---
 
 
+def _prod_guild_id() -> str | None:
+    """Return the production bot's Discord guild id (from Prime's .env), or None.
+
+    Best-effort: if it can't be resolved we don't block. Used to keep a test
+    instance from ever running in the production guild (2026-08-05 nova-3
+    incident: a test bot pointed at prod created duplicate #axi-master channels).
+    """
+    try:
+        main_repo = _find_main_repo()
+        if not main_repo:
+            return None
+        return _get_prime_env(main_repo).get("DISCORD_GUILD_ID")
+    except Exception:
+        return None
+
+
 def cmd_up(args: argparse.Namespace) -> None:
     cleanup_orphan_services()
 
@@ -623,10 +639,25 @@ def cmd_up(args: argparse.Namespace) -> None:
             print("Hint: Use --wait to poll until a slot is available", file=sys.stderr)
             sys.exit(1)
 
+    # Guard: a test instance must never run in the production guild (2026-08-05
+    # nova-3 incident). Undo the reservation before bailing — no bot started yet.
+    guild_id = config["guilds"][guild_name]["guild_id"]
+    prod_guild = _prod_guild_id()
+    if prod_guild and str(guild_id) == str(prod_guild):
+        with _flock(SLOTS_LOCK):
+            slots = _load_slots(config)
+            slots.pop(name, None)
+            _write_slots(slots)
+        print(
+            f"REFUSING: '{guild_name}' resolves to the PRODUCTION guild {guild_id}. "
+            "A test bot in prod pollutes it. Fix the guild mapping in test-config.json.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Write .env and create data dir (outside lock — derived from reservation)
     _write_env(guild_name, config, instance_path, data_path, rs_binary)
 
-    guild_id = config["guilds"][guild_name]["guild_id"]
     print(f"Reserved guild '{guild_name}' ({guild_id}) for instance '{name}' (mode: {mode})")
     print(f"  .env:  {instance_path}/.env")
     print(f"  Data:  {data_path}")
@@ -673,6 +704,17 @@ def cmd_restart(args: argparse.Namespace) -> None:
     slots = _read_slots()
     if name not in slots:
         print(f"Warning: No reservation found for '{name}' in slots file", file=sys.stderr)
+
+    # Guard: never start a test bot in the production guild (2026-08-05 nova-3 incident).
+    prod_guild = _prod_guild_id()
+    inst_guild = (slots.get(name) or {}).get("guild_id")
+    if prod_guild and inst_guild and str(inst_guild) == str(prod_guild):
+        print(
+            f"REFUSING to start '{name}': its guild_id {inst_guild} is the PRODUCTION guild. "
+            "A test bot in prod pollutes it. Fix test-config.json and re-reserve.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     mode = _slot_mode(slots, name)
     if mode == "rs":
