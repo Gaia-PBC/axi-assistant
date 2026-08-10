@@ -128,8 +128,9 @@ _baseline_pids: list[int] = []
 
 
 # flaky: tears down a real ClaudeSDKClient (subprocess) -> asyncio CancelledError race
-# (failed 2/2 in the 2026-08-05 audit, serial + parallel). Quarantined; needs a real fix
-# (root-cause the teardown race, and likely relocate out of tests/unit/ — this spawns real claude + haiku).
+# (failed 2/2 in the 2026-08-05 audit, serial + parallel). It spawns real claude + haiku,
+# so it lives in tests/live/ (instance-gated: skips without a bot, runs with one) and must
+# NOT run in the instance-free unit tier. Still open: root-cause the teardown race.
 @pytest.mark.flaky
 async def test() -> None:
     global _baseline_pids
