@@ -45,7 +45,11 @@ def _spec_files() -> list[Path]:
 
 
 def _generated_test_files() -> list[Path]:
-    return sorted(TESTS_DIR.glob("test_*_generated.py"))
+    # Recursive: the test reorg (unit/live/mock) relocated the generated tests
+    # into tests/mock/, so a non-recursive tests/ glob silently matched nothing
+    # and these parametrized checks skipped ("empty parameter set"). rglob finds
+    # them wherever they live.
+    return sorted(TESTS_DIR.rglob("test_*_generated.py"))
 
 
 def _spec_ids(path: Path) -> str:
