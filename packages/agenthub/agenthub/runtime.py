@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +25,7 @@ from agenthub.session_events import (
 )
 from agenthub.streaming import stream_response
 from agenthub.tasks import BackgroundTaskSet
+from agenthub.turn_hooks import TurnHooks
 from agenthub.types import (
     AgentSession,
     LifecycleState,
@@ -49,10 +51,17 @@ class AgentHub:
         make_agent_options: Any,
         max_awake: int = 8,
         query_timeout: float = 300.0,
+        # Total attempts per turn, counting the first. 1 = no retry, which is the
+        # conservative default for embedders that have not opted in; Axi wires
+        # config.API_ERROR_MAX_RETRIES here.
+        max_attempts: int = 1,
+        retry_base_delay: float = 5.0,
+        retry_resume_prompt: str = "Continue from where you left off.",
         usage_history_path: str | None = None,
         rate_limit_history_path: str | None = None,
         log_dir: str | None = None,
         stream_factory: Any = stream_response,
+        turn_hooks: TurnHooks | None = None,
     ) -> None:
         self.frontends = list(frontends or [])
         self.sessions: dict[str, AgentSession] = {}
@@ -61,6 +70,9 @@ class AgentHub:
         self.make_agent_options = make_agent_options
         self.max_awake = max_awake
         self.query_timeout = query_timeout
+        self.max_attempts = max(1, max_attempts)
+        self.retry_base_delay = retry_base_delay
+        self.retry_resume_prompt = retry_resume_prompt
         self.scheduler = Scheduler(
             max_slots=max_awake,
             protected=set(),
@@ -74,6 +86,7 @@ class AgentHub:
         self.tasks = BackgroundTaskSet()
         self.log_dir = log_dir
         self.stream_factory = stream_factory
+        self.turn_hooks = turn_hooks if turn_hooks is not None else TurnHooks()
         self.shutdown_requested = False
 
     async def spawn_agent(
@@ -83,20 +96,36 @@ class AgentHub:
         cwd: str,
         agent_type: str = "claude_code",
         system_prompt: Any = None,
+        system_prompt_hash: str | None = None,
         session_id: str | None = None,
         mcp_servers: dict[str, Any] | None = None,
+        mcp_server_names: list[str] | None = None,
         frontend_state: Any = None,
         compact_instructions: str | None = None,
+        startup_command: str | None = None,
+        startup_command_args: str = "",
+        extra_excluded_commands: list[str] | None = None,
+        extra_write_dirs: list[str] | None = None,
+        model: str | None = None,
     ) -> AgentSession:
         Path(cwd).mkdir(parents=True, exist_ok=True)
+        # All fields below are generic AgentSession fields. system_prompt_hash is set
+        # before the on_spawn broadcast so a frontend can format its channel/topic from it.
         session = AgentSession(
             name=name,
             agent_type=agent_type,
             cwd=cwd,
             system_prompt=system_prompt,
+            system_prompt_hash=system_prompt_hash,
             mcp_servers=mcp_servers,
+            mcp_server_names=mcp_server_names,
             frontend_state=frontend_state,
             compact_instructions=compact_instructions,
+            startup_command=startup_command,
+            startup_command_args=startup_command_args,
+            extra_excluded_commands=list(extra_excluded_commands or []),
+            extra_write_dirs=list(extra_write_dirs or []),
+            model=model,
         )
         session.state = replace(session.state, session_id=session_id)
         session.agent_log = make_agent_log(name, persist_dir=self.log_dir)
@@ -161,8 +190,8 @@ class AgentHub:
     async def wake(self, name: str) -> None:
         await self._ensure_awake(self.sessions[name])
 
-    async def sleep(self, name: str) -> None:
-        await self._sleep_session(self.sessions[name])
+    async def sleep(self, name: str, *, force: bool = True) -> None:
+        await self._sleep_session(self.sessions[name], force=force)
 
     async def _submit_turn(
         self,
@@ -254,8 +283,95 @@ class AgentHub:
 
     async def _run_turn_with_timeout(self, session: AgentSession, turn: Any) -> TurnOutcome:
         async with asyncio.timeout(self.query_timeout):
-            await session.client.query(turn.content)
-            return await self._consume_stream(session, turn.turn_id)
+            async with self.turn_hooks.turn_scope(session, turn):
+                await self.turn_hooks.before_turn(session, turn)
+                # A "raw" turn sends its content straight to the CLI (e.g. a raw /compact or
+                # /clear command) bypassing the frontend content transform (flowchart wrap),
+                # while still using the hub's turn accounting + streaming to all frontends.
+                meta = turn.metadata if isinstance(turn.metadata, dict) else {}
+                if meta.get("raw"):
+                    content = turn.content
+                else:
+                    content = await self.turn_hooks.transform_content(session, turn.content)
+                outcome = await self._query_with_retry(session, turn, content)
+                await self.turn_hooks.after_turn(session, turn, outcome)
+                return outcome
+
+    async def _query_with_retry(self, session: AgentSession, turn: Any, content: Any) -> TurnOutcome:
+        """Run the turn's query, retrying transient API errors in place.
+
+        The retry stays *inside* the turn, mirroring the pre-hub
+        ``stream_with_retry`` (discord_stream.py:1598-1663). It deliberately does
+        not re-submit a hub turn: ``after_turn`` has to fire exactly once with
+        the final outcome, or Axi's hooks would run their compaction pass on
+        every failed attempt, and a re-submitted turn would queue *behind* any
+        user message that arrived in the meantime instead of continuing this one.
+        """
+        await session.client.query(content)
+        outcome = await self._consume_stream(session, turn.turn_id)
+
+        for attempt in range(2, self.max_attempts + 1):
+            if outcome is not TurnOutcome.RETRY_EXHAUSTED:
+                return outcome
+            if session.state.stop_requested:
+                return TurnOutcome.INTERRUPTED
+
+            delay = self.retry_base_delay * (2 ** (attempt - 2))
+            await self._frontend_broadcast(
+                "post_system",
+                session.name,
+                f"⚠️ API error, retrying in {delay:.0f}s... "
+                f"(attempt {attempt}/{self.max_attempts})",
+            )
+            if not await self._sleep_unless_stopped(session, delay):
+                return TurnOutcome.INTERRUPTED
+
+            # The agent can be killed during the backoff (force-kill, or sleep
+            # from another path). Querying a dead client would raise; bail with a
+            # message instead, as the old path did (discord_stream.py:1631-1645).
+            if session.client is None:
+                await self._frontend_broadcast(
+                    "post_system",
+                    session.name,
+                    f"⚠️ Agent **{session.name}** was killed mid-retry; "
+                    "send another message to continue.",
+                )
+                return TurnOutcome.RETRY_EXHAUSTED
+
+            try:
+                await session.client.query(self.retry_resume_prompt)
+            except Exception:
+                log.exception("Retry query failed for '%s'", session.name)
+                continue
+            outcome = await self._consume_stream(session, turn.turn_id)
+
+        if outcome is TurnOutcome.RETRY_EXHAUSTED:
+            # Without this the turn dies silently — the regression this fixes.
+            suffix = (
+                f" persisted after {self.max_attempts} attempts"
+                if self.max_attempts > 1
+                else ""
+            )
+            await self._frontend_broadcast(
+                "post_system", session.name, f"❌ API error{suffix}. Try again later.",
+            )
+        return outcome
+
+    async def _sleep_unless_stopped(self, session: AgentSession, delay: float) -> bool:
+        """Sleep for ``delay``, returning False as soon as a stop is requested.
+
+        ``request_stop`` only flips state and interrupts the CLI — it never
+        cancels ``query_task`` — so a plain ``asyncio.sleep`` would swallow /stop
+        for the whole backoff window.
+        """
+        deadline = time.monotonic() + delay
+        while True:
+            if session.state.stop_requested:
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            await asyncio.sleep(min(0.5, remaining))
 
     async def _handle_turn_timeout(self, session: AgentSession) -> None:
         await self._emit_log(session, "error", f"turn timed out after {self.query_timeout}s")
@@ -309,19 +425,45 @@ class AgentHub:
                 async with session.dispatch_lock:
                     session.state = reduce_session(session.state, WakeCompleted(agent_name=session.name))
             return
+        # 7.4c: refuse to wake an agent whose working directory is gone (e.g. a
+        # cleaned-up worktree). Previously enforced by agents.wake_agent; moved here
+        # so hub.wake call sites get the same early, clear error.
+        if session.cwd and not Path(session.cwd).is_dir():
+            raise ValueError(f"Agent '{session.name}' working directory no longer exists: {session.cwd}")
         await self.scheduler.request_slot(session.name)
         session.state.lifecycle = LifecycleState.WAKING
+        resume_id = session.session_id
         try:
-            options = self.make_agent_options(session, session.session_id)
+            options = self.make_agent_options(session, resume_id)
             session.client = await self.create_client(session, options)
+            session.last_failed_resume_id = None
         except Exception:
-            self.scheduler.release_slot(session.name)
-            raise
+            if not resume_id:
+                self.scheduler.release_slot(session.name)
+                raise
+            # 7.4b: resume failed — retry once with a fresh session (previous context
+            # lost). Mirrors the legacy agents.wake_agent fallback so hub-driven wakes
+            # recover from a bad resume instead of failing the wake.
+            log.warning("Failed to resume '%s' (session_id=%s); retrying fresh", session.name, resume_id)
+            try:
+                options = self.make_agent_options(session, None)
+                session.client = await self.create_client(session, options)
+            except Exception:
+                self.scheduler.release_slot(session.name)
+                raise
+            session.session_id = None
+            session.last_failed_resume_id = resume_id
+            log.warning("Agent '%s' woke with a fresh session (previous context lost)", session.name)
         async with session.dispatch_lock:
             session.state = reduce_session(session.state, WakeCompleted(agent_name=session.name))
         await self._frontend_broadcast("on_wake", session.name)
 
-    async def _sleep_session(self, session: AgentSession) -> None:
+    async def _sleep_session(self, session: AgentSession, *, force: bool = True) -> None:
+        # 7.4c-2: a non-force sleep skips an agent whose query_lock is held (mid-turn),
+        # mirroring agents.sleep_agent. Auto-sleep + scheduler eviction pass force=False
+        # so they never sleep a busy agent; internal hub calls default to force=True.
+        if not force and session.query_lock.locked():
+            return
         if session.client is None:
             session.state.lifecycle = LifecycleState.SLEEPING
             return

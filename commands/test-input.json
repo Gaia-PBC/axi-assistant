@@ -1,0 +1,90 @@
+{
+  "id": "test-input-0001",
+  "name": "test-input",
+  "description": "Minimal test for input block feature.",
+  "flowchart": {
+    "blocks": {
+      "start": {
+        "id": "start",
+        "type": "start",
+        "name": "START",
+        "position": { "x": 0, "y": 0 }
+      },
+      "ask": {
+        "id": "ask",
+        "type": "prompt",
+        "name": "ASK",
+        "position": { "x": 0, "y": 100 },
+        "prompt": "Say exactly: 'What is your favorite color?' and nothing else.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "wait": {
+        "id": "wait",
+        "type": "input",
+        "name": "WAIT FOR ANSWER",
+        "position": { "x": 0, "y": 200 },
+        "output_variable": "user_answer"
+      },
+      "confirm": {
+        "id": "confirm",
+        "type": "prompt",
+        "name": "CONFIRM",
+        "position": { "x": 0, "y": 300 },
+        "prompt": "The user answered: {{user_answer}}\n\nRepeat their answer back and say 'Test complete.'",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "done": {
+        "id": "done",
+        "type": "end",
+        "name": "DONE",
+        "position": { "x": 0, "y": 400 }
+      }
+    },
+    "connections": [
+      {
+        "id": "c1",
+        "source_block_id": "start",
+        "target_block_id": "ask",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c2",
+        "source_block_id": "ask",
+        "target_block_id": "wait",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c3",
+        "source_block_id": "wait",
+        "target_block_id": "confirm",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c4",
+        "source_block_id": "confirm",
+        "target_block_id": "done",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      }
+    ]
+  }
+}

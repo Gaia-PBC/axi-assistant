@@ -101,6 +101,9 @@ class DiscordAgentState:
     question_message_id: int | None = None
     # Todo display
     todo_items: list[dict[str, Any]] = field(default_factory=lambda: list[dict[str, Any]]())
+    # Axi's per-agent debug FILE logger (logging.Logger -> <LOG_DIR>/<name>.log). This lives
+    # on the Discord frontend_state, distinct from the hub's session.agent_log (an AgentLog
+    # structured event log). 7.5e: separated the two so they no longer collide on one field.
     agent_log: logging.Logger | None = None
     last_failed_resume_id: str | None = None
     # Typing indicator (discord.abc.Typing object) — stored so permission
@@ -111,6 +114,8 @@ class DiscordAgentState:
     task_error: bool = False
     # FlowCoder: current command name (set on flowchart_start, cleared on flowchart_complete)
     fc_current_command: str | None = None
+    # FlowCoder: pending input block (set on input_request, cleared when user responds)
+    pending_input_block_id: str | None = None
 
 
 def discord_state(session: AgentSession) -> DiscordAgentState:
@@ -126,7 +131,11 @@ def discord_state(session: AgentSession) -> DiscordAgentState:
 
 
 def setup_agent_log(session: AgentSession) -> None:
-    """Set up per-agent logger writing to <LOG_DIR>/<name>.log."""
+    """Set up Axi's per-agent debug logger writing to <LOG_DIR>/<name>.log.
+
+    Stored on frontend_state (discord_state(session).agent_log), NOT session.agent_log —
+    the latter is the hub's AgentLog. See DiscordAgentState.agent_log (7.5e).
+    """
     from axi.log_context import StructuredContextFilter
 
     os.makedirs(config.LOG_DIR, exist_ok=True)
@@ -145,4 +154,4 @@ def setup_agent_log(session: AgentSession) -> None:
         fmt.converter = time.gmtime
         fh.setFormatter(fmt)
         logger.addHandler(fh)
-    session.agent_log = logger
+    discord_state(session).agent_log = logger

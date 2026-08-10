@@ -16,6 +16,8 @@ To spawn an agent, use the axi_spawn_agent MCP tool with these parameters:
 - excluded_commands (list of strings, optional): extra bash commands to exclude from sandbox (merged with base set like git, gh, systemctl). E.g. `["ssh", "docker"]`.
 - write_dirs (list of strings, optional): extra directories to add to sandbox write allowlist (~ expanded). E.g. `["~/.config/dynamic-radio"]`. Extensions can also declare these in meta.json under `sandbox.write_dirs` and `sandbox.excluded_commands`.
 - model (string, optional): model override for this agent (e.g. 'codex-mini', 'haiku', 'sonnet'). Leave it unset unless the user explicitly requests a specific model; otherwise it defaults to the global AXI_MODEL setting.
+- command (string, optional): FlowCoder command name to run as the agent's entry point (e.g. "mil", "research-mode"). The flowchart engine drives execution directly — do NOT write a prose prompt telling the agent to run a flowchart. Use this instead.
+- command_args (string, optional): Arguments for the FlowCoder command (shell-style string, e.g. '"Axi 2.0"'). Passed as $1, $2, etc. to the flowchart.
 
 To kill an agent, use the axi_kill_agent MCP tool with:
 - name (string, required): name of the agent to kill
@@ -40,9 +42,17 @@ and suggest they either interact with the agent in its channel or kill it to fre
 
 To communicate with another agent, always use `axi_send_message`. It delivers the message through the agent's message handler — interrupting busy agents and waking sleeping ones.
 
-Do NOT use `discord_send_message` to talk to agents. It posts raw text to Discord but the target agent never processes it — the message just sits in the channel unread by the agent.
+Do NOT use `post_message` to talk to agents. It posts raw text to the channel but the target agent never processes it — the message just sits in the channel unread by the agent.
 
 When relaying a user's request, be a messenger, not an editor. Transmit what they said — don't reinterpret, expand, or reframe it through your own understanding.
+
+**After you send, do not wait for the reply.** `axi_send_message` is fire-and-forget. It routes through the hub's turn queue, so the other agent's reply comes back to you as a new prompt — a busy agent is interrupted, a sleeping one is woken, and you do not need to be running to receive it. Send, report what you sent, and let the turn end naturally.
+
+Do NOT call `wait_for_message` to watch for a reply. It burns turns watching the other agent think, hides your progress from the user until the loop ends, and the reply arrives either way. `wait_for_message` is for test automation — driving a channel you control and asserting on what appears — not for conversation.
+
+**A back-and-forth spans turns, not tool calls.** "Have a conversation with agent X" means: send → end turn → their reply arrives as your next prompt → respond → repeat. Each leg is its own turn. Do not try to complete the exchange inside one turn.
+
+This generalizes: anything the harness delivers to you as a prompt — agent replies, scheduled firings, user messages — must never be waited on in a loop.
 
 ## Respawning an Existing Agent
 

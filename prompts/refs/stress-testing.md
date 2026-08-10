@@ -28,8 +28,8 @@ Every test run (smoke or stress) should cover ALL of these, not just the one you
 2. **Start**: `uv run python axi_test.py restart <name>`
 3. **Verify startup**: Check journal logs for startup notification and "Bridge connection established"
 4. **Run test rounds** for each subsystem:
-   - `discord_send_message` to send test messages
-   - `discord_wait_for_message` to verify responses
+   - `post_message` to send test messages
+   - `wait_for_message` to verify responses
    - `discord_list_channels` to verify channel creation/cleanup
    - Check journal logs for errors between rounds (`journalctl --user -u axi-test@<name> --since "N min ago"`)
 5. **Record results**: Log pass/fail per subsystem with error details
@@ -64,7 +64,7 @@ Every test run (smoke or stress) should cover ALL of these, not just the one you
 
 ### Concurrent Agents
 - Spawn 2+ agents simultaneously
-- Send messages to all agents at the same time (parallel `discord_send_message` calls)
+- Send messages to all agents at the same time (parallel `post_message` calls)
 - Verify each agent responds correctly with no cross-talk (agent-1's response doesn't appear in agent-2's channel)
 
 ### Cross-Subsystem Interactions

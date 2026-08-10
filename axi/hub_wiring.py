@@ -22,10 +22,9 @@ from agenthub import AgentHub
 from agenthub.frontend_router import FrontendRouter
 from axi import config
 from axi.discord_frontend import DiscordFrontend
+from axi.turn_hooks import AxiTurnHooks
 
 if TYPE_CHECKING:
-    from discord.ext.commands import Bot
-
     from agenthub.types import AgentSession
 
 log = logging.getLogger("axi")
@@ -46,9 +45,11 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
 
     selected_model = session.model or config.get_model()
     resolved_model, resolved_env = config.get_model_runtime(selected_model)
+    minflow_data_dir = os.environ.get("MINFLOW_DATA_DIR") or os.path.expanduser("~/.config/minflow")
     base_env = {
         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "100",
         "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "MINFLOW_DATA_DIR": minflow_data_dir,
         "PATH": os.path.join(config.BOT_DIR, "bin") + ":" + os.environ.get("PATH", ""),
     }
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
@@ -83,7 +84,7 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
             config.AXI_USER_DATA,
             config.BOT_WORKTREES_DIR,
             os.path.expanduser("~/.config/axi"),
-            os.path.expanduser("~/.config/minflow"),
+            minflow_data_dir,
             os.path.expanduser("~/.cache/uv"),
             *session.extra_write_dirs,
         ],
@@ -146,6 +147,29 @@ async def _disconnect_client(client: Any, name: str) -> None:
     await disconnect_client(client, name)
 
 
+def _stream_factory(session: AgentSession, *, set_session_id_fn: Any, record_usage_fn: Any) -> Any:
+    """Stream factory for the hub — threads Axi's compaction state into stream_response.
+
+    Without this, the hub's default stream_factory calls stream_response with no
+    pending_compact dict, so a CLI auto-compaction inside a hub turn never records
+    _pending_compact and the 'Continue from where you left off' auto-resume is lost
+    (AxiTurnHooks.after_turn reads _pending_compact to post the completion + queue the
+    resume turn — Phase 7.5b).
+    """
+    from agenthub.streaming import stream_response
+
+    from axi.discord_stream import _compact_start_times, _pending_compact, _self_compacting
+
+    return stream_response(
+        session,
+        self_compacting_names=_self_compacting,
+        compact_start_times=_compact_start_times,
+        pending_compact=_pending_compact,
+        set_session_id_fn=set_session_id_fn,
+        record_usage_fn=record_usage_fn,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Hub construction
 # ---------------------------------------------------------------------------
@@ -155,7 +179,7 @@ router: FrontendRouter | None = None
 
 
 def create_hub(
-    bot: Bot,
+    bot: Any,
     sessions: dict[str, Any],
 ) -> AgentHub:
     """Create and configure the rewritten AgentHub.
@@ -175,9 +199,13 @@ def create_hub(
         make_agent_options=_make_agent_options,
         create_client=_create_client,
         disconnect_client=_disconnect_client,
+        stream_factory=_stream_factory,
         query_timeout=config.QUERY_TIMEOUT,
+        max_attempts=config.API_ERROR_MAX_RETRIES,
+        retry_base_delay=config.API_ERROR_BASE_DELAY,
         usage_history_path=config.USAGE_HISTORY_PATH,
         rate_limit_history_path=config.RATE_LIMIT_HISTORY_PATH,
+        turn_hooks=AxiTurnHooks(),
     )
 
     # Share the same sessions dict — gradual migration

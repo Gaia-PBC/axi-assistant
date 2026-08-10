@@ -21,7 +21,7 @@
           "x": 300,
           "y": 450
         },
-        "prompt": "<sys>\nClassify the user's message that appears below in the <user> block.\n\n1. Is this a task requiring you to take action (create, change, investigate, implement something), or conversation/question you can answer directly?\n2. Does the message relate to any of these topics: scheduling, agent spawning, flowcharts?\n   If yes, list the absolute file paths of ALL relevant reference docs (comma-separated). If no, return an empty string for refFiles.\n   - Scheduling: %(bot_dir)s/prompts/refs/scheduling.md\n   - Agent spawning: %(bot_dir)s/prompts/refs/agent-spawning.md\n   - Flowcharts: %(bot_dir)s/prompts/refs/flowcharts.md\n</sys>\n\n<user>\n$5\n</user>",
+        "prompt": "<sys>\nClassify the user's message that appears below in the <user> block.\n\n1. Is this a task requiring you to take action (create, change, investigate, implement something), or conversation/question you can answer directly?\n2. Does the message relate to any of these topics: scheduling, agent spawning, flowcharts?\n   If yes, list the absolute file paths of ALL relevant reference docs (comma-separated). If no, return an empty string for refFiles.\n   - Scheduling: %(bot_dir)s/prompts/refs/scheduling.md\n   - Agent spawning: %(bot_dir)s/prompts/refs/agent-spawning.md\n   - Flowcharts: %(bot_dir)s/prompts/refs/flowcharts.md\n3. Does the message begin with the literal prefix `[Inter-agent message from <name>]`?\n   If so set senderIsAgent true and senderName to that name; otherwise false and an empty string.\n</sys>\n\n<user>\n$5\n</user>",
         "output_schema": {
           "type": "object",
           "properties": {
@@ -33,12 +33,20 @@
             },
             "refFiles": {
               "type": "string"
+            },
+            "senderIsAgent": {
+              "type": "boolean"
+            },
+            "senderName": {
+              "type": "string"
             }
           },
           "required": [
             "isTask",
             "hasRefTopics",
-            "refFiles"
+            "refFiles",
+            "senderIsAgent",
+            "senderName"
           ]
         },
         "sound_effect": null
@@ -118,7 +126,7 @@
           "x": 600,
           "y": 1050
         },
-        "prompt": "<sys>\nDetermine the USER's next action — not yours, the human user's. Ground this in your project status records: check for the next-in-line incomplete task.\n\nIf there is a next-in-line task, that IS the user's next action — state it directly. Do not offer alternatives or list other tasks. Do not ask the user to decide.\n\nDo not output any text.\n</sys>",
+        "prompt": "<sys>\nDetermine the USER's next action \u2014 not yours, the human user's. Ground this in your project status records: check for the next-in-line incomplete task.\n\nIf there is a next-in-line task, that IS the user's next action \u2014 state it directly. Do not offer alternatives or list other tasks. Do not ask the user to decide.\n\nDo not output any text.\n</sys>",
         "output_schema": {
           "type": "object",
           "properties": {
@@ -140,7 +148,7 @@
           "x": 600,
           "y": 1150
         },
-        "prompt": "<sys>\nBased on the next action you determined, pick the emoji that best represents the **type of to-do** the user has, and call set_channel_status. Do not output any text.\n\nCommon to-do types:\n- 📚 User should read a long response or review a document you produced\n- 🔬 User needs to test something manually that you can't verify yourself\n- 💬 User needs to respond — you asked a question, need approval, or are waiting for direction\n\n**Custom emoji** — if none of the above fit, pick any single emoji that captures the user's to-do type (e.g. 📍 for location scouting, 💰 for budgeting, ✍️ for writing). Use your judgment. Being specific is better than being generic.\n\n**Never use ✅ (checkmark)** — a checkmark is meaningless as a user to-do. It tells the user nothing about what they need to do next.\n\n- ❓ **Last resort only** — you genuinely have no idea what the user wants next and cannot infer it from context, pending tasks, or conversation history. Exhaust other options first.\n\n**Never set ⏳ yourself** — hourglass is applied automatically when you start processing. Setting it manually will conflict with the auto-hourglass system.\n</sys>",
+        "prompt": "<sys>\nBased on the next action you determined, pick the emoji that best represents the **type of to-do** the user has, and call set_status. Do not output any text.\n\nCommon to-do types:\n- \ud83d\udcda User should read a long response or review a document you produced\n- \ud83d\udd2c User needs to test something manually that you can't verify yourself\n- \ud83d\udcac User needs to respond \u2014 you asked a question, need approval, or are waiting for direction\n\n**Custom emoji** \u2014 if none of the above fit, pick any single emoji that captures the user's to-do type (e.g. \ud83d\udccd for location scouting, \ud83d\udcb0 for budgeting, \u270d\ufe0f for writing). Use your judgment. Being specific is better than being generic.\n\n**Never use \u2705 (checkmark)** \u2014 a checkmark is meaningless as a user to-do. It tells the user nothing about what they need to do next.\n\n- \u2753 **Last resort only** \u2014 you genuinely have no idea what the user wants next and cannot infer it from context, pending tasks, or conversation history. Exhaust other options first.\n\n**Never set \u23f3 yourself** \u2014 hourglass is applied automatically when you start processing. Setting it manually will conflict with the auto-hourglass system.\n</sys>",
         "output_schema": null,
         "sound_effect": null
       },
@@ -207,7 +215,7 @@
           "x": 550,
           "y": 1250
         },
-        "prompt": "<sys>\nYour response goes to the user. The user's message in the <user> block below was classified as a task. Handle it — remember to default to read/analyze/diagnose unless the user explicitly asked for changes.\n</sys>\n\n<user>\n$5\n</user>",
+        "prompt": "<sys>\nYour response goes to the user. The user's message in the <user> block below was classified as a task. Handle it \u2014 remember to default to read/analyze/diagnose unless the user explicitly asked for changes.\n</sys>\n\n<user>\n$5\n</user>",
         "output_schema": null,
         "sound_effect": null
       },
@@ -251,7 +259,7 @@
           "x": 300,
           "y": 1550
         },
-        "prompt": "<sys>\nYour response goes to the user. List the specific changes you just made that require manual testing. For each change, state:\n- What was changed\n- What the user should do to test it (specific steps)\n- What a successful test looks like\n\nBe brief — use bullet points.\n</sys>",
+        "prompt": "<sys>\nYour response goes to the user. List the specific changes you just made that require manual testing. For each change, state:\n- What was changed\n- What the user should do to test it (specific steps)\n- What a successful test looks like\n\nBe brief \u2014 use bullet points.\n</sys>",
         "output_schema": null,
         "sound_effect": null
       },
@@ -298,7 +306,7 @@
           "x": 300,
           "y": 1950
         },
-        "prompt": "<sys>\nDetermine the USER's next action — not yours, the human user's. Ground this in your project status records: check for the next-in-line incomplete task.\n\nIf there is a next-in-line task, that IS the user's next action — state it directly. Do not offer alternatives or list other tasks. Do not ask the user to decide.\n\nDo not output any text.\n</sys>",
+        "prompt": "<sys>\nDetermine the USER's next action \u2014 not yours, the human user's. Ground this in your project status records: check for the next-in-line incomplete task.\n\nIf there is a next-in-line task, that IS the user's next action \u2014 state it directly. Do not offer alternatives or list other tasks. Do not ask the user to decide.\n\nDo not output any text.\n</sys>",
         "output_schema": {
           "type": "object",
           "properties": {
@@ -320,7 +328,7 @@
           "x": 300,
           "y": 2050
         },
-        "prompt": "<sys>\nBased on the next action you determined, pick the emoji that best represents the **type of to-do** the user has, and call set_channel_status. Do not output any text.\n\nCommon to-do types:\n- 📚 User should read a long response or review a document you produced\n- 🔬 User needs to test something manually that you can't verify yourself\n- 💬 User needs to respond — you asked a question, need approval, or are waiting for direction\n\n**Custom emoji** — if none of the above fit, pick any single emoji that captures the user's to-do type (e.g. 📍 for location scouting, 💰 for budgeting, ✍️ for writing). Use your judgment. Being specific is better than being generic.\n\n**Never use ✅ (checkmark)** — a checkmark is meaningless as a user to-do. It tells the user nothing about what they need to do next.\n\n- ❓ **Last resort only** — you genuinely have no idea what the user wants next and cannot infer it from context, pending tasks, or conversation history. Exhaust other options first.\n\n**Never set ⏳ yourself** — hourglass is applied automatically when you start processing. Setting it manually will conflict with the auto-hourglass system.\n</sys>",
+        "prompt": "<sys>\nBased on the next action you determined, pick the emoji that best represents the **type of to-do** the user has, and call set_status. Do not output any text.\n\nCommon to-do types:\n- \ud83d\udcda User should read a long response or review a document you produced\n- \ud83d\udd2c User needs to test something manually that you can't verify yourself\n- \ud83d\udcac User needs to respond \u2014 you asked a question, need approval, or are waiting for direction\n\n**Custom emoji** \u2014 if none of the above fit, pick any single emoji that captures the user's to-do type (e.g. \ud83d\udccd for location scouting, \ud83d\udcb0 for budgeting, \u270d\ufe0f for writing). Use your judgment. Being specific is better than being generic.\n\n**Never use \u2705 (checkmark)** \u2014 a checkmark is meaningless as a user to-do. It tells the user nothing about what they need to do next.\n\n- \u2753 **Last resort only** \u2014 you genuinely have no idea what the user wants next and cannot infer it from context, pending tasks, or conversation history. Exhaust other options first.\n\n**Never set \u23f3 yourself** \u2014 hourglass is applied automatically when you start processing. Setting it manually will conflict with the auto-hourglass system.\n</sys>",
         "output_schema": null,
         "sound_effect": null
       },
@@ -332,6 +340,16 @@
           "x": 300,
           "y": 2150
         }
+      },
+      "3e240aba-45ef-4a84-85a2-bc67049c2a87": {
+        "id": "3e240aba-45ef-4a84-85a2-bc67049c2a87",
+        "type": "branch",
+        "name": "IS_PEER_TURN?",
+        "position": {
+          "x": 300,
+          "y": 525
+        },
+        "condition": "senderIsAgent"
       }
     },
     "connections": [
@@ -348,7 +366,7 @@
       {
         "id": "96e11fa4-548c-4ac4-9604-023da37e0657",
         "source_block_id": "f254fe46-5b53-4a9f-808a-169da351c00d",
-        "target_block_id": "5599ae45-0a3c-4da1-b4e0-741a976ceef8",
+        "target_block_id": "3e240aba-45ef-4a84-85a2-bc67049c2a87",
         "source_port": "bottom",
         "target_port": "top",
         "is_true_path": true,
@@ -634,6 +652,26 @@
         "is_true_path": true,
         "condition": null,
         "label": null
+      },
+      {
+        "id": "d79dcc23-5b96-411c-bdf3-509efe1beae1",
+        "source_block_id": "3e240aba-45ef-4a84-85a2-bc67049c2a87",
+        "target_block_id": "5599ae45-0a3c-4da1-b4e0-741a976ceef8",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": "peer agent turn"
+      },
+      {
+        "id": "ef24da5b-750a-49a9-be25-dc4a14021289",
+        "source_block_id": "3e240aba-45ef-4a84-85a2-bc67049c2a87",
+        "target_block_id": "5599ae45-0a3c-4da1-b4e0-741a976ceef8",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": false,
+        "condition": null,
+        "label": "human turn"
       }
     ],
     "start_block_id": "fb770137-ab01-4880-8f9c-ac85fe93b800"

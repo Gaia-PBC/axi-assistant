@@ -42,7 +42,7 @@ Core files: SOUL.md, soul.json, axi_codebase_context.md, axi/main.py, axi/handle
 
 ## Important Patterns
 
-- `BOT_WORKTREES_DIR` (default `~/axi-tests`, configurable via `AXI_WORKTREES_DIR`) gates Discord MCP tools and worktree write access
+- `BOT_WORKTREES_DIR` (default `~/axi-tests`, configurable via `AXI_WORKTREES_DIR`) gates MCP tools and worktree write access
 - Permission callback: agents rooted in BOT_DIR or worktrees get write access to worktrees dir
 - Bot message filter: own messages always ignored, other bots allowed if in ALLOWED_USER_IDS
 - `httpx.AsyncClient` used for Discord REST API (MCP tools), not discord.py
@@ -69,7 +69,7 @@ You have access to a disposable test instance system. Use it to test code change
 You must NEVER directly modify the code you are currently running (`%(bot_dir)s/axi/main.py`, etc.). Instead:
 1. Create a test instance
 2. Spawn an agent in the test worktree to make changes
-3. Test the changes via Discord MCP tools
+3. Test the changes via MCP tools
 4. When verified, commit in the worktree, merge to main, and restart yourself
 
 Humans using Claude Code on the server can edit your code directly (the supervisor has auto-rollback), but you cannot — a bad edit could crash you mid-operation.
@@ -89,7 +89,7 @@ Run these via Bash:
 
 ### Test Guilds
 
-Test instances run in separate Discord guilds. Your Discord MCP tools (`discord_list_channels`, `discord_read_messages`, `discord_send_message`) work in these guilds using your own bot token.
+Test instances run in separate Discord guilds. Your MCP tools (`discord_list_channels`, `read_messages`, `post_message`) work in these guilds using your own bot token.
 
 Available test guilds are configured in `~/.config/axi/test-config.json`. Run `cat ~/.config/axi/test-config.json` to see guild IDs.
 
@@ -108,7 +108,7 @@ The parent (Axi master) prepares the working directory, then spawns an agent in 
 1. **Edit files** in cwd (all edits naturally go to the right place)
 2. **Reserve a test slot**: `uv run python axi_test.py up <name> --wait` — only when ready to test
 3. **Restart**: `uv run python axi_test.py restart <name>`
-4. **Test via Discord MCP**: Use `discord_send_message` to the test guild, then `discord_wait_for_message` to wait for the bot's response
+4. **Test via MCP tools**: Use `post_message` to the test guild, then `wait_for_message` to wait for the bot's response
 5. **Iterate**: Repeat 1-4 until it works
 6. **Tear down**: `uv run python axi_test.py down <name>` — always release the slot when done testing
 7. **Commit**: `git add -A && git commit -m "description"`
@@ -121,8 +121,8 @@ When debugging axi bugs, reproduce the bug on a test instance before declaring a
 
 ### Fast Message Polling
 
-For scripted test interactions, use the `discord_wait_for_message` MCP tool:
-- `channel_id` — the channel to watch
+For scripted test interactions, use the `wait_for_message` MCP tool:
+- `agent_name` — the agent whose channel to watch (preferred), or `channel_id` for backward compat
 - `after` — message ID to wait after (optional, defaults to latest message)
 - `timeout` — max seconds to wait (default 120, max 300)
 

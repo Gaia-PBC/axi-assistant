@@ -29,8 +29,8 @@ from discord.ext import tasks
 from discord.ext.commands import Bot
 from opentelemetry import trace
 
-from axi import agents, channels, config, scheduler, tools, worktrees
-from axi.axi_types import ActivityState, AgentSession, ConcurrencyLimitError, discord_state, tool_display
+from axi import agents, channels, commands_api, config, scheduler, tools, worktrees
+from axi.axi_types import ActivityState, AgentSession, discord_state, tool_display
 from axi.discord_wire import (
     audited_channel_send,
     audited_interaction_followup_send,
@@ -366,49 +366,33 @@ async def on_message(message: discord.Message) -> None:
         )
         return
 
-    ds = discord_state(session)
-
     # --- Text command handling ---
     if message.content.strip().startswith("/"):
         handled = await _handle_text_command(message, session, agent_name)
         if handled:
             return
 
-    # --- Plan approval gate ---
-    if ds.plan_approval_future is not None and not ds.plan_approval_future.done():
-        raw = content.strip() if isinstance(content, str) else ""
-        text = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]\s*", "", raw).strip().lower()
-        if text in ("approve", "approved", "yes", "y", "lgtm", "go", "proceed", "ok"):
-            ds.plan_approval_future.set_result({"approved": True, "message": ""})
-            await agents.add_reaction(message, "✅")
-            await agents.send_system(channel, "Plan approved — agent resuming implementation.")
-        elif text in ("reject", "rejected", "no", "n", "cancel", "stop"):
-            ds.plan_approval_future.set_result(
-                {"approved": False, "message": "User rejected the plan. Please revise."}
-            )
-            await agents.add_reaction(message, "❌")
-            await agents.send_system(channel, "Plan rejected — agent will revise.")
-        else:
-            feedback = content if isinstance(content, str) else str(content)
-            ds.plan_approval_future.set_result(
-                {
-                    "approved": False,
-                    "message": f"User wants changes to the plan: {feedback}",
-                }
-            )
-            await agents.add_reaction(message, "📝")
-            await agents.send_system(channel, "Feedback received — agent will revise the plan.")
+    # --- Plan approval / question gates (resolved by DiscordFrontend) ---
+    from axi.hub_wiring import router as _fe_router
+
+    discord_fe = _fe_router.get("discord") if _fe_router else None
+    if discord_fe and await discord_fe.try_resolve_gate(agent_name, content, message):
         return
 
-    # --- AskUserQuestion gate (text reply) ---
-    if ds.question_future is not None and not ds.question_future.done():
-        raw = content.strip() if isinstance(content, str) else str(content)
-        raw = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]\s*", "", raw).strip()
-        q = ds.question_data or {}
-        answer = agents.parse_question_answer(raw, q)
-        ds.question_future.set_result(answer)
-        await agents.add_reaction(message, "\u2705")
-        return
+    # --- Flowchart input capture ---
+    ds = discord_state(session)
+    if ds.pending_input_block_id and session.agent_type == "flowcoder" and session.transport:
+        block_id = ds.pending_input_block_id
+        ds.pending_input_block_id = None
+        from axi.flowcoder_transport import FlowcoderBridgeTransport
+
+        if isinstance(session.transport, FlowcoderBridgeTransport):
+            user_text = content if isinstance(content, str) else str(content)
+            await session.transport.send_input_response(block_id, user_text)
+            log.info("INPUT_RESPONSE[%s] block_id=%s content=%s", agent_name, block_id, user_text[:100])
+            observe_inbound_discord_event("message", "input_response")
+            return
+        log.warning("INPUT_RESPONSE[%s] transport is not FlowcoderBridgeTransport — falling through", agent_name)
 
     # --- Centralized message processing via Axi hub wrapper ---
     msg_id = message.id
@@ -418,17 +402,19 @@ async def on_message(message: discord.Message) -> None:
         msg_id,
         agents.is_processing(session),
         session.reconnecting,
-        len(session.message_queue),
+        len(session.state.queued_turns),
         session.query_lock.locked(),
     )
 
     raw_content = content
-    content = agents.wrap_content_with_flowchart(content, session)
+    # B1 (Phase 7.2): the live turn is driven by the hub. submit_user_message wakes the
+    # agent, drives the turn (AxiTurnHooks preserve flowchart wrap / compaction / tracing /
+    # drains), streams to the frontend, then sleeps and drains its own queued_turns.
+    # Flowchart wrapping now happens in AxiTurnHooks.transform_content — pass raw content.
 
-    if agents.hub and agents.hub.shutdown_requested:
-        await agents.send_system(channel, "Bot is restarting — not accepting new messages.")
-        result_status = "shutdown"
-    elif session.reconnecting:
+    if session.reconnecting:
+        # Procmux reconnect replays session.message_queue via the legacy path
+        # (retired in Phase 7.4/7.5); keep the enqueue here for now.
         observe_agent_message_event("queue_enqueued_reconnecting")
         session.message_queue.append((content, channel, message, raw_content))
         position = len(session.message_queue)
@@ -437,68 +423,55 @@ async def on_message(message: discord.Message) -> None:
             f"Agent **{session.name}** is reconnecting — message queued (position {position}).",
         )
         result_status = "queued_reconnecting"
-    elif session.query_lock.locked():
+    else:
+        # axi-master keep-latest dedup: if busy with an already-queued turn, drop the
+        # previously queued one (and its 📨) before enqueuing the newer message.
+        busy = session.state.current_turn is not None
         replaced = 0
-        if session.name == "axi-master":
-            replaced = await _replace_latest_queued_user_message(session, content, channel, message, raw_content)
-        else:
-            session.message_queue.append((content, channel, message, raw_content))
-        observe_agent_message_event("queue_enqueued_busy")
-        position = len(session.message_queue)
-        if session.compacting:
+        if busy and session.name == "axi-master" and session.state.queued_turns:
+            dropped = session.state.queued_turns.pop()
+            dropped_msg = (dropped.metadata or {}).get("discord_message")
+            if dropped_msg is not None:
+                await agents.remove_reaction(dropped_msg, "📨")
+            replaced = 1
+
+        result = await agents.hub.submit_user_message(
+            session.name,
+            content,
+            metadata={"discord_message": message, "channel_id": channel.id, "raw_content": raw_content},
+        )
+
+        if result.status == "started":
+            result_status = "processed"
+        elif result.status == "queued":
+            observe_agent_message_event("queue_enqueued_busy")
+            position = result.position
             detail = " Replaced older queued message." if replaced else ""
-            await agents.send_system(
-                channel,
-                f"🔄 Agent **{session.name}** is compacting context — message queued (position {position}). Will process after compaction completes.{detail}",
-            )
-        else:
-            activity = session.activity
-            tool_suffix = ""
-            if activity.phase == "waiting" and activity.tool_name:
-                tool_suffix = f" (currently {tool_display(activity.tool_name)})"
-            interrupted = await agents.graceful_interrupt(session)
-            detail = " Replaced older queued message." if replaced else ""
-            if interrupted:
+            if session.compacting:
                 await agents.send_system(
                     channel,
-                    f"Agent **{session.name}** is busy — message queued (position {position}). Interrupting current task.{tool_suffix}{detail}",
+                    f"🔄 Agent **{session.name}** is compacting context — message queued (position {position}). Will process after compaction completes.{detail}",
                 )
             else:
-                await agents.send_system(
-                    channel,
-                    f"Agent **{session.name}** is busy — message queued (position {position}). Will process after current turn.{tool_suffix}{detail}",
-                )
-        result_status = "queued"
-    else:
-        agents.scheduler.mark_interactive(session.name)
-        async with session.query_lock:
-            ready = True
-            if not agents.is_awake(session):
-                try:
-                    await agents.wake_agent(session)
-                except ConcurrencyLimitError:
-                    observe_agent_message_event("queue_enqueued_slot_wait")
-                    session.message_queue.append((content, channel, message, raw_content))
-                    awake = agents.count_awake_agents()
+                activity = session.activity
+                tool_suffix = ""
+                if activity.phase == "waiting" and activity.tool_name:
+                    tool_suffix = f" (currently {tool_display(activity.tool_name)})"
+                interrupted = await agents.graceful_interrupt(session)
+                if interrupted:
                     await agents.send_system(
                         channel,
-                        f"⏳ All {awake} agent slots busy. Message queued — will run when a slot opens.",
+                        f"Agent **{session.name}** is busy — message queued (position {position}). Interrupting current task.{tool_suffix}{detail}",
                     )
-                    result_status = "queued"
-                    ready = False
-                except Exception:
-                    log.exception("Failed to wake agent '%s' for user message", session.name)
-                    await agents.send_system(channel, f"Failed to wake agent **{session.name}**.")
-                    result_status = "error"
-                    ready = False
-            if ready:
-                try:
-                    await agents.process_message(session, content, channel)
-                    result_status = "processed"
-                except RuntimeError as e:
-                    log.warning("Runtime error for '%s': %s", session.name, e)
-                    await agents.send_system(channel, str(e))
-                    result_status = "error"
+                else:
+                    await agents.send_system(
+                        channel,
+                        f"Agent **{session.name}** is busy — message queued (position {position}). Will process after current turn.{tool_suffix}{detail}",
+                    )
+            result_status = "queued"
+        else:  # "shutdown"
+            await agents.send_system(channel, "Bot is restarting — not accepting new messages.")
+            result_status = "shutdown"
 
     _RESULT_REACTIONS = {
         "processed": "✅",
@@ -510,13 +483,7 @@ async def on_message(message: discord.Message) -> None:
     if result_status != "shutdown":
         await agents.add_reaction(message, reaction)
 
-    if result_status == "processed":
-        if scheduler.should_yield(session.name):
-            log.info("Scheduler yield: '%s' sleeping after user message", session.name)
-            await agents.sleep_agent(session)
-        else:
-            await agents.process_message_queue(session)
-
+    # Sleep and queue draining are owned by the hub's turn loop now.
     await bot.process_commands(message)
 
 
@@ -673,10 +640,10 @@ async def _recover_stranded_messages() -> None:
     if scheduler.slot_count() < config.MAX_AWAKE_AGENTS:
         for _agent_name, session in list(agents.agents.items()):
             if session.client is None and session.message_queue and not session.query_lock.locked():
-                content, ch, stranded_msg, *_ = session.message_queue.popleft()
+                content, _ch, stranded_msg, *_ = session.message_queue.popleft()
                 log.info("Stranded message found for sleeping agent '%s', waking", _agent_name)
                 await agents.remove_reaction(stranded_msg, "📨")
-                agents.fire_and_forget(agents.run_initial_prompt(session, content, ch))
+                agents.fire_and_forget(agents.run_initial_prompt(session, content))
                 break
 
 
@@ -703,7 +670,7 @@ async def _auto_sleep_idle_agents(now_utc: datetime) -> None:
         if idle_duration > idle_threshold:
             log.info("Auto-sleeping idle agent '%s' (idle %.0fs, pressure=%s)", agent_name, idle_duration.total_seconds(), under_pressure)
             try:
-                await agents.sleep_agent(session)
+                await agents.hub.sleep(session.name, force=False)
             except Exception:
                 log.exception("Error auto-sleeping agent '%s'", agent_name)
 
@@ -830,263 +797,75 @@ async def _resolve_agent(
 
 @bot.tree.command(name="ping", description="Check bot latency and uptime.")
 async def ping_command(interaction: discord.Interaction) -> None:
-
-
-    def _fmt_uptime(total_seconds: int) -> str:
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return f"{hours}h {minutes}m {seconds}s"
-
-    if _bot_start_time is not None:
-        bot_uptime = datetime.now(UTC) - _bot_start_time
-        bot_str = _fmt_uptime(int(bot_uptime.total_seconds()))
-    else:
-        bot_str = "initializing"
-
-    procmux_str = None
-    bridge_conn = agents.procmux_conn
-    if bridge_conn is not None and bridge_conn.is_alive:
-        try:
-            result = await bridge_conn.send_command("status")
-            if result.ok and result.uptime_seconds is not None:
-                procmux_str = _fmt_uptime(result.uptime_seconds)
-        except Exception:
-            procmux_str = "error"
-
-    latency = round(bot.latency * 1000)
-    parts = [f"Pong! Latency: {latency}ms", f"Bot uptime: {bot_str}"]
-    if procmux_str is not None:
-        parts.append(f"Bridge uptime: {procmux_str}")
-    elif bridge_conn is None or not bridge_conn.is_alive:
-        parts.append("Bridge: not connected")
-    await audited_interaction_response_send(interaction," | ".join(parts))
+    # Thin wrapper (Phase 8a): logic lives in commands_api.ping; latency is a Discord metric.
+    result = await commands_api.ping(latency_ms=round(bot.latency * 1000), bot_start_time=_bot_start_time)
+    await audited_interaction_response_send(interaction, result.message)
 
 
 @bot.tree.command(name="claude-usage", description="Show Claude API usage for current sessions and rate limit status.")
 @app_commands.describe(history="Number of recent rate limit events to show (omit for current status)")
 async def claude_usage_command(interaction: discord.Interaction, history: int | None = None) -> None:
     log.info("Slash command /claude-usage history=%s from %s", history, interaction.user)
-
-
-    if history is not None:
-        count = max(1, min(history, 50))
-        lines = [f"**Rate Limit History** (last {count} events)", ""]
-        try:
-            with open(config.RATE_LIMIT_HISTORY_PATH) as f:
-                all_lines = f.readlines()
-            recent = all_lines[-count:]
-            if not recent:
-                lines.append("No history recorded yet.")
-            else:
-                for raw_line in recent:
-                    try:
-                        r = json.loads(raw_line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = datetime.fromisoformat(r["ts"]).astimezone(config.SCHEDULE_TIMEZONE)
-                    ts_str = ts.strftime("%-m/%-d %-I:%M %p")
-                    rl_type = r.get("type", "?").replace("_", " ")
-                    status = r.get("status", "?")
-                    util = r.get("utilization")
-                    if status == "rejected":
-                        icon = "\U0001f6ab"
-                    elif status == "allowed_warning":
-                        icon = "\u26a0\ufe0f"
-                    else:
-                        icon = "\u2705"
-                    util_str = f" ({int(util * 100)}%)" if util is not None else ""
-                    lines.append(f"`{ts_str}` {icon} {rl_type}: {status}{util_str}")
-        except FileNotFoundError:
-            lines.append("No history file yet — events are recorded on API calls.")
-        await audited_interaction_response_send(interaction,"\n".join(lines))
-        return
-
-    lines = ["**Claude Usage — Current Sessions**", ""]
-
-    total_cost = 0.0
-    total_queries = 0
-
-    if agents.session_usage:
-        for sid, usage in sorted(
-            agents.session_usage.items(), key=lambda x: x[1].last_query or datetime.min.replace(tzinfo=UTC), reverse=True
-        ):
-            total_cost += usage.total_cost_usd
-            total_queries += usage.queries
-
-            duration_s = usage.total_duration_ms // 1000
-            duration_str = agents.format_time_remaining(duration_s) if duration_s > 0 else "0s"
-
-            active_str = ""
-            if usage.first_query:
-                age_s = int((datetime.now(UTC) - usage.first_query).total_seconds())
-                active_str = f" | Active since {agents.format_time_remaining(age_s)} ago"
-
-            token_str = ""
-            if usage.total_input_tokens or usage.total_output_tokens:
-                token_str = f" | Tokens: {usage.total_input_tokens:,}in / {usage.total_output_tokens:,}out"
-
-            lines.append(f"**{usage.agent_name}** (`{sid[:8]}`)")
-            lines.append(
-                f"  Cost: **${usage.total_cost_usd:.2f}** | Queries: {usage.queries} | Turns: {usage.total_turns}{token_str}"
-            )
-            lines.append(f"  API time: {duration_str}{active_str}")
-            lines.append("")
-
-        lines.append(f"**Total: ${total_cost:.2f}** across {total_queries} queries")
-    else:
-        lines.append("No usage recorded yet.")
-
-    lines.append("")
-
-    if agents.rate_limit_quotas:
-        now = datetime.now(UTC)
-        lines.append("**Rate Limits**")
-
-        display_order = ["five_hour", "seven_day"]
-        sorted_keys = [k for k in display_order if k in agents.rate_limit_quotas]
-        sorted_keys += [k for k in agents.rate_limit_quotas if k not in display_order]
-
-        for rl_type in sorted_keys:
-            q = agents.rate_limit_quotas[rl_type]
-            remaining_s = max(0, int((q.resets_at - now).total_seconds()))
-            resets_str = agents.format_time_remaining(remaining_s) if remaining_s > 0 else "now"
-
-            local_reset = q.resets_at.astimezone(config.SCHEDULE_TIMEZONE)
-            reset_time_str = local_reset.strftime("%-I:%M %p")
-            local_now = now.astimezone(config.SCHEDULE_TIMEZONE)
-            if local_reset.date() != local_now.date():
-                reset_time_str = local_reset.strftime("%-I:%M %p %a")
-
-            if q.status == "rejected":
-                if q.utilization is not None:
-                    pct = int(q.utilization * 100)
-                    status_str = f"\U0001f6ab Rate limited ({pct}% used)"
-                else:
-                    status_str = "\U0001f6ab Rate limited"
-            elif q.status == "allowed_warning" and q.utilization is not None:
-                pct = int(q.utilization * 100)
-                status_str = f"\u26a0\ufe0f {pct}% used"
-            else:
-                status_str = "\u2705 OK (< 80%)"
-
-            label = q.rate_limit_type.replace("_", " ")
-            lines.append(f"  {label}: {status_str} — resets at {reset_time_str} (in {resets_str})")
-
-        latest_update = max(q.updated_at for q in agents.rate_limit_quotas.values())
-        age_s = int((now - latest_update).total_seconds())
-        age_str = agents.format_time_remaining(age_s) if age_s > 0 else "just now"
-        lines.append(f"  Last checked: {age_str} ago")
-    elif agents.rate_limited_until:
-        remaining = agents.format_time_remaining(agents.rate_limit_remaining_seconds())
-        lines.append(f"**Rate Limit**: \U0001f6ab Rate limited (~{remaining} remaining)")
-    else:
-        lines.append("**Rate Limit**: No data yet (updates on next API call)")
-
-    await audited_interaction_response_send(interaction,"\n".join(lines))
+    result = await commands_api.claude_usage(history)
+    await audited_interaction_response_send(interaction, result.message)
 
 
 @bot.tree.command(name="model", description="Get or set the LLM model for this agent or future spawned agents.")
-@app_commands.describe(name="Model name (for example: opus, sonnet, haiku, gpt-5.4) — omit to view current")
+@app_commands.describe(name="Model name (for example: opus, sonnet, haiku, gpt-5.4) \u2014 omit to view current")
 async def model_command(interaction: discord.Interaction, name: str | None = None) -> None:
     log.info("Slash command /model name=%s from %s", name, interaction.user)
-
-    if name is None:
-        agent_name = agents.channel_to_agent.get(interaction.channel_id or 0)
-        if agent_name == config.MASTER_AGENT_NAME:
-            agent_name = None
-        if agent_name and agent_name in agents.agents:
-            session = agents.agents[agent_name]
-            current = session.model or config.get_model()
-            await audited_interaction_response_send(
-                interaction, f"Current model for **{agent_name}**: **{current}**"
-            )
-        else:
-            current = config.get_model()
-            await audited_interaction_response_send(interaction, f"Current default model: **{current}**")
-        return
-
-    error = config.validate_model(name)
-    if error:
-        await audited_interaction_response_send(interaction, f"*System:* {error}", ephemeral=True)
-        return
-
-    normalized = config.normalize_model(name)
+    # Resolve target from the channel (master channel -> None = global default).
     agent_name = agents.channel_to_agent.get(interaction.channel_id or 0)
     if agent_name == config.MASTER_AGENT_NAME:
         agent_name = None
-    if agent_name and agent_name in agents.agents:
-        session = agents.agents[agent_name]
-        session.model = normalized
-        agent_cfg = agents._load_agent_config(agent_name)
-        saved_ext = agent_cfg.get("extensions")
-        agents._save_agent_config(
-            agent_name,
-            session.mcp_server_names,
-            extensions=saved_ext,
-            model=normalized,
-        )
+    per_agent_set = name is not None and bool(agent_name) and agent_name in agents.agents
+    if per_agent_set:
+        verr = config.validate_model(name)
+        if verr:
+            await audited_interaction_response_send(interaction, f"*System:* {verr}", ephemeral=True)
+            return
         await interaction.response.defer()
-        await agents.reset_session(agent_name)
-        await audited_interaction_followup_send(
-            interaction,
-            f"*System:* Agent **{agent_name}** switched to **{normalized}** and restarted with a fresh session.",
-        )
+        result = await commands_api.set_model(agent_name, name)
+        await audited_interaction_followup_send(interaction, result.message)
         channel = await agents.get_agent_channel(agent_name)
         if channel is not None and channel.id != interaction.channel_id:
             await agents.send_system(
                 channel,
-                f"Agent **{agent_name}** switched to **{normalized}** and restarted with a fresh session.",
+                f"Agent **{agent_name}** switched to **{result.data['model']}** and restarted with a fresh session.",
             )
-        return
-
-    error = config.set_model(normalized)
-    if error:
-        await audited_interaction_response_send(interaction, f"*System:* {error}", ephemeral=True)
     else:
-        await audited_interaction_response_send(interaction, f"*System:* Default model set to **{config.get_model()}**.")
+        result = await commands_api.set_model(agent_name, name)
+        await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="list-agents", description="List all active agent sessions.")
 async def list_agents(interaction: discord.Interaction) -> None:
     log.info("Slash command /list-agents from %s", interaction.user)
-
-
-    if not agents.agents:
-        await audited_interaction_response_send(interaction,"No active agents.", ephemeral=True)
+    result = commands_api.list_agents()
+    if not result.data.get("agents"):
+        await audited_interaction_response_send(interaction, result.message, ephemeral=True)
         return
-
-    now = datetime.now(UTC)
+    # Discord presentation: channel mentions + [killed] tags are Discord-category state.
     lines: list[str] = []
-    for name, session in agents.agents.items():
-        idle_minutes = int((now - session.last_activity).total_seconds() / 60)
-        if session.query_lock.locked():
-            status = " [busy]"
-        elif session.client is not None:
-            status = " [awake]"
-        else:
-            status = " [sleeping]"
-        is_killed = False
-        ds = discord_state(session)
-        if ds.channel_id:
-            ch = bot.get_channel(ds.channel_id)
+    for a in result.data["agents"]:
+        killed_tag = ""
+        cid = a.get("channel_id")
+        if cid:
+            ch = bot.get_channel(cid)
             if isinstance(ch, TextChannel) and channels.is_killed_channel(ch):
-                is_killed = True
-        killed_tag = " [killed]" if is_killed else ""
-        protected = " [protected]" if name == config.MASTER_AGENT_NAME else ""
-        sid = f" | sid: `{session.session_id[:8]}…`" if session.session_id else ""
-        ch_mention = f" | <#{discord_state(session).channel_id}>" if discord_state(session).channel_id else ""
+                killed_tag = " [killed]"
+        protected = " [protected]" if a["is_master"] else ""
+        sid = f" | sid: `{a['session_id'][:8]}\u2026`" if a["session_id"] else ""
+        mention = f" | <#{cid}>" if cid else ""
         lines.append(
-            f"- **{name}**{status}{killed_tag}{protected}{ch_mention} | cwd: `{session.cwd}` | idle: {idle_minutes}m{sid}"
+            f"- **{a['name']}** [{a['state']}]{killed_tag}{protected}{mention} | cwd: `{a['cwd']}` | idle: {a['idle_minutes']}m{sid}"
         )
-
-    awake = agents.count_awake_agents()
-    header = f"*System:* **Agent Sessions** ({awake}/{config.MAX_AWAKE_AGENTS} awake):\n"
+    header = f"*System:* **Agent Sessions** ({result.data['awake']}/{config.MAX_AWAKE_AGENTS} awake):\n"
     full_text = header + "\n".join(lines)
     if len(full_text) <= 2000:
         await audited_interaction_response_send(interaction, full_text)
     else:
         from discordquery import split_message
-
         parts = split_message(full_text)
         await audited_interaction_response_send(interaction, parts[0])
         for part in parts[1:]:
@@ -1097,21 +876,10 @@ async def list_agents(interaction: discord.Interaction) -> None:
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def agent_status(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /status agent=%s from %s", agent_name, interaction.user)
-
-
     if agent_name is None:
         agent_name = agents.channel_to_agent.get(interaction.channel_id or 0)
-
-    if agent_name is None:
-        await _show_all_agents_status(interaction)
-        return
-
-    session = agents.agents.get(agent_name)
-    if session is None:
-        await audited_interaction_response_send(interaction,f"Agent **{agent_name}** not found.", ephemeral=True)
-        return
-
-    await audited_interaction_response_send(interaction,_format_agent_status(agent_name, session), ephemeral=True)
+    result = commands_api.agent_status(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=result.ephemeral)
 
 
 def _format_agent_status(name: str, session: AgentSession) -> str:
@@ -1173,7 +941,7 @@ def _format_agent_status(name: str, session: AgentSession) -> str:
             if since_last > 30:
                 lines.append(f"No stream events for {agents.format_time_remaining(since_last)} (may be running a long tool)")
 
-    queue_size = len(session.message_queue)
+    queue_size = len(session.state.queued_turns)
     if queue_size > 0:
         lines.append(f"Queued messages: {queue_size}")
 
@@ -1234,7 +1002,7 @@ async def _show_all_agents_status(interaction: discord.Interaction) -> None:
     lines: list[str] = []
     for name, session in agents.agents.items():
         status = _agent_state_summary(session)
-        queue = len(session.message_queue)
+        queue = len(session.state.queued_turns)
         queue_str = f" | {queue} queued" if queue > 0 else ""
         lines.append(f"- **{name}**: {status}{queue_str}")
 
@@ -1251,125 +1019,56 @@ async def _show_all_agents_status(interaction: discord.Interaction) -> None:
 @app_commands.describe(mode="on / off / omit to toggle")
 async def verbose_command(interaction: discord.Interaction, mode: str | None = None) -> None:
     log.info("Slash command /verbose mode=%s from %s", mode, interaction.user)
-
     resolved = await _resolve_agent(interaction, None)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if mode is not None:
-        mode_lower = mode.strip().lower()
-        if mode_lower == "on":
-            discord_state(session).verbose = True
-        elif mode_lower == "off":
-            discord_state(session).verbose = False
-        else:
-            await audited_interaction_response_send(interaction,
-                "Usage: `/verbose` (toggle), `/verbose on`, `/verbose off`", ephemeral=True
-            )
-            return
-    else:
-        discord_state(session).verbose = not discord_state(session).verbose
-
-    state = "on" if discord_state(session).verbose else "off"
-    await audited_interaction_response_send(interaction,f"*System:* Verbose output **{state}** for **{agent_name}**.")
+    agent_name, _ = resolved
+    result = commands_api.set_verbose(agent_name, mode)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="debug", description="Toggle debug output (stderr) for an agent.")
 @app_commands.describe(mode="on / off / omit to toggle")
 async def debug_command(interaction: discord.Interaction, mode: str | None = None) -> None:
     log.info("Slash command /debug mode=%s from %s", mode, interaction.user)
-
     resolved = await _resolve_agent(interaction, None)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if mode is not None:
-        mode_lower = mode.strip().lower()
-        if mode_lower == "on":
-            discord_state(session).debug = True
-        elif mode_lower == "off":
-            discord_state(session).debug = False
-        else:
-            await audited_interaction_response_send(interaction,
-                "Usage: `/debug` (toggle), `/debug on`, `/debug off`", ephemeral=True
-            )
-            return
-    else:
-        discord_state(session).debug = not discord_state(session).debug
-
-    state = "on" if discord_state(session).debug else "off"
-    await audited_interaction_response_send(interaction,f"*System:* Debug output **{state}** for **{agent_name}**.")
+    agent_name, _ = resolved
+    result = commands_api.set_debug(agent_name, mode)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="debug-all", description="Toggle debug output (stderr) for ALL agents.")
 async def debug_all_command(interaction: discord.Interaction, mode: str | None = None) -> None:
     log.info("Slash command /debug-all mode=%s from %s", mode, interaction.user)
-
-    if mode is not None:
-        mode_lower = mode.strip().lower()
-        if mode_lower == "on":
-            new_state = True
-        elif mode_lower == "off":
-            new_state = False
-        else:
-            await audited_interaction_response_send(interaction,
-                "Usage: `/debug-all` (toggle), `/debug-all on`, `/debug-all off`", ephemeral=True
-            )
-            return
-    else:
-        on_count = sum(1 for s in agents.agents.values() if discord_state(s).debug)
-        new_state = on_count <= len(agents.agents) // 2
-
-    for session in agents.agents.values():
-        discord_state(session).debug = new_state
-
-    state = "on" if new_state else "off"
-    await audited_interaction_response_send(interaction,
-        f"*System:* Debug output **{state}** for all **{len(agents.agents)}** agents."
-    )
+    result = commands_api.set_debug_all(mode)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="kill-agent", description="Terminate an agent session.")
 @app_commands.autocomplete(agent_name=killable_agent_autocomplete)
 async def kill_agent(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /kill-agent %s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, session = resolved
-
     if agent_name == config.MASTER_AGENT_NAME:
-        await audited_interaction_response_send(interaction,"Cannot kill the axi-master session.", ephemeral=True)
+        await audited_interaction_response_send(interaction, "Cannot kill the axi-master session.", ephemeral=True)
         return
-
     await interaction.response.defer()
     session_id = session.session_id
     _tracer.start_span("slash.kill_agent", attributes={"agent.name": agent_name}).end()
-
+    # Discord: cross-post to the agent's own channel if the command was run elsewhere.
     agent_ch = await agents.get_agent_channel(agent_name)
     if agent_ch and agent_ch.id != interaction.channel_id:
+        note = f"Agent **{agent_name}** moved to Killed."
         if session_id:
-            await agents.send_system(
-                agent_ch,
-                f"Agent **{agent_name}** moved to Killed.\nSession ID: `{session_id}` — use this to resume later.",
-            )
-        else:
-            await agents.send_system(agent_ch, f"Agent **{agent_name}** moved to Killed.")
-
-    agents.agents.pop(agent_name, None)
-    await agents.sleep_agent(session, force=True)
-    await agents.move_channel_to_killed(agent_name)
-
-    if session_id:
-        await audited_interaction_followup_send(
-            interaction,
-            f"*System:* Agent **{agent_name}** moved to Killed.\nSession ID: `{session_id}` — use this to resume later.",
-        )
-    else:
-        await audited_interaction_followup_send(interaction, f"*System:* Agent **{agent_name}** moved to Killed.")
+            note += f"\nSession ID: `{session_id}` \u2014 use this to resume later."
+        await agents.send_system(agent_ch, note)
+    result = await commands_api.kill_agent(agent_name)
+    await audited_interaction_followup_send(interaction, result.message)
 
 
 @bot.tree.command(name="spawn", description="Spawn a new agent session with its own Discord channel.")
@@ -1386,47 +1085,27 @@ async def spawn_agent_cmd(
 ) -> None:
     log.info("Slash command /spawn %s from %s", name, interaction.user)
     if interaction.user.id not in config.ALLOWED_USER_IDS:
-        await audited_interaction_response_send(interaction,"Not authorized.", ephemeral=True)
+        await audited_interaction_response_send(interaction, "Not authorized.", ephemeral=True)
         return
-
     agent_name = name.strip()
-    if not agent_name:
-        await audited_interaction_response_send(interaction,"Agent name cannot be empty.", ephemeral=True)
-        return
-    if agent_name == config.MASTER_AGENT_NAME:
-        await audited_interaction_response_send(interaction,
-            f"Cannot spawn agent with reserved name '{config.MASTER_AGENT_NAME}'.", ephemeral=True
-        )
-        return
     if agent_name in agents.agents and not resume:
-        await audited_interaction_response_send(interaction,
-            f"Agent **{agent_name}** already exists. Kill it first or use `resume` to replace it.", ephemeral=True
+        await audited_interaction_response_send(
+            interaction,
+            f"Agent **{agent_name}** already exists. Kill it first or use `resume` to replace it.",
+            ephemeral=True,
         )
         return
-
-    default_cwd = os.path.join(config.AXI_USER_DATA, "agents", agent_name)
-    agent_cwd = os.path.realpath(os.path.expanduser(cwd)) if cwd else default_cwd
-    agent_model = config.normalize_model(model) if model else None
-
-    if agent_model:
-        error = config.validate_model(agent_model)
-        if error:
-            await interaction.response.send_message(f"*System:* {error}", ephemeral=True)
-            return
-
-    if not any(agent_cwd == d or agent_cwd.startswith(d + os.sep) for d in config.ALLOWED_CWDS):
-        await audited_interaction_response_send(interaction,
-            "Error: cwd is not in allowed directories.", ephemeral=True
-        )
+    valid = commands_api.validate_spawn(agent_name, cwd, model)
+    if not valid.ok:
+        await audited_interaction_response_send(interaction, valid.message, ephemeral=True)
         return
-
+    agent_cwd = valid.data["cwd"]
+    agent_model = valid.data["model"]
     await interaction.response.defer()
 
     async def _do_spawn():
         try:
-            if agent_name in agents.agents and resume:
-                await agents.reclaim_agent_name(agent_name)
-            await agents.spawn_agent(agent_name, agent_cwd, prompt, resume=resume, model=agent_model)
+            await commands_api.spawn(agent_name, prompt, cwd=cwd, resume=resume, model=model)
         except Exception:
             channels.bot_creating_channels.discard(channels.namespaced_channel_name(agent_name))
             log.exception("Error in background spawn of agent '%s'", agent_name)
@@ -1453,58 +1132,43 @@ async def spawn_agent_cmd(
 @app_commands.autocomplete(agent_name=killable_agent_autocomplete)
 async def restart_agent_cmd(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /restart-agent %s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, session = resolved
-
     if agent_name == config.MASTER_AGENT_NAME:
-        await audited_interaction_response_send(interaction,
-            "Cannot restart axi-master this way. Use `/restart` instead.", ephemeral=True
+        await audited_interaction_response_send(
+            interaction, "Cannot restart axi-master this way. Use `/restart` instead.", ephemeral=True
         )
         return
-
     await interaction.response.defer()
     _tracer.start_span("slash.restart_agent", attributes={"agent.name": agent_name}).end()
-
-    session = await agents.restart_agent(agent_name)
-
+    result = await commands_api.restart_agent(agent_name)
+    # Discord: cross-post to the agent's channel if run elsewhere.
     agent_ch = await agents.get_agent_channel(agent_name)
     if agent_ch and agent_ch.id != interaction.channel_id:
         await agents.send_system(
-            agent_ch,
-            f"Agent **{agent_name}** restarted with fresh system prompt. Session context preserved.",
+            agent_ch, f"Agent **{agent_name}** restarted with fresh system prompt. Session context preserved."
         )
-
-    await audited_interaction_followup_send(
-        interaction,
-        f"*System:* Agent **{agent_name}** restarted. System prompt refreshed, session `{session.session_id or 'none'}` preserved."
-    )
+    await audited_interaction_followup_send(interaction, result.message)
 
 
 @bot.tree.command(name="stop", description="Interrupt a running agent query (like Ctrl+C).")
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def stop_agent(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /stop agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, session = resolved
-
     if session.client is None or not session.query_lock.locked():
-        await audited_interaction_response_send(interaction,f"Agent **{agent_name}** is not busy.", ephemeral=True)
+        await audited_interaction_response_send(interaction, f"Agent **{agent_name}** is not busy.", ephemeral=True)
         return
-
     await interaction.response.defer()
     trace_tag = agents.get_active_trace_tag(agent_name)
-    _tracer.start_span(
-        "slash.stop_agent",
-        attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag},
-    ).end()
-
+    _tracer.start_span("slash.stop_agent", attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag}).end()
     try:
+        # Discord-specific cleanup: plan mode + pending plan/question prompts + queued reactions.
         plan_was_active = session.plan_mode
         if plan_was_active:
             session.plan_mode = False
@@ -1512,29 +1176,21 @@ async def stop_agent(interaction: discord.Interaction, agent_name: str | None = 
                 await session.client.set_permission_mode("default")
             except Exception:
                 log.exception("Failed to reset permission mode for '%s' during /stop", agent_name)
-
         ds = discord_state(session)
         if ds.plan_approval_future and not ds.plan_approval_future.done():
             ds.plan_approval_future.set_result({"approved": False, "message": "Interrupted by /stop."})
         ds.plan_approval_message_id = None
-
         if ds.question_future and not ds.question_future.done():
             ds.question_future.set_result("")
             ds.question_data = None
             ds.question_message_id = None
-
-        cleared = 0
-        session.state.stop_requested = True
-        while session.message_queue:
-            _, _, dropped_msg, *_ = session.message_queue.popleft()
-            await agents.remove_reaction(dropped_msg, "📨")
-            cleared += 1
-
+        for turn in list(session.state.queued_turns):
+            dropped_msg = (turn.metadata or {}).get("discord_message")
+            if dropped_msg is not None:
+                await agents.remove_reaction(dropped_msg, "\U0001f4e8")
+        result = await commands_api.stop(agent_name)
         await _interrupt_agent(session)
-
-        parts = [f"*System:* Interrupt signal sent to **{agent_name}**."]
-        if cleared:
-            parts.append(f"Cleared {cleared} queued message{'s' if cleared != 1 else ''}.")
+        parts = [result.message]
         if plan_was_active:
             parts.append("Plan mode deactivated.")
         if trace_tag:
@@ -1549,84 +1205,41 @@ async def stop_agent(interaction: discord.Interaction, agent_name: str | None = 
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def skip_agent(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /skip agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, session = resolved
-
     if session.client is None or not session.query_lock.locked():
-        await audited_interaction_response_send(interaction,f"Agent **{agent_name}** is not busy.", ephemeral=True)
+        await audited_interaction_response_send(interaction, f"Agent **{agent_name}** is not busy.", ephemeral=True)
         return
-
     await interaction.response.defer()
     trace_tag = agents.get_active_trace_tag(agent_name)
-    _tracer.start_span(
-        "slash.skip_agent",
-        attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag},
-    ).end()
-
-    queued = len(session.message_queue)
-    activity = session.activity
-    tool_suffix = ""
-    if activity.phase == "waiting" and activity.tool_name:
-        tool_suffix = f" (was {tool_display(activity.tool_name)})"
-
+    _tracer.start_span("slash.skip_agent", attributes={"agent.name": agent_name, "interrupted.trace_tag": trace_tag}).end()
     try:
+        result = await commands_api.skip(agent_name)
         await _interrupt_agent(session)
-        if queued:
-            noun = "message" if queued == 1 else "messages"
-            msg = (
-                f"*System:* Skipped current query for **{agent_name}**{tool_suffix}. "
-                f"Latest {noun} will continue processing."
-            )
-        else:
-            msg = f"*System:* Skipped current query for **{agent_name}**{tool_suffix}. No queued messages."
+        msg = result.message
         if trace_tag:
             msg += f"\n-# Skipped turn {trace_tag}"
-        await audited_interaction_followup_send(interaction,msg)
+        await audited_interaction_followup_send(interaction, msg)
     except Exception as e:
         log.exception("Failed to interrupt agent '%s'", agent_name)
-        await audited_interaction_followup_send(interaction,f"Failed to skip **{agent_name}**: {e}")
+        await audited_interaction_followup_send(interaction, f"Failed to skip **{agent_name}**: {e}")
 
 
 @bot.tree.command(
     name="plan",
-    description="Toggle plan mode — agent will plan before implementing. Infers agent from current channel.",
+    description="Toggle plan mode \u2014 agent will plan before implementing. Infers agent from current channel.",
 )
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def toggle_plan_mode(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /plan agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    new_mode = not session.plan_mode
-    session.plan_mode = new_mode
-
-    if session.client is not None:
-        try:
-            mode_str = "plan" if new_mode else "default"
-            await session.client.set_permission_mode(mode_str)
-            log.info("Agent '%s' permission mode set to '%s'", agent_name, mode_str)
-        except Exception as e:
-            log.exception("Failed to set permission mode for '%s'", agent_name)
-            session.plan_mode = not new_mode
-            await audited_interaction_response_send(interaction,
-                f"Failed to set plan mode for **{agent_name}**: {e}", ephemeral=True
-            )
-            return
-
-    if new_mode:
-        await audited_interaction_response_send(interaction,
-            f"📋 **Plan mode ON** for **{agent_name}** — next query will plan before implementing."
-        )
-    else:
-        await audited_interaction_response_send(interaction,
-            f"🔧 **Plan mode OFF** for **{agent_name}** — back to normal execution."
-        )
+    agent_name, _ = resolved
+    result = await commands_api.set_plan(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(
@@ -1635,15 +1248,13 @@ async def toggle_plan_mode(interaction: discord.Interaction, agent_name: str | N
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def reset_context(interaction: discord.Interaction, agent_name: str | None = None, working_dir: str | None = None) -> None:
     log.info("Slash command /reset-context agent=%s cwd=%s from %s", agent_name, working_dir, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
     agent_name, _ = resolved
-
     await interaction.response.defer()
-    session = await agents.reset_session(agent_name, cwd=working_dir)
-    await audited_interaction_followup_send(interaction,f"*System:* Context reset for **{agent_name}**. Working directory: `{session.cwd}`")
+    result = await commands_api.reset_context(agent_name, cwd=working_dir)
+    await audited_interaction_followup_send(interaction, result.message)
 
 
 # ---------------------------------------------------------------------------
@@ -1728,7 +1339,7 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
         async with session.query_lock:
             if not agents.is_awake(session):
                 try:
-                    await agents.wake_agent(session)
+                    await agents.hub.wake(session.name)
                 except Exception:
                     log.exception("Failed to wake agent '%s'", agent_name)
                     await agents.send_system(channel, f"Failed to wake agent **{agent_name}**.")
@@ -1773,17 +1384,15 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
 
         slash_content = f"/{fc_name}" + (f" {fc_args}" if fc_args else "")
 
-        async def _run_flowchart() -> None:
-            if not agents.is_awake(session):
-                await agents.wake_agent(session)
-            async with session.query_lock:
-                await agents.process_message(session, slash_content, channel)
-
-        agents.fire_and_forget(_run_flowchart())
+        # 7.5a: drive the flowchart through the hub (wake + flowchart-wrap + stream),
+        # like on_message — replaces the legacy hub.wake + process_message runner.
+        await agents.hub.submit_user_message(
+            session.name, slash_content, metadata={"channel_id": channel.id}
+        )
         return True
 
     if cmd == "skip":
-        if session.client is None or not session.query_lock.locked():
+        if session.client is None or session.state.current_turn is None:
             await agents.send_system(channel, f"Agent **{agent_name}** is not busy.")
             return True
 
@@ -1794,7 +1403,7 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
                 tool_suffix = f" (was {tool_display(activity.tool_name)})"
 
             await _interrupt_agent(session)
-            queued = len(session.message_queue)
+            queued = len(session.state.queued_turns)
             if queued:
                 noun = "message" if queued == 1 else "messages"
                 msg = (
@@ -1810,7 +1419,7 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
         return True
 
     if cmd == "stop":
-        if session.client is None or not session.query_lock.locked():
+        if session.client is None or session.state.current_turn is None:
             await agents.send_system(channel, f"Agent **{agent_name}** is not busy.")
             return True
 
@@ -1833,12 +1442,18 @@ async def _handle_text_command(message: discord.Message, session: AgentSession, 
                 ds.question_data = None
                 ds.question_message_id = None
 
+            # Clear queued turns via the hub (Phase 7.2) and drop their 📨 reactions.
             cleared = 0
-            session.state.stop_requested = True
-            while session.message_queue:
-                _, _, dropped_msg, *_ = session.message_queue.popleft()
-                await agents.remove_reaction(dropped_msg, "📨")
+            for turn in list(session.state.queued_turns):
+                dropped_msg = (turn.metadata or {}).get("discord_message")
+                if dropped_msg is not None:
+                    await agents.remove_reaction(dropped_msg, "📨")
                 cleared += 1
+            if agents.hub is not None:
+                await agents.hub.request_stop(session.name, clear_queue=True)
+            else:
+                session.state.stop_requested = True
+                session.state.queued_turns.clear()
 
             await _interrupt_agent(session)
 
@@ -1877,7 +1492,7 @@ async def _run_agent_sdk_command(interaction: discord.Interaction, agent_name: s
     async with session.query_lock:
         if not agents.is_awake(session):
             try:
-                await agents.wake_agent(session)
+                await agents.hub.wake(session.name)
             except Exception:
                 log.exception("Failed to wake agent '%s'", agent_name)
                 await audited_interaction_followup_send(interaction,f"Failed to wake agent **{agent_name}**.")
@@ -1913,20 +1528,24 @@ async def _run_agent_sdk_command(interaction: discord.Interaction, agent_name: s
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def compact_context(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /compact agent=%s from %s", agent_name, interaction.user)
-    # Resolve agent to get compact_instructions
-    resolved_name = agent_name or agents.channel_to_agent.get(interaction.channel_id or 0)
-    session = agents.agents.get(resolved_name) if resolved_name else None
-    command = "/compact"
-    if session and session.compact_instructions:
-        command = f"/compact {session.compact_instructions}"
-    await _run_agent_sdk_command(interaction, agent_name, command, "Context compacted")
+    resolved = await _resolve_agent(interaction, agent_name)
+    if resolved is None:
+        return
+    agent_name, _ = resolved
+    result = await commands_api.compact(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="clear", description="Clear an agent's conversation context. Infers agent from current channel.")
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def clear_context(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /clear agent=%s from %s", agent_name, interaction.user)
-    await _run_agent_sdk_command(interaction, agent_name, "/clear", "Context cleared")
+    resolved = await _resolve_agent(interaction, agent_name)
+    if resolved is None:
+        return
+    agent_name, _ = resolved
+    result = await commands_api.clear(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 # ---------------------------------------------------------------------------
@@ -1979,49 +1598,12 @@ async def _run_profile_interview(session: AgentSession, channel: TextChannel) ->
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def build_user_profile_cmd(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /build-user-profile agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if session.query_lock.locked():
-        await audited_interaction_response_send(interaction,
-            f"Agent **{agent_name}** is busy. Wait for it to finish.", ephemeral=True
-        )
-        return
-
-    await interaction.response.defer()
-
-    async with session.query_lock:
-        if session.client is None:
-            try:
-                await agents.wake_agent(session)
-            except Exception:
-                log.exception("Failed to wake agent '%s'", agent_name)
-                await audited_interaction_followup_send(interaction,f"Failed to wake agent **{agent_name}**.")
-                return
-
-        session.last_activity = datetime.now(UTC)
-        agents.drain_stderr(session)
-        agents.drain_sdk_buffer(session)
-        session.activity = ActivityState(phase="starting", query_started=datetime.now(UTC))
-
-        try:
-            async with asyncio.timeout(config.QUERY_TIMEOUT):
-                ds = discord_state(session)
-                assert ds.channel_id is not None
-                ch = bot.get_channel(ds.channel_id)
-                assert isinstance(ch, TextChannel)
-                await _run_profile_interview(session, ch)
-            await audited_interaction_followup_send(interaction,f"*System:* Profile interview complete for **{agent_name}**.")
-        except TimeoutError:
-            await audited_interaction_followup_send(interaction,f"*System:* Profile interview timed out for **{agent_name}**.")
-        except Exception as e:
-            log.exception("Failed to run profile interview for agent '%s'", agent_name)
-            await audited_interaction_followup_send(interaction,f"Failed to start profile interview for **{agent_name}**: {e}")
-        finally:
-            session.activity = ActivityState(phase="idle")
+    agent_name, _ = resolved
+    result = await commands_api.build_user_profile(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 # ---------------------------------------------------------------------------
@@ -2071,54 +1653,17 @@ async def _run_music_prefs_interview(session: AgentSession, channel: TextChannel
 
 @bot.tree.command(
     name="build-music-preferences",
-    description="Interactive music preferences interview — builds your listening profile for auto-dj.",
+    description="Interactive music preferences interview \u2014 builds your listening profile for auto-dj.",
 )
 @app_commands.autocomplete(agent_name=agent_autocomplete)
 async def build_music_preferences_cmd(interaction: discord.Interaction, agent_name: str | None = None) -> None:
     log.info("Slash command /build-music-preferences agent=%s from %s", agent_name, interaction.user)
-
     resolved = await _resolve_agent(interaction, agent_name)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if session.query_lock.locked():
-        await audited_interaction_response_send(interaction,
-            f"Agent **{agent_name}** is busy. Wait for it to finish.", ephemeral=True
-        )
-        return
-
-    await interaction.response.defer()
-
-    async with session.query_lock:
-        if session.client is None:
-            try:
-                await agents.wake_agent(session)
-            except Exception:
-                log.exception("Failed to wake agent '%s'", agent_name)
-                await audited_interaction_followup_send(interaction,f"Failed to wake agent **{agent_name}**.")
-                return
-
-        session.last_activity = datetime.now(UTC)
-        agents.drain_stderr(session)
-        agents.drain_sdk_buffer(session)
-        session.activity = ActivityState(phase="starting", query_started=datetime.now(UTC))
-
-        try:
-            async with asyncio.timeout(config.QUERY_TIMEOUT):
-                ds = discord_state(session)
-                assert ds.channel_id is not None
-                ch = bot.get_channel(ds.channel_id)
-                assert isinstance(ch, TextChannel)
-                await _run_music_prefs_interview(session, ch)
-            await audited_interaction_followup_send(interaction,f"*System:* Music preferences interview complete for **{agent_name}**.")
-        except TimeoutError:
-            await audited_interaction_followup_send(interaction,f"*System:* Music preferences interview timed out for **{agent_name}**.")
-        except Exception as e:
-            log.exception("Failed to run music preferences interview for agent '%s'", agent_name)
-            await audited_interaction_followup_send(interaction,f"Failed to run music preferences interview for **{agent_name}**: {e}")
-        finally:
-            session.activity = ActivityState(phase="idle")
+    agent_name, _ = resolved
+    result = await commands_api.build_music_preferences(agent_name)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 # ---------------------------------------------------------------------------
@@ -2171,65 +1716,19 @@ async def flowchart_name_autocomplete(interaction: discord.Interaction, current:
 @app_commands.autocomplete(name=flowchart_name_autocomplete)
 async def flowchart_cmd(interaction: discord.Interaction, name: str, args: str | None = None) -> None:
     log.info("Slash command /flowchart name=%s args=%s from %s", name, args, interaction.user)
-
     resolved = await _resolve_agent(interaction, None)
     if resolved is None:
         return
-    agent_name, session = resolved
-
-    if session.agent_type != "flowcoder":
-        await audited_interaction_response_send(interaction,
-            "Flowcharts are only available for **flowcoder** agents.", ephemeral=True
-        )
-        return
-
-    if session.query_lock.locked():
-        await audited_interaction_response_send(interaction,
-            f"Agent **{agent_name}** is busy. Wait for it to finish.", ephemeral=True
-        )
-        return
-
-    await interaction.response.defer()
-
-    ds = discord_state(session)
-    assert ds.channel_id is not None
-    ch = bot.get_channel(ds.channel_id)
-    assert isinstance(ch, TextChannel)
-
-    fc_name = name.lstrip("/")
-    fc_args = args or ""
-    slash_content = f"/{fc_name}" + (f" {fc_args}" if fc_args else "")
-
-    async def _run_flowchart() -> None:
-        if not agents.is_awake(session):
-            await agents.wake_agent(session)
-        async with session.query_lock:
-            await agents.process_message(session, slash_content, ch)
-
-    agents.fire_and_forget(_run_flowchart())
-
-    await audited_interaction_followup_send(interaction,f"*System:* Flowchart `{fc_name}` started on **{agent_name}**.")
+    agent_name, _ = resolved
+    result = await commands_api.run_flowchart(agent_name, name, args)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 @bot.tree.command(name="flowchart-list", description="List available flowchart commands.")
 async def flowchart_list_cmd(interaction: discord.Interaction) -> None:
     log.info("Slash command /flowchart-list from %s", interaction.user)
-
-
-    commands = _list_flowchart_commands()
-    if not commands:
-        await audited_interaction_response_send(interaction,"No flowchart commands found.", ephemeral=True)
-        return
-
-    fc_lines: list[str] = []
-    for cmd in commands:
-        desc = f" — {cmd['description']}" if cmd["description"] else ""
-        fc_lines.append(f"• `{cmd['name']}`{desc}")
-
-    await audited_interaction_response_send(interaction,
-        f"*System:* **Available flowcharts** ({len(commands)}):\n" + "\n".join(fc_lines),
-        ephemeral=True,
-    )
+    result = commands_api.flowchart_list()
+    await audited_interaction_response_send(interaction, result.message, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2240,70 +1739,56 @@ async def flowchart_list_cmd(interaction: discord.Interaction) -> None:
 @bot.tree.command(name="restart", description="Hot-reload bot.py (bridge stays alive, agents keep running).")
 @app_commands.describe(force="Skip waiting for busy agents and restart immediately")
 async def restart_cmd(interaction: discord.Interaction, force: bool = False) -> None:
-
+    log.info("Slash command /restart force=%s from %s", force, interaction.user)
     _tracer.start_span("slash.restart", attributes={"restart.force": force}).end()
+    result = await commands_api.restart(force=force)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
+
+async def _trigger_full_restart(force: bool) -> "commands_api.CommandResult":
+    """Full-restart trigger registered with commands_api (needs bot.close + a goodbye post)."""
     if agents.shutdown_coordinator is None:
-        await audited_interaction_response_send(interaction,"Bot is not fully initialized yet.", ephemeral=True)
-        return
-
-    if force:
-        await audited_interaction_response_send(interaction,"*System:* Force restarting (hot reload)...")
-        log.info("Force restart requested via /restart command")
-        await agents.shutdown_coordinator.force_shutdown("/restart force")
-        return
-
-    await audited_interaction_response_send(interaction,"*System:* Initiating graceful restart (hot reload)...")
-    log.info("Restart requested via /restart command")
-    await agents.shutdown_coordinator.graceful_shutdown("/restart command")
-
-
-@bot.tree.command(
-    name="restart-including-bridge",
-    description="Full restart — kills bridge + all agents. Sessions will disconnect.",
-)
-@app_commands.describe(force="Skip waiting for busy agents and restart immediately")
-async def restart_including_bridge_cmd(interaction: discord.Interaction, force: bool = False) -> None:
-
-    if agents.shutdown_coordinator is None:
-        await audited_interaction_response_send(interaction,"Bot is not fully initialized yet.", ephemeral=True)
-        return
+        return commands_api.CommandResult(message="Bot is not fully initialized yet.", ok=False, ephemeral=True)
     if agents.shutdown_coordinator.requested:
-        await audited_interaction_response_send(interaction,
-            "*System:* A restart is already in progress.",
-            ephemeral=True,
-        )
-        return
+        return commands_api.CommandResult(message="*System:* A restart is already in progress.", ok=False, ephemeral=True)
 
     async def _send_goodbye() -> None:
         master_ch = await agents.get_master_channel()
         if master_ch:
             await audited_channel_send(
                 master_ch,
-                "*System:* Full restart — bridge is going down. See you soon!",
+                "*System:* Full restart \u2014 bridge is going down. See you soon!",
                 operation="restart.goodbye",
             )
 
     full_coordinator = agents.make_shutdown_coordinator(
-        close_bot_fn=bot.close,
-        kill_fn=kill_supervisor,
-        goodbye_fn=_send_goodbye,
-        bridge_mode=False,
+        close_bot_fn=bot.close, kill_fn=kill_supervisor, goodbye_fn=_send_goodbye, bridge_mode=False
     )
-
     if force:
-        await audited_interaction_response_send(interaction,
-            "*System:* Force restarting (full — bridge will be killed, agents will disconnect)..."
+        agents.fire_and_forget(full_coordinator.force_shutdown("/restart-including-bridge force"))
+        return commands_api.CommandResult(
+            message="*System:* Force restarting (full \u2014 bridge will be killed, agents will disconnect)...",
+            data={"force": True, "mode": "full"},
         )
-        log.info("Force full restart requested via /restart-including-bridge command")
-        await full_coordinator.force_shutdown("/restart-including-bridge force")
-        return
-
-    await audited_interaction_response_send(interaction,
-        "*System:* Initiating graceful full restart (bridge will be killed, agents will disconnect)..."
+    agents.fire_and_forget(full_coordinator.graceful_shutdown("/restart-including-bridge command"))
+    return commands_api.CommandResult(
+        message="*System:* Initiating graceful full restart (bridge will be killed, agents will disconnect)...",
+        data={"force": False, "mode": "full"},
     )
-    log.info("Full restart requested via /restart-including-bridge command")
-    await full_coordinator.graceful_shutdown("/restart-including-bridge command")
+
+
+commands_api.set_full_restart_handler(_trigger_full_restart)
+
+
+@bot.tree.command(
+    name="restart-including-bridge",
+    description="Full restart \u2014 kills bridge + all agents. Sessions will disconnect.",
+)
+@app_commands.describe(force="Skip waiting for busy agents and restart immediately")
+async def restart_including_bridge_cmd(interaction: discord.Interaction, force: bool = False) -> None:
+    log.info("Slash command /restart-including-bridge force=%s from %s", force, interaction.user)
+    result = await commands_api.restart_including_bridge(force=force)
+    await audited_interaction_response_send(interaction, result.message, ephemeral=not result.ok)
 
 
 # ---------------------------------------------------------------------------
@@ -2488,7 +1973,7 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel) -> None:
 
     if agents.is_awake(session):
         try:
-            await agents.sleep_agent(session, force=True)
+            await agents.hub.sleep(session.name)
         except Exception:
             log.exception("Error sleeping agent '%s' during channel deletion", agent_name)
 
@@ -2931,7 +2416,7 @@ async def on_ready() -> None:
         max_slots=config.MAX_AWAKE_AGENTS,
         protected={config.MASTER_AGENT_NAME},
         get_agents=lambda: agents.agents,
-        sleep_fn=lambda s: agents.sleep_agent(s),
+        sleep_fn=lambda s: agents.hub.sleep(s.name, force=False),
     )
     set_agent_sessions_provider(lambda: agents.agents)
     set_scheduler_status_provider(scheduler.status)

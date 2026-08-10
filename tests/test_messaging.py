@@ -209,7 +209,7 @@ def test_long_output_splitting(discord: Discord, master_channel: str):
 
 
 def test_clear_while_busy(discord: Discord, master_channel: str):
-    """Test 27: /clear while agent is busy queues the clear command."""
+    """Test 27: /clear while agent is busy queues the clear command.
 
     Python bot: text command `/clear` sends /clear to the agent and responds
     even while the agent is busy.

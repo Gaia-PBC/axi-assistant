@@ -63,7 +63,9 @@ class Frontend(Protocol):
 
     # --- Outbound: hub -> frontend ---
 
-    async def post_message(self, agent_name: str, text: str) -> None:
+    async def post_message(
+        self, agent_name: str, text: str, channel_ref: Any = None,
+    ) -> None:
         """Send an assistant message to the user."""
         ...
 
@@ -73,6 +75,41 @@ class Frontend(Protocol):
 
     async def broadcast(self, text: str) -> None:
         """Send a message to all users (e.g. rate limit announcements)."""
+        ...
+
+    async def post_file(
+        self, agent_name: str, filename: str, data: bytes, description: str = "",
+        channel_ref: Any = None,
+    ) -> None:
+        """Send a file/attachment to the user."""
+        ...
+
+    async def post_embed(self, agent_name: str, embed_data: dict[str, Any]) -> None:
+        """Send structured content (Discord: embed; Web: card/panel)."""
+        ...
+
+    # --- Typing / status ---
+
+    async def set_typing(self, agent_name: str, is_typing: bool) -> None:
+        """Show or hide a typing indicator for the agent."""
+        ...
+
+    async def set_status(
+        self, agent_name: str, status_text: str, emoji: str | None = None
+    ) -> None:
+        """Set the agent's status display (Discord: channel name prefix)."""
+        ...
+
+    # --- Reactions ---
+
+    async def post_reaction(self, agent_name: str, message_ref: Any, emoji: str) -> None:
+        """Add a reaction to a message."""
+        ...
+
+    async def remove_reaction(
+        self, agent_name: str, message_ref: Any, emoji: str
+    ) -> None:
+        """Remove a reaction from a message."""
         ...
 
     # --- Agent lifecycle events ---
@@ -89,12 +126,29 @@ class Frontend(Protocol):
         """New agent spawned."""
         ...
 
+    async def spawn_context(self, agent_name: str, session: Any) -> dict[str, Any]:
+        """Return spawn-time prompt substitutions + a routing id for this agent.
+
+        Called once during spawn, right after ``on_spawn``. The generic spawn
+        path applies ``placeholders`` (a ``{name: value}`` map, e.g.
+        ``{"channel_id": "123"}``) to the agent's system prompt and stores
+        ``routing_id`` so the agent can later be resolved back to a
+        channel/session. A frontend with no such concept returns
+        ``{"placeholders": {}, "routing_id": None}``. The keys are supplied by
+        the frontend, so this contract names no frontend-specific concept.
+        """
+        ...
+
     async def on_kill(self, agent_name: str, session_id: str | None) -> None:
         """Agent killed."""
         ...
 
     async def on_session_id(self, agent_name: str, session_id: str) -> None:
         """Agent's session ID updated."""
+        ...
+
+    async def on_channel_ready(self, agent_name: str) -> None:
+        """Agent's communication channel is set up and ready."""
         ...
 
     async def on_idle_reminder(self, agent_name: str, idle_minutes: float) -> None:
@@ -131,6 +185,36 @@ class Frontend(Protocol):
 
     async def update_todo(self, agent_name: str, todos: list[dict[str, Any]]) -> None:
         """Notify the frontend of a todo list update."""
+        ...
+
+    async def receive_input(self, agent_name: str) -> str:
+        """Solicit freeform text input from the user."""
+        ...
+
+    # --- Message history ---
+
+    async def read_messages(
+        self, agent_name: str, limit: int = 50, before: Any = None,
+        after: Any = None, channel_ref: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve message history for an agent's channel."""
+        ...
+
+    async def search_messages(
+        self, query: str, agent_name: str | None = None,
+        limit: int = 25, channel_ref: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Search message history, optionally scoped to one agent's channel."""
+        ...
+
+    async def wait_for_message(
+        self, agent_name: str, timeout: float = 120,
+        after: Any = None, channel_ref: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Poll for new messages in an agent's channel.
+
+        Returns when a non-system message appears or timeout is reached.
+        """
         ...
 
     # --- Event log integration ---

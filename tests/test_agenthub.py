@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -176,7 +177,7 @@ def hub(frontend: FakeFrontend) -> AgentHub:
 
 @pytest.mark.asyncio
 async def test_spawn_and_remove_agent(hub: AgentHub, frontend: FakeFrontend) -> None:
-    session = await hub.spawn_agent(name="agent-1", cwd="/tmp/agent-1")
+    session = await hub.spawn_agent(name="agent-1", cwd=tempfile.mkdtemp(prefix="agent-1_"))
     assert session.name == "agent-1"
     assert hub.get_session("agent-1") is session
     assert ("on_spawn", ("agent-1",)) in frontend.calls
@@ -188,7 +189,7 @@ async def test_spawn_and_remove_agent(hub: AgentHub, frontend: FakeFrontend) -> 
 
 @pytest.mark.asyncio
 async def test_submit_user_message_runs_turn(hub: AgentHub, frontend: FakeFrontend) -> None:
-    await hub.spawn_agent(name="agent-run", cwd="/tmp/agent-run")
+    await hub.spawn_agent(name="agent-run", cwd=tempfile.mkdtemp(prefix="agent-run_"))
     result = await hub.submit_user_message("agent-run", "hello")
     assert result.status == "started"
     await asyncio.sleep(0.05)
@@ -219,7 +220,7 @@ async def test_killed_turn_does_not_post_special_completion(frontend: FakeFronte
         make_agent_options=lambda session, sid: {},
         stream_factory=killed_stream,
     )
-    await hub.spawn_agent(name="killed-turn", cwd="/tmp/killed-turn")
+    await hub.spawn_agent(name="killed-turn", cwd=tempfile.mkdtemp(prefix="killed-turn_"))
     result = await hub.submit_user_message("killed-turn", "boot")
     assert result.status == "started"
     await asyncio.sleep(0.05)
@@ -256,7 +257,7 @@ async def test_stop_clears_queue(frontend: FakeFrontend) -> None:
         disconnect_client=disconnect_client,
         make_agent_options=lambda session, sid: {},
     )
-    await hub.spawn_agent(name="stop-agent", cwd="/tmp/stop-agent")
+    await hub.spawn_agent(name="stop-agent", cwd=tempfile.mkdtemp(prefix="stop-agent_"))
     start = await hub.submit_user_message("stop-agent", "first")
     assert start.status == "started"
     queued = await hub.submit_user_message("stop-agent", "after")
@@ -297,8 +298,8 @@ async def test_max_awake_limit_queues_new_wake_until_slot_frees(frontend: FakeFr
         make_agent_options=lambda session, sid: {},
         max_awake=1,
     )
-    await hub.spawn_agent(name="a1", cwd="/tmp/a1")
-    await hub.spawn_agent(name="a2", cwd="/tmp/a2")
+    await hub.spawn_agent(name="a1", cwd=tempfile.mkdtemp(prefix="a1_"))
+    await hub.spawn_agent(name="a2", cwd=tempfile.mkdtemp(prefix="a2_"))
 
     first = await hub.submit_user_message("a1", "hold")
     assert first.status == "started"
@@ -362,7 +363,7 @@ async def test_query_timeout_bounds_entire_turn(frontend: FakeFrontend) -> None:
         query_timeout=0.05,
         stream_factory=stream_response,
     )
-    await hub.spawn_agent(name="hang-agent", cwd="/tmp/hang-agent")
+    await hub.spawn_agent(name="hang-agent", cwd=tempfile.mkdtemp(prefix="hang-agent_"))
 
     result = await hub.submit_user_message("hang-agent", "hello")
     assert result.status == "started"
@@ -403,7 +404,7 @@ async def test_submit_inter_agent_message_marks_background(frontend: FakeFronten
         make_agent_options=lambda session, sid: {},
         stream_factory=result_stream,
     )
-    await hub.spawn_agent(name="worker", cwd="/tmp/worker")
+    await hub.spawn_agent(name="worker", cwd=tempfile.mkdtemp(prefix="worker_"))
 
     result = await hub.submit_inter_agent_message("worker", "hello from master")
     assert result.status == "started"
@@ -442,7 +443,7 @@ async def test_request_skip_interrupts_and_runs_queued_followup(frontend: FakeFr
         disconnect_client=disconnect_client,
         make_agent_options=lambda session, sid: {},
     )
-    await hub.spawn_agent(name="skip-agent", cwd="/tmp/skip-agent")
+    await hub.spawn_agent(name="skip-agent", cwd=tempfile.mkdtemp(prefix="skip-agent_"))
     start = await hub.submit_user_message("skip-agent", "first")
     assert start.status == "started"
     queued = await hub.submit_user_message("skip-agent", "second")
@@ -491,7 +492,7 @@ async def test_request_stop_without_clearing_queue_preserves_followup(frontend: 
         make_agent_options=lambda session, sid: {},
         stream_factory=result_stream,
     )
-    await hub.spawn_agent(name="stop-keep", cwd="/tmp/stop-keep")
+    await hub.spawn_agent(name="stop-keep", cwd=tempfile.mkdtemp(prefix="stop-keep_"))
     start = await hub.submit_user_message("stop-keep", "first")
     assert start.status == "started"
     queued = await hub.submit_user_message("stop-keep", "second")
@@ -515,7 +516,7 @@ async def test_request_stop_without_clearing_queue_preserves_followup(frontend: 
 
 @pytest.mark.asyncio
 async def test_shutdown_requested_short_circuits_submission(hub: AgentHub) -> None:
-    await hub.spawn_agent(name="shutdown-agent", cwd="/tmp/shutdown-agent")
+    await hub.spawn_agent(name="shutdown-agent", cwd=tempfile.mkdtemp(prefix="shutdown-agent_"))
     hub.shutdown_requested = True
 
     result = await hub.submit_user_message("shutdown-agent", "hello")
@@ -544,7 +545,7 @@ async def test_wake_failure_clears_current_turn_and_releases_slot(frontend: Fake
         disconnect_client=disconnect_client,
         make_agent_options=lambda session, sid: {},
     )
-    await hub.spawn_agent(name="wake-fail", cwd="/tmp/wake-fail")
+    await hub.spawn_agent(name="wake-fail", cwd=tempfile.mkdtemp(prefix="wake-fail_"))
 
     result = await hub.submit_user_message("wake-fail", "hello")
     assert result.status == "started"
@@ -575,7 +576,7 @@ async def test_query_result_error_marks_turn_error(frontend: FakeFrontend) -> No
         make_agent_options=lambda session, sid: {},
         stream_factory=error_result_stream,
     )
-    await hub.spawn_agent(name="error-agent", cwd="/tmp/error-agent")
+    await hub.spawn_agent(name="error-agent", cwd=tempfile.mkdtemp(prefix="error-agent_"))
 
     result = await hub.submit_user_message("error-agent", "hello")
     assert result.status == "started"
@@ -604,7 +605,7 @@ async def test_transient_error_marks_retry_exhausted(frontend: FakeFrontend) -> 
         make_agent_options=lambda session, sid: {},
         stream_factory=transient_stream,
     )
-    await hub.spawn_agent(name="transient-agent", cwd="/tmp/transient-agent")
+    await hub.spawn_agent(name="transient-agent", cwd=tempfile.mkdtemp(prefix="transient-agent_"))
 
     result = await hub.submit_user_message("transient-agent", "hello")
     assert result.status == "started"
@@ -639,7 +640,7 @@ async def test_rate_limit_hit_updates_tracker_state(frontend: FakeFrontend) -> N
         make_agent_options=lambda session, sid: {},
         stream_factory=rate_limit_stream,
     )
-    await hub.spawn_agent(name="rl-agent", cwd="/tmp/rl-agent")
+    await hub.spawn_agent(name="rl-agent", cwd=tempfile.mkdtemp(prefix="rl-agent_"))
 
     result = await hub.submit_user_message("rl-agent", "hello")
     assert result.status == "started"
@@ -661,7 +662,7 @@ async def test_on_session_id_is_forwarded_to_frontend(frontend: FakeFrontend) ->
         disconnect_client=lambda client, name: asyncio.sleep(0),
         make_agent_options=lambda session, sid: {},
     )
-    session = await hub.spawn_agent(name="sid-agent", cwd="/tmp/sid-agent")
+    session = await hub.spawn_agent(name="sid-agent", cwd=tempfile.mkdtemp(prefix="sid-agent_"))
 
     await hub._set_session_id_from_stream(session, SimpleNamespace(session_id="sid-123"))
 
@@ -686,7 +687,7 @@ async def test_wake_sleep_and_snapshot_public_methods(frontend: FakeFrontend) ->
         disconnect_client=disconnect_client,
         make_agent_options=lambda session, sid: {},
     )
-    session = await hub.spawn_agent(name="public-agent", cwd="/tmp/public-agent")
+    session = await hub.spawn_agent(name="public-agent", cwd=tempfile.mkdtemp(prefix="public-agent_"))
 
     snapshot = hub.snapshot()
     assert snapshot["public-agent"] is session
@@ -731,7 +732,7 @@ async def test_submit_sequence_keeps_fifo_order_under_runtime(turns: list[str]) 
         make_agent_options=lambda session, sid: {},
         stream_factory=result_stream,
     )
-    await hub.spawn_agent(name="fifo-agent", cwd="/tmp/fifo-agent")
+    await hub.spawn_agent(name="fifo-agent", cwd=tempfile.mkdtemp(prefix="fifo-agent_"))
 
     results = [await hub.submit_user_message("fifo-agent", turn) for turn in turns]
 
@@ -779,7 +780,7 @@ async def test_skip_preserves_followup_progression_under_runtime(turns: list[str
         make_agent_options=lambda session, sid: {},
         stream_factory=result_stream,
     )
-    await hub.spawn_agent(name="skip-fifo-agent", cwd="/tmp/skip-fifo-agent")
+    await hub.spawn_agent(name="skip-fifo-agent", cwd=tempfile.mkdtemp(prefix="skip-fifo-agent_"))
 
     for turn in turns:
         await hub.submit_user_message("skip-fifo-agent", turn)
@@ -842,7 +843,7 @@ async def test_runtime_control_requests_leave_consistent_settled_state(
         make_agent_options=lambda session, sid: {},
         stream_factory=result_stream,
     )
-    await hub.spawn_agent(name="control-agent", cwd="/tmp/control-agent")
+    await hub.spawn_agent(name="control-agent", cwd=tempfile.mkdtemp(prefix="control-agent_"))
 
     started = await hub.submit_user_message("control-agent", "first")
     queued = await hub.submit_user_message("control-agent", "second")
@@ -900,7 +901,7 @@ async def test_runtime_control_requests_after_terminal_turn_are_idempotent(actio
         make_agent_options=lambda session, sid: {},
         stream_factory=result_stream,
     )
-    await hub.spawn_agent(name="post-terminal-agent", cwd="/tmp/post-terminal-agent")
+    await hub.spawn_agent(name="post-terminal-agent", cwd=tempfile.mkdtemp(prefix="post-terminal-agent_"))
 
     started = await hub.submit_user_message("post-terminal-agent", "done")
     assert started.status == "started"

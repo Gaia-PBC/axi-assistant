@@ -285,8 +285,8 @@ async def _receive_response_safe(session: AgentSession) -> AsyncIterator[Any]:
             msg_type = data.get("type", "?")
             if msg_type == "rate_limit_event":
                 log.info("Rate limit event for '%s': %s", session.name, data)
-                if session.agent_log:
-                    session.agent_log.info("RATE_LIMIT_EVENT: %s", json.dumps(data)[:500])
+                if discord_state(session).agent_log:
+                    discord_state(session).agent_log.info("RATE_LIMIT_EVENT: %s", json.dumps(data)[:500])
                 _update_rate_limit_quota(data)
             else:
                 log.warning(
@@ -295,8 +295,8 @@ async def _receive_response_safe(session: AgentSession) -> AsyncIterator[Any]:
                     msg_type,
                     json.dumps(data)[:500],
                 )
-                if session.agent_log:
-                    session.agent_log.warning("UNKNOWN_MSG: type=%s data=%s", msg_type, json.dumps(data)[:500])
+                if discord_state(session).agent_log:
+                    discord_state(session).agent_log.warning("UNKNOWN_MSG: type=%s data=%s", msg_type, json.dumps(data)[:500])
                 preview = json.dumps(data)[:400]
                 assert _send_to_exceptions is not None
                 await _send_to_exceptions(
@@ -906,7 +906,7 @@ async def _handle_stream_event(
                 )
 
     # Log stream events
-    if session.agent_log:
+    if discord_state(session).agent_log:
         _log_stream_event(session, event_type, event)
 
     # Raw stdio log
@@ -933,25 +933,25 @@ async def _handle_stream_event(
 
 def _log_stream_event(session: AgentSession, event_type: str, event: dict[str, Any]) -> None:
     """Log a stream event to the agent's log."""
-    assert session.agent_log is not None
+    assert discord_state(session).agent_log is not None
     if event_type == "content_block_delta":
         delta = event.get("delta", {})
         delta_type = delta.get("type", "")
         if delta_type not in ("text_delta", "thinking_delta", "signature_delta"):
-            session.agent_log.debug("STREAM: %s delta=%s", event_type, delta_type)
+            discord_state(session).agent_log.debug("STREAM: %s delta=%s", event_type, delta_type)
     elif event_type in ("content_block_start", "content_block_stop"):
         block = event.get("content_block", {})
-        session.agent_log.debug("STREAM: %s type=%s index=%s", event_type, block.get("type", "?"), event.get("index"))
+        discord_state(session).agent_log.debug("STREAM: %s type=%s index=%s", event_type, block.get("type", "?"), event.get("index"))
     elif event_type == "message_start":
         msg_data = event.get("message", {})
-        session.agent_log.debug("STREAM: message_start model=%s", msg_data.get("model", "?"))
+        discord_state(session).agent_log.debug("STREAM: message_start model=%s", msg_data.get("model", "?"))
     elif event_type == "message_delta":
         delta = event.get("delta", {})
-        session.agent_log.debug("STREAM: message_delta stop_reason=%s", delta.get("stop_reason"))
+        discord_state(session).agent_log.debug("STREAM: message_delta stop_reason=%s", delta.get("stop_reason"))
     elif event_type == "message_stop":
-        session.agent_log.debug("STREAM: message_stop")
+        discord_state(session).agent_log.debug("STREAM: message_stop")
     else:
-        session.agent_log.debug("STREAM: %s %s", event_type, json.dumps(event)[:300])
+        discord_state(session).agent_log.debug("STREAM: %s %s", event_type, json.dumps(event)[:300])
 
 
 async def _handle_user_message(ctx: _StreamCtx, session: AgentSession, msg: UserMessage) -> None:
@@ -1024,13 +1024,13 @@ async def _handle_assistant_message(
                     getattr(block_any, "input", None),
                 )
 
-    if session.agent_log:
+    if discord_state(session).agent_log:
         for block in msg.content or []:
             block_any: Any = block
             if hasattr(block, "text"):
-                session.agent_log.info("ASSISTANT: %s", block_any.text[:2000])
+                discord_state(session).agent_log.info("ASSISTANT: %s", block_any.text[:2000])
             elif hasattr(block, "id") and hasattr(block, "name") and hasattr(block, "input"):
-                session.agent_log.info(
+                discord_state(session).agent_log.info(
                     "TOOL_USE: %s(%s)",
                     block_any.name,
                     json.dumps(block_any.input)[:500],
@@ -1095,8 +1095,8 @@ async def _handle_system_message(
     session: AgentSession, channel: TextChannel, msg: SystemMessage, ctx: _StreamCtx | None = None
 ) -> None:
     """Handle a SystemMessage during response streaming."""
-    if session.agent_log:
-        session.agent_log.debug("SYSTEM_MSG: subtype=%s data=%s", msg.subtype, json.dumps(msg.data)[:500])
+    if discord_state(session).agent_log:
+        discord_state(session).agent_log.debug("SYSTEM_MSG: subtype=%s data=%s", msg.subtype, json.dumps(msg.data)[:500])
     if msg.subtype == "task_started":
         if ctx is None:
             return
@@ -1312,6 +1312,19 @@ async def _handle_system_message(
             assert _set_session_id_fn is not None
             await _set_session_id_fn(session, None, channel=channel)
 
+    elif msg.subtype == "input_request":
+        data = msg.data.get("data", {})
+        block_id = data.get("block_id", "")
+        block_name = data.get("block_name", "input")
+        ds = discord_state(session)
+        ds.pending_input_block_id = block_id
+        mentions = " ".join(f"<@{uid}>" for uid in config.ALLOWED_USER_IDS)
+        await _retry_discord_503(
+            channel.send,
+            f"**{block_name}**: Flowchart is waiting for input. Type your response below.\n{mentions}",
+        )
+        log.info("Input block '%s' (id=%s) waiting for user input for '%s'", block_name, block_id, session.name)
+
 
 # ---------------------------------------------------------------------------
 # Stall watchdog
@@ -1388,8 +1401,8 @@ async def _stream_response_to_channel_impl(session: AgentSession, channel: TextC
                 if t_first_event is None:
                     t_first_event = time.monotonic()
                 ctx.msg_total += 1
-                if session.agent_log:
-                    session.agent_log.debug(
+                if discord_state(session).agent_log:
+                    discord_state(session).agent_log.debug(
                         "MSG_SEQ[%s][%d] type=%s buf_len=%d",
                         stream_id,
                         ctx.msg_total,
@@ -1415,8 +1428,8 @@ async def _stream_response_to_channel_impl(session: AgentSession, channel: TextC
                     elif msg.subtype == "flowchart_complete":
                         ctx.in_flowchart = False
                     await _handle_system_message(session, channel, msg, ctx)
-                elif session.agent_log:
-                    session.agent_log.debug("OTHER_MSG: %s", type(msg).__name__)
+                elif discord_state(session).agent_log:
+                    discord_state(session).agent_log.debug("OTHER_MSG: %s", type(msg).__name__)
 
                 # Mid-turn flush (skipped in streaming mode — live-edit handles splitting)
                 if not ctx.hit_rate_limit and ctx.live_edit is None and not ctx.suppress_stream and len(ctx.text_buffer) >= 1800:

@@ -1,7 +1,10 @@
 """Centralized configuration for the Axi bot.
 
-Leaf module — no project imports. All env vars, paths, constants, logging setup,
-Discord REST client, and user config management live here.
+Leaf module — no project imports (except discord_config for re-exports).
+All env vars, paths, constants, logging setup, and user config management
+live here.  Discord-specific settings (token, intents, guild ID, REST client)
+live in ``axi.discord_config``; this module re-exports them for backward
+compatibility during the migration.
 """
 
 from __future__ import annotations
@@ -106,8 +109,6 @@ class _ColorFormatter(logging.Formatter):
 
 from dotenv import load_dotenv
 
-from axi.discord_wire import emit_rest_audit_event
-from axi.egress_filter import scrub_secrets
 from axi.log_context import StructuredContextFilter
 
 load_dotenv()
@@ -240,8 +241,6 @@ def get_fc_wrap() -> str | None:
 FLOWCODER_ENABLED = get_harness() == "flowcoder"
 FC_WRAP = get_fc_wrap()
 STREAMING_DISCORD = os.environ.get("STREAMING_DISCORD", "").lower() in ("1", "true", "yes")
-CHANNEL_STATUS_ENABLED = os.environ.get("CHANNEL_STATUS_ENABLED", "").lower() in ("1", "true", "yes")
-CHANNEL_SORT_BY_RECENCY = os.environ.get("CHANNEL_SORT_BY_RECENCY", "").lower() in ("1", "true", "yes")
 CLEAN_TOOL_MESSAGES = os.environ.get("CLEAN_TOOL_MESSAGES", "").lower() in ("1", "true", "yes")
 
 # Context compaction threshold — fraction of context window that triggers auto-compact.
@@ -256,55 +255,6 @@ IDLE_SLEEP_SECONDS = int(os.environ.get("IDLE_SLEEP_SECONDS", "60"))
 STREAMING_EDIT_INTERVAL = float(os.environ.get("STREAMING_EDIT_INTERVAL", "1.5"))
 
 # ---------------------------------------------------------------------------
-# Discord token resolution
-# ---------------------------------------------------------------------------
-
-
-def _resolve_discord_token() -> str:
-    """Resolve Discord token from env or test slot reservation.
-
-    For prime: reads DISCORD_TOKEN from .env as usual.
-    For test instances: derives instance name from the bot directory,
-    looks up the reserved token from ~/.config/axi/.test-slots.json
-    and ~/.config/axi/test-config.json. No token in .env needed.
-    """
-    token = os.environ.get("DISCORD_TOKEN")
-    if token:
-        return token
-
-    bot_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    instance_name = os.path.basename(bot_dir)
-    config_dir = os.path.expanduser("~/.config/axi")
-    slots_path = os.path.join(config_dir, ".test-slots.json")
-    config_path = os.path.join(config_dir, "test-config.json")
-
-    try:
-        with open(slots_path) as f:
-            slots = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        raise RuntimeError(
-            f"DISCORD_TOKEN not set and cannot read {slots_path}: {e}\n"
-            f"Set DISCORD_TOKEN in .env or reserve a slot: axi-test up {instance_name}"
-        ) from None
-
-    slot = slots.get(instance_name)
-    if not slot:
-        raise RuntimeError(
-            f"DISCORD_TOKEN not set and no slot for '{instance_name}' in {slots_path}\n"
-            f"Reserve a slot: axi-test up {instance_name}"
-        )
-
-    try:
-        with open(config_path) as f:
-            config = json.load(f)
-        return config["bots"][slot["token_id"]]["token"]
-    except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
-        raise RuntimeError(f"Cannot resolve token for bot '{slot.get('token_id')}': {e}") from None
-
-
-DISCORD_TOKEN = _resolve_discord_token()
-
-# ---------------------------------------------------------------------------
 # Environment variables
 # ---------------------------------------------------------------------------
 
@@ -312,25 +262,9 @@ ALLOWED_USER_IDS = {int(uid.strip()) for uid in os.environ["ALLOWED_USER_IDS"].s
 DEFAULT_CWD = os.environ.get("DEFAULT_CWD", os.getcwd())
 AXI_USER_DATA = os.environ.get("AXI_USER_DATA", os.path.expanduser("~/app-user-data/axi-assistant"))
 SCHEDULE_TIMEZONE = ZoneInfo(os.environ.get("SCHEDULE_TIMEZONE", "UTC"))
-DISCORD_GUILD_ID = int(os.environ["DISCORD_GUILD_ID"])
 DAY_BOUNDARY_HOUR = int(os.environ.get("DAY_BOUNDARY_HOUR", "0"))
 ENABLE_CRASH_HANDLER = os.environ.get("ENABLE_CRASH_HANDLER", "").lower() in ("1", "true", "yes")
 README_CONTENT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "readme_content.md")
-
-# ---------------------------------------------------------------------------
-# Discord intents
-# ---------------------------------------------------------------------------
-
-from discord import Intents
-
-intents = Intents(
-    guilds=True,
-    guild_messages=True,
-    guild_reactions=True,
-    message_content=True,
-    dm_messages=True,
-    voice_states=True,
-)
 
 # ---------------------------------------------------------------------------
 # Path constants
@@ -620,22 +554,19 @@ def _validate_namespace(ns: str) -> str:
 BOT_NAMESPACE = _validate_namespace(os.environ.get("BOT_NAMESPACE", ""))
 
 # ---------------------------------------------------------------------------
-# Discord REST API client
+# Discord re-exports (backward compatibility during migration)
 # ---------------------------------------------------------------------------
+# These live in axi.discord_config now.  Re-exported here so existing
+# ``config.DISCORD_TOKEN`` / ``config.discord_client`` etc. keep working.
 
-from axi.metrics import observe_discord_rest_request
-from discordquery import AsyncDiscordClient
-
-discord_client = AsyncDiscordClient(
-    DISCORD_TOKEN,
-    on_request_observer=lambda method, path, status, duration: observe_discord_rest_request(
-        "discordquery",
-        method,
-        path,
-        status,
-        duration,
-    ),
-)
-
-discord_client.content_filter = scrub_secrets
-discord_client.audit_hook = emit_rest_audit_event
+try:
+    from axi.discord_config import (  # noqa: E402, F401
+        CHANNEL_SORT_BY_RECENCY,
+        CHANNEL_STATUS_ENABLED,
+        DISCORD_GUILD_ID,
+        DISCORD_TOKEN,
+        discord_client,
+        intents,
+    )
+except ImportError:
+    pass
