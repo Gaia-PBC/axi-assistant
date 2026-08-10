@@ -38,9 +38,9 @@ Recommended flags for every tier: `--timeout=300` (per-test, 5 min) · `--sessio
 
 ### Unit — fast, no setup
 ```bash
-uv run python -m pytest tests/unit/ -n auto --timeout=300
+uv run python -m pytest tests/unit/ --timeout=300
 ```
-Runs in parallel across cores (`pytest-xdist`), no instance needed (~30s for ~1000 tests). **This is the default fast tier.**
+Runs serially, no instance needed (~1100 tests in a few minutes). **This is the default tier.**
 
 ### Live — needs a real test bot
 Run **serially** (shared single bot; do **not** use `-n`).
