@@ -18,6 +18,7 @@ import os
 import sys
 import tempfile
 import uuid
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -35,6 +36,9 @@ try:
     _BRIDGE_IMPORT_OK = True
 except ImportError:
     _BRIDGE_IMPORT_OK = False
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # xdist parallel-safety: every test here forks a REAL Python-interpreter
 # subprocess and then relies on a fixed short `asyncio.sleep(...)` for it to
@@ -161,25 +165,28 @@ def _list_processes(result: object) -> dict[str, object]:
     return agents or {}
 
 
-async def _wait_exited(conn, *names: str, timeout: float = 20.0, interval: float = 0.05):
-    """Poll the read-only ``list`` command until every named process reports
-    ``status == "exited"`` (so all of its output has finished buffering), then
-    return the final ``list`` result.
+async def _await_list_state(
+    conn: BridgeConnection,
+    predicate: Callable[[dict[str, object]], bool],
+    *,
+    timeout: float = 5.0,
+    interval: float = 0.05,
+) -> dict[str, object]:
+    """Poll ``list`` on ``conn`` until ``predicate(procs)`` holds (or ``timeout``).
 
-    A fixed ``asyncio.sleep(...)`` before checking races under the parallel
-    (``-n auto``) runner: each test forks a real Python-interpreter subprocess,
-    and under CPU oversubscription that process can take longer than the wait to
-    actually exit. ``list`` neither subscribes nor drains buffers, so polling it
-    is side-effect-free — it just replaces a blind sleep with "wait until the
-    state the test asserts is actually true (or time out and let it fail)".
+    Returns the last ``_list_processes(...)`` dict so the caller still asserts on the
+    real final state (a timeout surfaces it in the assertion). Replaces fixed
+    ``asyncio.sleep()``s that flake under parallel CPU load — the poll waits exactly
+    as long as the state transition actually takes.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    procs: dict[str, object] = {}
     while True:
         ls = await asyncio.wait_for(conn.send_command("list"), timeout=3)
         procs = _list_processes(ls)
-        if all(procs.get(n, {}).get("status") == "exited" for n in names) or loop.time() >= deadline:
-            return ls
+        if predicate(procs) or loop.time() >= deadline:
+            return procs
         await asyncio.sleep(interval)
 
 
@@ -1200,10 +1207,11 @@ class TestClientReconnection:
             # Kill connection
             conn1._demux_task.cancel()
             conn1._writer.close()
-            # Reconnect, then poll until "rc" has exited so its buffer is stable
-            # (fixed sleep races under the parallel runner; list is read-only).
+            await asyncio.sleep(0.5)  # let agent finish and buffer
+
+            # Reconnect
             conn2 = await _connect(sock)
-            ls = await _wait_exited(conn2, "rc")
+            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
             buffered = _list_processes(ls)["rc"]["buffered_msgs"]
             assert buffered > 0
 
@@ -1266,12 +1274,13 @@ class TestExitDuringDisconnect:
 
             conn1._demux_task.cancel()
             conn1._writer.close()
-            # Reconnect, then poll until "de" has actually exited — a fixed sleep
-            # races under the parallel runner; list is read-only (no drain).
+
+            # Reconnect, then poll until the agent has exited (its exit message is
+            # buffered); no fixed sleep.
             conn2 = await _connect(sock)
-            ls = await _wait_exited(conn2, "de")
-            assert _list_processes(ls)["de"]["status"] == "exited"
-            assert _list_processes(ls)["de"]["buffered_msgs"] > 0
+            procs = await _await_list_state(conn2, lambda p: p.get("de", {}).get("status") == "exited")
+            assert procs["de"]["status"] == "exited"
+            assert procs["de"]["buffered_msgs"] > 0
 
             # Subscribe and check for exit message
             q = conn2.register_process("de")
@@ -1521,10 +1530,10 @@ class TestBufferReplayOrder:
             # Don't subscribe — let everything buffer
             conn1._demux_task.cancel()
             conn1._writer.close()
-            # Reconnect, then poll until "ord" has exited so all output + the
-            # exit message are buffered (fixed sleep races under -n auto).
+            await asyncio.sleep(0.5)  # let agent finish
+
+            # Reconnect and subscribe
             conn2 = await _connect(sock)
-            await _wait_exited(conn2, "ord")
             q = conn2.register_process("ord")
             await asyncio.wait_for(conn2.send_command("subscribe", name="ord"), timeout=3)
 
@@ -1580,9 +1589,9 @@ class TestSubscribeToExited:
                 ),
                 timeout=3,
             )
-            # Poll until "se" has exited before subscribing (fixed sleep races
-            # under the parallel runner; list is read-only, no drain).
-            await _wait_exited(conn, "se")
+            await asyncio.sleep(0.5)  # let it exit
+
+            # Subscribe
             q = conn.register_process("se")
             result = await asyncio.wait_for(conn.send_command("subscribe", name="se"), timeout=3)
             assert result.ok is True
@@ -1980,14 +1989,14 @@ class TestReconnectScenarios:
             # Disconnect immediately (no output yet)
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(0.3)
 
-            # Reconnect
+            # Reconnect, then poll until the disconnect has registered (unsubscribed);
+            # no fixed sleep.
             conn2 = await _connect(sock)
-            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
-            assert _list_processes(ls)["silent"]["status"] == "running"
-            assert _list_processes(ls)["silent"]["buffered_msgs"] == 0
-            assert _list_processes(ls)["silent"]["subscribed"] is False
+            procs = await _await_list_state(conn2, lambda p: p.get("silent", {}).get("subscribed") is False)
+            assert procs["silent"]["status"] == "running"
+            assert procs["silent"]["buffered_msgs"] == 0
+            assert procs["silent"]["subscribed"] is False
 
             # Subscribe and wait for the "done" message
             q = conn2.register_process("silent")
@@ -2167,13 +2176,13 @@ class TestReconnectScenarios:
             # Disconnect immediately — agent will finish and exit
             conn1._demux_task.cancel()
             conn1._writer.close()
-            # Reconnect, then poll until "short" has exited (fixed sleep races
-            # under the parallel runner; list is read-only, no drain).
+
+            # Reconnect, then poll until the agent has exited; no fixed sleep.
             conn2 = await _connect(sock)
-            ls = await _wait_exited(conn2, "short")
-            assert _list_processes(ls)["short"]["status"] == "exited"
-            assert _list_processes(ls)["short"]["exit_code"] == 0
-            assert _list_processes(ls)["short"]["buffered_msgs"] > 0
+            procs = await _await_list_state(conn2, lambda p: p.get("short", {}).get("status") == "exited")
+            assert procs["short"]["status"] == "exited"
+            assert procs["short"]["exit_code"] == 0
+            assert procs["short"]["buffered_msgs"] > 0
 
             # Subscribe and verify exit message is in buffer
             q2 = conn2.register_process("short")
@@ -2211,12 +2220,12 @@ class TestReconnectScenarios:
             # Don't subscribe — disconnect immediately
             conn1._demux_task.cancel()
             conn1._writer.close()
-            # Reconnect, then poll until "crash" has exited (fixed sleep races
-            # under the parallel runner; list is read-only, no drain).
+
+            # Reconnect, then poll until the agent has actually exited (no fixed sleep).
             conn2 = await _connect(sock)
-            ls = await _wait_exited(conn2, "crash")
-            assert _list_processes(ls)["crash"]["status"] == "exited"
-            assert _list_processes(ls)["crash"]["exit_code"] == 7
+            procs = await _await_list_state(conn2, lambda p: p.get("crash", {}).get("status") == "exited")
+            assert procs["crash"]["status"] == "exited"
+            assert procs["crash"]["exit_code"] == 7
 
             # Subscribe and verify
             q2 = conn2.register_process("crash")
@@ -2258,15 +2267,21 @@ class TestReconnectScenarios:
             # Disconnect
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(0.5)
 
-            # Reconnect
+            # Reconnect, then poll until both agents show buffered output and are
+            # unsubscribed (no fixed sleep).
             conn2 = await _connect(sock)
-            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
+            procs = await _await_list_state(
+                conn2,
+                lambda p: all(
+                    p.get(n, {}).get("buffered_msgs", 0) > 0 and p.get(n, {}).get("subscribed") is False
+                    for n in ("alpha", "beta")
+                ),
+            )
             for name in ("alpha", "beta"):
-                assert _list_processes(ls)[name]["status"] == "running"
-                assert _list_processes(ls)[name]["subscribed"] is False
-                assert _list_processes(ls)[name]["buffered_msgs"] > 0
+                assert procs[name]["status"] == "running"
+                assert procs[name]["subscribed"] is False
+                assert procs[name]["buffered_msgs"] > 0
 
             # Subscribe to each and verify independent output
             queues = {}
@@ -2323,22 +2338,27 @@ class TestReconnectScenarios:
             # Disconnect
             conn1._demux_task.cancel()
             conn1._writer.close()
-            # Reconnect, then poll until "done" has exited (active/silent stay
-            # running; fixed sleep races under -n auto, list is read-only).
+
+            # Reconnect, then poll until "done" has exited AND "active" has buffered
+            # output — the two load-sensitive transitions (no fixed sleep).
             conn2 = await _connect(sock)
-            ls = await _wait_exited(conn2, "done")
+            procs = await _await_list_state(
+                conn2,
+                lambda p: p.get("done", {}).get("status") == "exited"
+                and p.get("active", {}).get("buffered_msgs", 0) > 0,
+            )
 
             # "active" should be running with buffered output
-            assert _list_processes(ls)["active"]["status"] == "running"
-            assert _list_processes(ls)["active"]["buffered_msgs"] > 0
+            assert procs["active"]["status"] == "running"
+            assert procs["active"]["buffered_msgs"] > 0
 
             # "done" should have exited
-            assert _list_processes(ls)["done"]["status"] == "exited"
-            assert _list_processes(ls)["done"]["exit_code"] == 0
+            assert procs["done"]["status"] == "exited"
+            assert procs["done"]["exit_code"] == 0
 
             # "silent" should be running with no buffer
-            assert _list_processes(ls)["silent"]["status"] == "running"
-            assert _list_processes(ls)["silent"]["buffered_msgs"] == 0
+            assert procs["silent"]["status"] == "running"
+            assert procs["silent"]["buffered_msgs"] == 0
         finally:
             await _cleanup_multi(server, srv, [conn1, conn2], sock)
 
@@ -2416,13 +2436,12 @@ class TestReconnectScenarios:
             await asyncio.wait_for(conn1.send_command("subscribe", name="burst"), timeout=3)
             conn1._demux_task.cancel()
             conn1._writer.close()
-            await asyncio.sleep(1.0)  # let all messages buffer
 
-            # Reconnect
+            # Reconnect, then poll until the burst agent has exited so its whole
+            # output is buffered and the count is stable (no fixed sleep).
             conn2 = await _connect(sock)
-            ls = await asyncio.wait_for(conn2.send_command("list"), timeout=3)
-            # Agent may have exited by now — that's fine
-            buffered = _list_processes(ls)["burst"]["buffered_msgs"]
+            procs = await _await_list_state(conn2, lambda p: p.get("burst", {}).get("status") == "exited")
+            buffered = procs["burst"]["buffered_msgs"]
             assert buffered > 0
 
             q2 = conn2.register_process("burst")
