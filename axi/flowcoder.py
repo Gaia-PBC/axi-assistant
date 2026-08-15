@@ -69,6 +69,12 @@ def get_search_paths(extra: list[str] | None = None) -> list[str]:
     if os.path.isdir(discord_commands) and _has_discord_frontend():
         paths.append(discord_commands)
 
+    from axi import flowchart_providers
+
+    shadow = flowchart_providers.transform_commands(paths)
+    if shadow:
+        paths.insert(0, shadow)
+
     return paths
 
 
