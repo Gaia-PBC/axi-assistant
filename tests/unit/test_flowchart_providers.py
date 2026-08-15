@@ -112,3 +112,30 @@ class TestTransform:
         # the engine's first-match-wins path-order resolution.
         assert "provider" not in block
         assert block["env"]["ANTHROPIC_BASE_URL"] == "http://localhost:11434"
+
+    def test_basename_first_occurrence_wins_even_without_provider(self, tmp_path, monkeypatch) -> None:
+        # The FIRST path's do.json has no provider block; the SECOND path's
+        # do.json has one. First-match-wins must apply to the first
+        # occurrence of the basename in path order regardless of whether it
+        # gets transformed: the second path's version must never be written
+        # to the shadow (the engine would otherwise serve the later path's
+        # transformed version instead of the first path's original).
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        self._write_command(first, "do", {
+            "start": {"id": "start", "type": "spawn", "name": "S",
+                      "agent_name": "a", "command_name": "do", "model": "opus"},
+        })
+        self._write_command(second, "do", {
+            "start": {"id": "start", "type": "spawn", "name": "SPAWN",
+                      "agent_name": "a", "command_name": "do",
+                      "model": "qwen3-coder:30b", "provider": "ollama-local"},
+        })
+        monkeypatch.setattr(flowchart_providers, "SHADOW_DIR", str(tmp_path / "shadow"))
+        with patch("axi.flowchart_providers.resolve_runtime", return_value=(None, {
+            "ANTHROPIC_BASE_URL": "http://localhost:11434",
+            "ANTHROPIC_MODEL": "qwen3-coder:30b",
+        }, "ollama-local")):
+            shadow = flowchart_providers.transform_commands([str(first), str(second)])
+        assert shadow == ""
+        assert not (tmp_path / "shadow").exists()

@@ -72,6 +72,13 @@ def transform_commands(search_paths: list[str]) -> str:
         except Exception as e:
             log.warning("Skipping unreadable command %s: %s", path, e)
             continue
+        # First-match-wins applies to the first occurrence of a basename in
+        # path order, regardless of whether it gets transformed: record it
+        # before the transform decision so a later search path's file with
+        # the same basename is never considered (the engine would otherwise
+        # serve the later path's transformed version instead of the first
+        # path's original).
+        seen_basenames.add(basename)
         blocks = data.get("flowchart", {}).get("blocks", {})
         changed = False
         for key, block in blocks.items():
@@ -88,7 +95,6 @@ def transform_commands(search_paths: list[str]) -> str:
         with open(out_path, "w") as f:
             json.dump(data, f, indent=2)
         written.append(out_path)
-        seen_basenames.add(basename)
     if not written:
         return ""
     return SHADOW_DIR
