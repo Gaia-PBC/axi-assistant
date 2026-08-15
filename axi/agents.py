@@ -446,8 +446,9 @@ def _save_agent_config(
     mcp_server_names: list[str] | None,
     extensions: list[str] | None = None,
     model: str | None = None,
+    provider: str | None = None,
 ) -> None:
-    """Persist per-agent config (MCP servers, extensions, model) to disk."""
+    """Persist per-agent config (MCP servers, extensions, model, provider) to disk."""
     config_dir = os.path.join(config.AXI_USER_DATA, "agents", agent_name)
     os.makedirs(config_dir, exist_ok=True)
     config_path = os.path.join(config_dir, "agent_config.json")
@@ -458,6 +459,8 @@ def _save_agent_config(
         data["extensions"] = extensions
     if model is not None:
         data["model"] = model
+    if provider is not None:
+        data["provider"] = provider
     try:
         with open(config_path, "w") as f:
             json.dump(data, f, indent=2)
@@ -1057,6 +1060,7 @@ async def _rebuild_session(name: str, *, cwd: str | None = None, session_id: str
     old_excluded = session.extra_excluded_commands if session else []
     old_write_dirs = session.extra_write_dirs if session else []
     old_model = session.model if session else None
+    old_provider = session.provider if session else None
     resolved_cwd = cwd or old_cwd
     prompt = (
         session.system_prompt if session and session.system_prompt else make_spawned_agent_system_prompt(resolved_cwd, agent_name=name)
@@ -1075,6 +1079,7 @@ async def _rebuild_session(name: str, *, cwd: str | None = None, session_id: str
         extra_excluded_commands=old_excluded,
         extra_write_dirs=old_write_dirs,
         model=old_model,
+        provider=old_provider,
     )
     new_session.session_id = session_id
     discord_state(new_session).channel_id = old_channel_id
@@ -1129,6 +1134,7 @@ async def reconstruct_agents_from_channels() -> int:
             agent_cfg = _load_agent_config(agent_name)
             saved_ext = agent_cfg.get("extensions")  # None = use defaults
             saved_model: str | None = agent_cfg.get("model")  # None = use global AXI_MODEL
+            saved_provider: str | None = agent_cfg.get("provider")
             prompt = make_spawned_agent_system_prompt(cwd, extensions=saved_ext, agent_name=agent_name)
             mcp_names = agent_cfg.get("mcp_servers") or None
             extra_mcp = config.load_mcp_servers(mcp_names) if mcp_names else None
@@ -1154,6 +1160,7 @@ async def reconstruct_agents_from_channels() -> int:
                 extra_excluded_commands=ext_excluded,
                 extra_write_dirs=ext_write_dirs,
                 model=saved_model,
+                provider=saved_provider,
             )
             session.session_id = session_id
             ds = discord_state(session)
@@ -1475,13 +1482,14 @@ async def restart_agent(name: str) -> AgentSession:
     agent_cfg = _load_agent_config(name)
     saved_ext = agent_cfg.get("extensions")
     session.model = agent_cfg.get("model")
+    session.provider = agent_cfg.get("provider")
     new_prompt = make_spawned_agent_system_prompt(
         session.cwd, extensions=saved_ext, compact_instructions=session.compact_instructions, agent_name=name
     )
     session.system_prompt = new_prompt
     session.system_prompt_hash = compute_prompt_hash(new_prompt)
     session.session_id = session_id
-    _save_agent_config(name, session.mcp_server_names, extensions=saved_ext, model=session.model)
+    _save_agent_config(name, session.mcp_server_names, extensions=saved_ext, model=session.model, provider=session.provider)
     discord_state(session).system_prompt_posted = False
     log.info("Agent '%s' restarted (session=%s)", name, session_id)
     return session
@@ -1536,6 +1544,7 @@ async def spawn_agent(
     excluded_commands: list[str] | None = None,
     write_dirs: list[str] | None = None,
     model: str | None = None,
+    provider: str | None = None,
 ) -> AgentSession:
     """Spawn a new agent session and run its initial prompt in the background."""
     agent_type = agent_type or config.get_default_agent_type()
@@ -1596,6 +1605,7 @@ async def spawn_agent(
             extra_excluded_commands=merged_excluded,
             extra_write_dirs=merged_write_dirs,
             model=model,
+            provider=provider,
         )
         # 7.5e: no longer reset the hub's AgentLog here. It (set by hub.spawn_agent) now
         # lives undisturbed on the session, while Axi's per-agent debug logger moved to the
@@ -1621,7 +1631,7 @@ async def spawn_agent(
         # Persist agent config for restart reconstruction
         from axi.extensions import DEFAULT_EXTENSIONS
         resolved_ext = list(extensions) if extensions is not None else list(DEFAULT_EXTENSIONS)
-        _save_agent_config(name, mcp_names, extensions=resolved_ext, model=model)
+        _save_agent_config(name, mcp_names, extensions=resolved_ext, model=model, provider=provider)
         channel_id = discord_state(session).channel_id
         if channel_id:
             channel_to_agent[channel_id] = name

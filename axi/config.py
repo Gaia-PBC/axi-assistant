@@ -67,6 +67,7 @@ __all__ = [
     "get_harness",
     "get_model",
     "get_model_runtime",
+    "get_provider",
     "get_resolved_model",
     "intents",
     "load_mcp_servers",
@@ -455,6 +456,13 @@ def parse_provider_model(value: str) -> tuple[str | None, str]:
         if providers.get_provider(prefix) is not None:
             return prefix, rest
     return None, value
+
+
+def get_provider(name: str) -> Any | None:
+    """Look up a provider by name (None if unknown). Re-exported for callers."""
+    from axi import providers
+
+    return providers.get_provider(name)
 
 
 def _provider_env(provider: Any, model: str, explicit: bool) -> dict[str, str]:

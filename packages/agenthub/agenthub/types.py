@@ -94,6 +94,7 @@ class AgentSession:
     extra_excluded_commands: list[str] = field(default_factory=list)
     extra_write_dirs: list[str] = field(default_factory=list)
     model: str | None = None
+    provider: str | None = None
     message_queue: deque[Any] = field(default_factory=deque)
     plan_mode: bool = False
     state: SessionState = field(default_factory=SessionState)

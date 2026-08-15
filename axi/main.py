@@ -811,7 +811,7 @@ async def claude_usage_command(interaction: discord.Interaction, history: int | 
 
 
 @bot.tree.command(name="model", description="Get or set the LLM model for this agent or future spawned agents.")
-@app_commands.describe(name="Model name (for example: opus, sonnet, haiku, gpt-5.4) \u2014 omit to view current")
+@app_commands.describe(name="Model name (for example: opus, sonnet, haiku, gpt-5.4, or provider:model like ollama-local:qwen3-coder:30b) \u2014 omit to view current")
 async def model_command(interaction: discord.Interaction, name: str | None = None) -> None:
     log.info("Slash command /model name=%s from %s", name, interaction.user)
     # Resolve target from the channel (master channel -> None = global default).
@@ -1073,7 +1073,8 @@ async def kill_agent(interaction: discord.Interaction, agent_name: str | None = 
 
 @bot.tree.command(name="spawn", description="Spawn a new agent session with its own Discord channel.")
 @app_commands.describe(
-    model="Optional model override (for example: opus, sonnet, haiku, gpt-5.4)"
+    model="Optional model override (for example: opus, sonnet, haiku, gpt-5.4)",
+    provider="Optional provider name (e.g. ollama-local, vllm)",
 )
 async def spawn_agent_cmd(
     interaction: discord.Interaction,
@@ -1082,6 +1083,7 @@ async def spawn_agent_cmd(
     cwd: str | None = None,
     resume: str | None = None,
     model: str | None = None,
+    provider: str | None = None,
 ) -> None:
     log.info("Slash command /spawn %s from %s", name, interaction.user)
     if interaction.user.id not in config.ALLOWED_USER_IDS:
@@ -1095,7 +1097,7 @@ async def spawn_agent_cmd(
             ephemeral=True,
         )
         return
-    valid = commands_api.validate_spawn(agent_name, cwd, model)
+    valid = commands_api.validate_spawn(agent_name, cwd, model, provider=provider)
     if not valid.ok:
         await audited_interaction_response_send(interaction, valid.message, ephemeral=True)
         return
@@ -1105,7 +1107,7 @@ async def spawn_agent_cmd(
 
     async def _do_spawn():
         try:
-            await commands_api.spawn(agent_name, prompt, cwd=cwd, resume=resume, model=model)
+            await commands_api.spawn(agent_name, prompt, cwd=cwd, resume=resume, model=model, provider=provider)
         except Exception:
             channels.bot_creating_channels.discard(channels.namespaced_channel_name(agent_name))
             log.exception("Error in background spawn of agent '%s'", agent_name)

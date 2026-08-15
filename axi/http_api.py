@@ -119,6 +119,7 @@ class SpawnRequest(BaseModel):
     cwd: str | None = None
     resume: str | None = None
     model: str | None = None
+    provider: str | None = None
 
 
 @app.post("/v1/agents/{name}/stop")
@@ -144,7 +145,7 @@ async def api_restart_agent(name: str, _: None = Depends(require_bearer_token)) 
 @app.post("/v1/spawn")
 async def api_spawn(req: SpawnRequest, _: None = Depends(require_bearer_token)) -> dict:
     return _result_json(
-        await commands_api.spawn(req.name, req.prompt, cwd=req.cwd, resume=req.resume, model=req.model)
+        await commands_api.spawn(req.name, req.prompt, cwd=req.cwd, resume=req.resume, model=req.model, provider=req.provider)
     )
 
 
@@ -161,6 +162,7 @@ class ResetRequest(BaseModel):
 class ModelRequest(BaseModel):
     agent: str | None = None
     model: str | None = None
+    provider: str | None = None
 
 
 class ModeRequest(BaseModel):
@@ -174,7 +176,7 @@ async def api_reset(name: str, req: ResetRequest | None = None, _: None = Depend
 
 @app.post("/v1/model")
 async def api_model(req: ModelRequest, _: None = Depends(require_bearer_token)) -> dict:
-    return _result_json(await commands_api.set_model(req.agent, req.model))
+    return _result_json(await commands_api.set_model(req.agent, req.model, provider=req.provider))
 
 
 @app.post("/v1/agents/{name}/verbose")

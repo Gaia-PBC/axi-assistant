@@ -122,6 +122,10 @@ _tracer = trace.get_tracer(__name__)
                 "type": "string",
                 "description": "Optional model override for this agent. Leave unset to use the default/global model. Only set this when the user explicitly requests a specific model.",
             },
+            "provider": {
+                "type": "string",
+                "description": "Optional provider name (from providers.json, e.g. 'ollama-local', 'vllm'). Leave unset to auto-route the model.",
+            },
         },
         "required": ["name", "prompt"],
     },
@@ -148,6 +152,9 @@ async def axi_spawn_agent(args: McpArgs) -> McpResult:
         error = config.validate_model(agent_model)
         if error:
             return {"content": [{"type": "text", "text": f"Error: {error}"}], "is_error": True}
+    agent_provider: str | None = args.get("provider")
+    if agent_provider is not None and config.get_provider(agent_provider) is None:
+        return {"content": [{"type": "text", "text": f"Error: unknown provider '{agent_provider}'"}], "is_error": True}
 
     # Respawn detection: if a channel already exists for this agent, it's a
     # respawn (kill + re-create).  Default cwd to the previous session's cwd
@@ -267,6 +274,7 @@ async def axi_spawn_agent(args: McpArgs) -> McpResult:
                 excluded_commands=excluded_commands,
                 write_dirs=write_dirs,
                 model=agent_model,
+                provider=agent_provider,
             )
         except Exception:
             channels.bot_creating_channels.discard(agents.namespaced_channel_name(agent_name))
