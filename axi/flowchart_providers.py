@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 from typing import Any
 
 from axi import config
@@ -53,8 +54,18 @@ def _transform_block(block: dict[str, Any]) -> dict[str, Any] | None:
 def transform_commands(search_paths: list[str]) -> str:
     """Rewrite provider spawn blocks into env maps; return shadow dir path
     ('' if nothing was transformed)."""
+    # Shadows must mirror current sources: a provider block removed from the
+    # search paths would otherwise leave a stale shadow copy that keeps
+    # serving the old env (shadow is prepended, first-match-wins).
+    shutil.rmtree(SHADOW_DIR, ignore_errors=True)
     written: list[str] = []
+    seen_basenames: set[str] = set()
     for path in _iter_command_files(search_paths):
+        basename = os.path.basename(path)
+        if basename in seen_basenames:
+            # First-match-wins, mirroring the engine's path-order resolution:
+            # a basename in an earlier search path shadows later ones.
+            continue
         try:
             with open(path) as f:
                 data = json.load(f)
@@ -73,10 +84,11 @@ def transform_commands(search_paths: list[str]) -> str:
         if not changed:
             continue
         os.makedirs(SHADOW_DIR, exist_ok=True)
-        out_path = os.path.join(SHADOW_DIR, os.path.basename(path))
+        out_path = os.path.join(SHADOW_DIR, basename)
         with open(out_path, "w") as f:
             json.dump(data, f, indent=2)
         written.append(out_path)
+        seen_basenames.add(basename)
     if not written:
         return ""
     return SHADOW_DIR
