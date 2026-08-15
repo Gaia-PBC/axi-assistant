@@ -47,6 +47,55 @@ Supported forms:
 The legacy value `codex` is accepted as an alias for `gpt-5.4`, but new configs
 should set the actual model name.
 
+## Providers
+
+Axi routes models to named providers. The built-in `anthropic` provider is
+always available (native API, OAuth). Additional providers live in
+`user-data/providers.json`:
+
+```json
+{
+  "providers": [
+    { "name": "ollama-local", "type": "ollama", "base_url": "http://localhost:11434" },
+    { "name": "vllm", "type": "vllm", "base_url": "http://localhost:8199", "api_key": "vllm-local-no-auth" }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | Unique id used as `provider:model` (e.g. `ollama-local:qwen3-coder:30b`) |
+| `type` | `anthropic` \| `ollama` \| `vllm` |
+| `base_url` | Endpoint. Required for `ollama`/`vllm`; optional for `anthropic` (omitted = real Anthropic API) |
+| `api_key` | Optional. Ollama uses `ANTHROPIC_AUTH_TOKEN` (Bearer); others use `ANTHROPIC_API_KEY` |
+| `models` | Optional seed list for gateways with no model-list endpoint |
+| `context_window` | Optional override when discovery can't determine it |
+
+The endpoint must accept Claude Code's request shape. On this box, vLLM's
+raw `:8000` rejects `role:"system"` messages (vLLM < 0.24.0); point the
+entry at the shim `:8199` or upgrade vLLM to >= 0.24.0.
+
+### Routing
+
+Callers specify a model; the provider is inferred:
+
+1. `gpt-*`/`o1`/`o3`/`o4`/`o5` → ChatGPT proxy
+2. Claude aliases/ids → native anthropic
+3. Model on exactly one other provider → that provider
+4. Model on multiple providers → error; use `provider:model`
+5. No match → native anthropic (free-form ids keep working)
+
+An explicit provider sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, auth,
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` (from discovery), and maps every Claude
+tier to the model. Use `/model ollama-local:qwen3-coder:30b` or the
+`provider` argument on `/spawn` / `axi_spawn_agent`.
+
+### Discovery
+
+Any agent can call the `axi_list_models` tool to list models per provider
+with context windows. Anthropic models are hardcoded; ollama uses
+`/api/tags` + `/api/show`; vLLM uses `/v1/models`.
+
 ## FlowCoder Wrapper
 
 When `AXI_HARNESS=flowcoder`, Axi can automatically route normal messages
