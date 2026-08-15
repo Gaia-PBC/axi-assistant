@@ -45,6 +45,7 @@ __all__ = [
     "LOG_DIR",
     "MASTER_AGENT_NAME",
     "MASTER_SESSION_PATH",
+    "MANAGED_ENV_VARS",
     "MAX_AWAKE_AGENTS",
     "MCP_SERVERS_PATH",
     "NAMESPACE_OFF",
@@ -71,6 +72,8 @@ __all__ = [
     "load_mcp_servers",
     "log",
     "normalize_model",
+    "parse_provider_model",
+    "resolve_runtime",
     "set_model",
     "uses_chatgpt_proxy",
     "validate_model",
@@ -410,12 +413,101 @@ def _chatgpt_proxy_env(model: str) -> dict[str, str]:
     }
 
 
+# Env vars Axi manages per provider. Stripped from agent env before resolution
+# so one provider's leftovers never leak into a session routed elsewhere.
+MANAGED_ENV_VARS: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
+
+_TIER_MAPPING_VARS = (
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
+
+
+def parse_provider_model(value: str) -> tuple[str | None, str]:
+    """Split ``provider:model`` at the first colon, only when the prefix is a
+    known provider name. Ollama model ids contain colons (``qwen3-coder:30b``),
+    so a bare model string is never split."""
+    from axi import providers
+
+    if ":" in value:
+        prefix, _, rest = value.partition(":")
+        if providers.get_provider(prefix) is not None:
+            return prefix, rest
+    return None, value
+
+
+def _provider_env(provider: Any, model: str, explicit: bool) -> dict[str, str]:
+    from axi import providers
+
+    env: dict[str, str] = {}
+    if provider.type == "anthropic" and provider.base_url is None:
+        return env  # native API, OAuth
+    env["ANTHROPIC_BASE_URL"] = provider.base_url or ""
+    env["ANTHROPIC_MODEL"] = model
+    if provider.api_key:
+        key = "ANTHROPIC_AUTH_TOKEN" if provider.type == "ollama" else "ANTHROPIC_API_KEY"
+        env[key] = provider.api_key
+    ctx = provider.context_window or providers.get_model_context_window(provider.name, model)
+    if ctx:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(ctx)
+    if explicit and provider.base_url is not None:
+        for var in _TIER_MAPPING_VARS:
+            env[var] = model
+    return env
+
+
+def resolve_runtime(model: str, provider: str | None = None) -> tuple[str | None, dict[str, str], str]:
+    """Resolve a model (and optional provider) into Claude model args and env.
+
+    Returns ``(claude_model_arg, env, provider_name)``. Raises ValueError for
+    an unknown explicit provider or an ambiguous auto-route (model present on
+    multiple non-anthropic providers).
+    """
+    from axi import providers
+
+    resolved = _normalize_model_selector(model)
+    if provider is not None:
+        entry = providers.get_provider(provider)
+        if entry is None:
+            raise ValueError(f"Unknown provider '{provider}'")
+        if entry.type == "anthropic" and entry.base_url is None:
+            return resolved, {}, "anthropic"  # native API, OAuth
+        return None, _provider_env(entry, resolved, explicit=True), provider
+    if uses_chatgpt_proxy(resolved):
+        return None, _chatgpt_proxy_env(resolved), "chatgpt-proxy"
+    if _normalize_model_selector(resolved) in VALID_MODELS or resolved in {m["id"] for m in providers.ANTHROPIC_MODELS}:
+        return resolved, {}, "anthropic"
+    matches = providers.find_providers_for_model(resolved)
+    if len(matches) == 1:
+        entry = providers.get_provider(matches[0])
+        assert entry is not None
+        return None, _provider_env(entry, resolved, explicit=False), matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            f"Model '{resolved}' is available on multiple providers: {', '.join(matches)}. "
+            f"Specify one with provider:model."
+        )
+    return resolved, {}, "anthropic"
+
+
 def get_model_runtime(model: str) -> tuple[str | None, dict[str, str]]:
     """Resolve an Axi model selector into Claude model args and env vars."""
-    resolved = _normalize_model_selector(model)
-    if uses_chatgpt_proxy(resolved):
-        return None, _chatgpt_proxy_env(resolved)
-    return resolved, {}
+    model_arg, env, _ = resolve_runtime(model)
+    return model_arg, env
 
 
 def get_resolved_model(model: str | None = None) -> tuple[str, str | None, dict[str, str]]:

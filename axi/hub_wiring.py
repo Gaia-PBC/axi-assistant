@@ -44,7 +44,14 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
     from axi.agents import make_stderr_callback
 
     selected_model = session.model or config.get_model()
-    resolved_model, resolved_env = config.get_model_runtime(selected_model)
+    try:
+        resolved_model, resolved_env, _ = config.resolve_runtime(selected_model, provider=getattr(session, "provider", None))
+    except ValueError:
+        log.warning(
+            "Provider resolution failed for agent '%s' (model=%s provider=%s); falling back to auto-routing",
+            session.name, selected_model, getattr(session, "provider", None),
+        )
+        resolved_model, resolved_env, _ = config.resolve_runtime(selected_model)
     minflow_data_dir = os.environ.get("MINFLOW_DATA_DIR") or os.path.expanduser("~/.config/minflow")
     base_env = {
         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "100",
@@ -52,7 +59,7 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
         "MINFLOW_DATA_DIR": minflow_data_dir,
         "PATH": os.path.join(config.BOT_DIR, "bin") + ":" + os.environ.get("PATH", ""),
     }
-    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
+    for key in config.MANAGED_ENV_VARS:
         base_env.pop(key, None)
     base_env.update(resolved_env)
 
