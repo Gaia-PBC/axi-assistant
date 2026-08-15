@@ -312,6 +312,40 @@ async def axi_spawn_agent(args: McpArgs) -> McpResult:
 
 
 @tool(
+    "axi_list_models",
+    "List available models per provider (anthropic, ollama, vllm). Use this to discover exact model ids and context windows before spawning an agent or selecting a model. Optional 'provider' argument filters to one provider.",
+    {
+        "type": "object",
+        "properties": {
+            "provider": {
+                "type": "string",
+                "description": "Optional provider name to filter (e.g. 'ollama-local', 'vllm'). Omit to list all providers.",
+            },
+        },
+    },
+)
+async def axi_list_models(args: McpArgs) -> McpResult:
+    from axi import providers
+
+    provider = args.get("provider") or None
+    listing = providers.list_models(provider)
+    lines: list[str] = []
+    for name, models in listing.items():
+        if isinstance(models, dict) and "error" in models:
+            lines.append(f"**{name}**: error — {models['error']}")
+            continue
+        lines.append(f"**{name}**:")
+        for m in models:
+            ctx = m.get("context_window")
+            ctx_s = f" (context {ctx})" if ctx else ""
+            lines.append(f"- `{m['id']}`{ctx_s}")
+    return {
+        "content": [{"type": "text", "text": "\n".join(lines) or "No providers configured."}],
+        "is_error": False,
+    }
+
+
+@tool(
     "axi_kill_agent",
     "Kill an Axi agent session and move its Discord channel to the Killed category. "
     "Returns the session ID (for resuming later) or an error message.",
@@ -1009,6 +1043,7 @@ utils_mcp_server = create_sdk_mcp_server(
         post_message,
         search_messages,
         wait_for_message,
+        axi_list_models,
     ],
 )
 

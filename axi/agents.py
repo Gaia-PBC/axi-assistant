@@ -109,8 +109,6 @@ from axi.rate_limits import (
 )
 from axi.schedule_tools import make_schedule_mcp_server
 from axi.shutdown import ShutdownCoordinator, exit_for_restart, kill_supervisor
-from axi.tools import axi_mcp_server as _axi_mcp_server
-from axi.tools import discord_mcp_server as _discord_mcp_server
 from axi.tracing import shutdown_tracing
 from procmux import ensure_running as ensure_bridge
 
@@ -424,6 +422,9 @@ def _build_mcp_servers(
     extra_mcp_servers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the standard MCP server dict for an agent."""
+    from axi.tools import axi_mcp_server as _axi_mcp_server
+    from axi.tools import discord_mcp_server as _discord_mcp_server
+
     servers: dict[str, Any] = {}
     if _utils_mcp_server is not None:
         servers["utils"] = _utils_mcp_server
