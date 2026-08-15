@@ -243,6 +243,28 @@ class TestResolveRuntime:
         assert env["ANTHROPIC_MODEL"] == "gpt-5.4"
         assert provider == "chatgpt-proxy"
 
+    def test_gpt_proxy_env_uses_import_snapshot(self) -> None:
+        # The hermetic strip in hub_wiring._make_agent_options pops the managed
+        # vars from os.environ at runtime; _chatgpt_proxy_env must keep honoring
+        # the ANTHROPIC_* overrides from the import-time snapshot. Patch the
+        # snapshot directly (it is captured at import) and leave os.environ
+        # without any AXI_CHATGPT_PROXY_* or ANTHROPIC_* values so the token
+        # file would be the only fallback — proving the snapshot is used.
+        with (
+            patch.dict("axi.config._ENV_SNAPSHOT", {
+                "ANTHROPIC_API_KEY": "snap-key",
+                "ANTHROPIC_BASE_URL": "http://snap:1",
+            }),
+            patch.dict("os.environ", {}, clear=True),
+            patch("axi.providers.load_providers", return_value=self._reg()),
+        ):
+            model_arg, env, provider = config.resolve_runtime("gpt-5.4")
+        assert model_arg is None
+        assert env["ANTHROPIC_API_KEY"] == "snap-key"
+        assert env["ANTHROPIC_BASE_URL"] == "http://snap:1"
+        assert env["ANTHROPIC_MODEL"] == "gpt-5.4"
+        assert provider == "chatgpt-proxy"
+
     def test_explicit_ollama_provider(self) -> None:
         reg = self._reg(providers.Provider(
             name="ollama-local", type="ollama", base_url="http://localhost:11434",

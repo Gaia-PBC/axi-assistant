@@ -397,13 +397,15 @@ def uses_chatgpt_proxy(model: str) -> bool:
 def _chatgpt_proxy_env(model: str) -> dict[str, str]:
     proxy_base_url = (
         os.environ.get("AXI_CHATGPT_PROXY_BASE_URL")
-        or os.environ.get("ANTHROPIC_BASE_URL")
+        or _ENV_SNAPSHOT.get("ANTHROPIC_BASE_URL")
         or CHATGPT_PROXY_DEFAULT_ENV["ANTHROPIC_BASE_URL"]
     )
     # Override chain: AXI_CHATGPT_PROXY_API_KEY > ANTHROPIC_API_KEY > token file.
     # The token file is the production path; the env overrides exist so tests
-    # and ad-hoc debugging can bypass the file.
-    proxy_api_key = os.environ.get("AXI_CHATGPT_PROXY_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    # and ad-hoc debugging can bypass the file. ANTHROPIC_* reads come from the
+    # import-time snapshot (see _ENV_SNAPSHOT) so the hermetic strip in
+    # hub_wiring._make_agent_options cannot silently break this chain.
+    proxy_api_key = os.environ.get("AXI_CHATGPT_PROXY_API_KEY") or _ENV_SNAPSHOT.get("ANTHROPIC_API_KEY")
     if not proxy_api_key:
         proxy_api_key = _load_proxy_token()
     return {
@@ -427,6 +429,11 @@ MANAGED_ENV_VARS: tuple[str, ...] = (
     "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
     "CLAUDE_CODE_SUBAGENT_MODEL",
 )
+
+# Snapshot of the managed vars taken at import time (after load_dotenv), so the
+# documented override chain in _chatgpt_proxy_env keeps working even after
+# hub_wiring's hermetic strip pops these vars from os.environ at runtime.
+_ENV_SNAPSHOT: dict[str, str | None] = {k: os.environ.get(k) for k in MANAGED_ENV_VARS}
 
 _TIER_MAPPING_VARS = (
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
