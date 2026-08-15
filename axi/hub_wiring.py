@@ -44,12 +44,14 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
     from axi.agents import make_stderr_callback
 
     selected_model = session.model or config.get_model()
+    session_provider = getattr(session, "provider", None)
+    provider = session_provider or config.get_provider_default()
     try:
-        resolved_model, resolved_env, _ = config.resolve_runtime(selected_model, provider=getattr(session, "provider", None))
+        resolved_model, resolved_env, _ = config.resolve_runtime(selected_model, provider=provider)
     except ValueError:
         log.warning(
             "Provider resolution failed for agent '%s' (model=%s provider=%s); falling back to auto-routing",
-            session.name, selected_model, getattr(session, "provider", None),
+            session.name, selected_model, provider,
         )
         resolved_model, resolved_env, _ = config.resolve_runtime(selected_model)
     # The SDK merges the bot process's full os.environ into the child env

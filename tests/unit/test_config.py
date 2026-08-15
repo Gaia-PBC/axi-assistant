@@ -14,6 +14,7 @@ from axi.config import (
     get_harness,
     get_model,
     get_model_runtime,
+    get_provider_default,
     get_resolved_model,
     set_model,
     uses_chatgpt_proxy,
@@ -217,6 +218,30 @@ class TestSetModel:
             with patch("axi.config._load_config", return_value={}), patch("axi.config._save_config"):
                 result = set_model(model)
                 assert result == "", f"Model '{model}' should be valid"
+
+    def test_set_model_with_provider_persists_default_provider(self) -> None:
+        cfg: dict = {}
+        with (
+            patch("axi.config._load_config", side_effect=lambda: cfg),
+            patch("axi.config._save_config"),
+        ):
+            result = set_model("m1", provider="ollama-local")
+            assert result == ""
+            assert cfg["model"] == "m1"
+            assert cfg["provider"] == "ollama-local"
+            assert get_provider_default() == "ollama-local"
+
+    def test_set_model_without_provider_keeps_previous_provider(self) -> None:
+        cfg: dict = {"provider": "ollama-local"}
+        with (
+            patch("axi.config._load_config", side_effect=lambda: cfg),
+            patch("axi.config._save_config"),
+        ):
+            result = set_model("m2")
+            assert result == ""
+            assert cfg["model"] == "m2"
+            assert cfg["provider"] == "ollama-local"
+            assert get_provider_default() == "ollama-local"
 
 
 class TestResolveRuntime:

@@ -14,7 +14,7 @@ class TestSetModelParsing:
         ):
             result = await commands_api.set_model(None, "opus")
         assert result.ok
-        sm.assert_called_once_with("opus")
+        sm.assert_called_once_with("opus", provider=None)
 
     async def test_provider_model_parses(self) -> None:
         with (
@@ -35,6 +35,7 @@ class TestValidateSpawn:
             patch("axi.config.normalize_model", side_effect=lambda m: m),
             patch("axi.config.validate_model", return_value=""),
             patch("axi.config.ALLOWED_CWDS", ["/tmp"]),
+            patch("axi.config.get_provider", return_value=object()),
         ):
             result = commands_api.validate_spawn("a1", "/tmp/x", "m1", provider="ollama-local")
         assert result.ok

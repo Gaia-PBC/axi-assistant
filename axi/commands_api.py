@@ -652,7 +652,7 @@ async def set_model(agent: str | None, model: str | None, provider: str | None =
             message=f"*System:* Agent **{agent}** switched to **{display}** and restarted with a fresh session.",
             data={"agent": agent, "model": normalized, "provider": provider},
         )
-    error = config.set_model(normalized)
+    error = config.set_model(normalized, provider=provider)
     if error:
         return CommandResult(message=f"*System:* {error}", ok=False, ephemeral=True)
     display = f"{provider}:{normalized}" if provider else normalized

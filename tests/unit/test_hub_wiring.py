@@ -63,3 +63,20 @@ class TestMakeAgentOptionsProviderFallback:
         # without the provider (auto-route)
         assert mock_resolve.call_count == 2
         assert mock_resolve.call_args_list[1].kwargs.get("provider") is None
+
+
+class TestMakeAgentOptionsDefaultProvider:
+    def test_global_default_provider_used_when_session_provider_unset(self) -> None:
+        session = AgentSession(name="test", cwd="/tmp")
+
+        with (
+            patch("axi.agents.make_stderr_callback", return_value=None),
+            patch("axi.hub_wiring.config.get_model", return_value="sonnet"),
+            patch("axi.hub_wiring.config.get_provider_default", return_value="ollama-local"),
+            patch("axi.hub_wiring.config.resolve_runtime", return_value=("sonnet", {}, "ollama-local")) as mock_resolve,
+        ):
+            options = _make_agent_options(session, resume_id=None)
+
+        assert options.model == "sonnet"
+        # session.provider is None, so the global default provider is used
+        assert mock_resolve.call_args_list[0].kwargs.get("provider") == "ollama-local"

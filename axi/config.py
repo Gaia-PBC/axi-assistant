@@ -68,6 +68,7 @@ __all__ = [
     "get_model",
     "get_model_runtime",
     "get_provider",
+    "get_provider_default",
     "get_resolved_model",
     "intents",
     "load_mcp_servers",
@@ -567,8 +568,13 @@ def get_model() -> str:
     return _normalize_model_selector(str(config.get("model", "opus")))
 
 
-def set_model(model: str) -> str:
-    """Set the model preference. Returns validation error string or empty string on success."""
+def set_model(model: str, provider: str | None = None) -> str:
+    """Set the model preference. Returns validation error string or empty string on success.
+
+    When ``provider`` is not None it is persisted as the global default provider;
+    when None, any existing default provider is left untouched (a bare-model set
+    keeps the previous default provider).
+    """
     normalized = _normalize_model_selector(model)
     error = validate_model(normalized)
     if error:
@@ -576,8 +582,20 @@ def set_model(model: str) -> str:
     with _config_lock:
         config = _load_config()
         config["model"] = normalized
+        if provider is not None:
+            config["provider"] = provider
         _save_config(config)
     return ""
+
+
+def get_provider_default() -> str | None:
+    """Get the global default provider from the config file (None if unset).
+
+    Config-file only: there is no env override for the provider default.
+    """
+    with _config_lock:
+        config = _load_config()
+    return config.get("provider")
 
 
 # ---------------------------------------------------------------------------
