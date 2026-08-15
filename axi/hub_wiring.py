@@ -52,6 +52,14 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
             session.name, selected_model, getattr(session, "provider", None),
         )
         resolved_model, resolved_env, _ = config.resolve_runtime(selected_model)
+    # The SDK merges the bot process's full os.environ into the child env
+    # ({**os.environ, **options.env} in claude_agent_sdk subprocess_cli.py), so
+    # popping from base_env alone never removes stale ANTHROPIC_*/CLAUDE_CODE_*
+    # values that reached the process env (e.g. via .env). Pop them from
+    # os.environ itself; the resolved env for THIS session is re-added via
+    # options.env below, so each session still gets its own provider env.
+    for key in config.MANAGED_ENV_VARS:
+        os.environ.pop(key, None)
     minflow_data_dir = os.environ.get("MINFLOW_DATA_DIR") or os.path.expanduser("~/.config/minflow")
     base_env = {
         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "100",

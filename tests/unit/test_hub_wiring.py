@@ -37,3 +37,29 @@ class TestMakeAgentOptionsModelSelection:
 
         assert options.model == "sonnet"
         assert "ANTHROPIC_MODEL" not in options.env
+
+
+class TestMakeAgentOptionsProviderFallback:
+    def test_value_error_falls_back_to_auto_route(self) -> None:
+        session = AgentSession(name="test", cwd="/tmp", model="gpt-5.4")
+
+        calls = {"n": 0}
+
+        def _resolve(model, provider=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError(f"Unknown provider '{provider}'")
+            return "sonnet", {"ANTHROPIC_MODEL": "sonnet"}, "anthropic"
+
+        with (
+            patch("axi.agents.make_stderr_callback", return_value=None),
+            patch("axi.hub_wiring.config.resolve_runtime", side_effect=_resolve) as mock_resolve,
+        ):
+            options = _make_agent_options(session, resume_id=None)
+
+        assert options.model == "sonnet"
+        assert options.env["ANTHROPIC_MODEL"] == "sonnet"
+        # explicit-provider attempt failed, then the fallback re-resolved
+        # without the provider (auto-route)
+        assert mock_resolve.call_count == 2
+        assert mock_resolve.call_args_list[1].kwargs.get("provider") is None
