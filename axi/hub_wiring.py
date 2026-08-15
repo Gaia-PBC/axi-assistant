@@ -45,7 +45,9 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
 
     selected_model = session.model or config.get_model()
     session_provider = getattr(session, "provider", None)
-    provider = session_provider or config.get_provider_default()
+    provider = session_provider
+    if provider is None and session.model is None:
+        provider = config.get_provider_default()
     try:
         resolved_model, resolved_env, _ = config.resolve_runtime(selected_model, provider=provider)
     except ValueError:
