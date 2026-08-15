@@ -87,6 +87,23 @@ class TestDiscovery:
         get.assert_called_once_with("http://localhost:11434/api/tags")
         post.assert_called_once_with("http://localhost:11434/api/show", {"model": "qwen3-coder:30b"})
 
+    def test_ollama_family_prefix_context_length_wins(self) -> None:
+        # Multi-arch model_info: the key matching details.family must win
+        # over the first <arch>.context_length key (spec §2).
+        tags = {"models": [{"name": "qwen3-coder:30b", "details": {"family": "qwen3"}}]}
+        show = {"model_info": {
+            "gemma4.context_length": 131072,
+            "qwen3.context_length": 32768,
+        }}
+        with (
+            patch("axi.providers._http_get", return_value=tags),
+            patch("axi.providers._http_post", return_value=show),
+        ):
+            models = providers.list_models("ollama-local")
+        assert models["ollama-local"] == [
+            {"id": "qwen3-coder:30b", "context_window": 32768, "reasoning": False}
+        ]
+
     def test_ollama_show_failure_degrades_to_null(self) -> None:
         tags = {"models": [{"name": "m1", "details": {"family": "f"}}]}
         with (

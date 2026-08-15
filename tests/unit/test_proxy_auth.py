@@ -369,7 +369,10 @@ def test_axi_config_reads_token_from_env_var_path(
 
     monkeypatch.setenv("AXI_PROXY_TOKEN_FILE", str(token_file))
     monkeypatch.delenv("AXI_CHATGPT_PROXY_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # _chatgpt_proxy_env reads ANTHROPIC_API_KEY from the import-time
+    # _ENV_SNAPSHOT, which delenv cannot affect — clear it so the token
+    # file is the only fallback.
+    monkeypatch.setitem(config._ENV_SNAPSHOT, "ANTHROPIC_API_KEY", None)
 
     env = config._chatgpt_proxy_env("gpt-5.4")
     assert env["ANTHROPIC_API_KEY"] == VALID_TOKEN
@@ -386,6 +389,9 @@ def test_axi_config_env_override_wins_over_file(
 
     monkeypatch.setenv("AXI_PROXY_TOKEN_FILE", str(token_file))
     monkeypatch.setenv("AXI_CHATGPT_PROXY_API_KEY", "explicit-override")
+    # Pin the snapshot so an ambient ANTHROPIC_API_KEY at import cannot
+    # shadow the explicit override chain being tested.
+    monkeypatch.setitem(config._ENV_SNAPSHOT, "ANTHROPIC_API_KEY", None)
 
     env = config._chatgpt_proxy_env("gpt-5.4")
     assert env["ANTHROPIC_API_KEY"] == "explicit-override"
@@ -399,7 +405,7 @@ def test_axi_config_raises_when_token_file_missing(
     nonexistent = tmp_path / "nope"
     monkeypatch.setenv("AXI_PROXY_TOKEN_FILE", str(nonexistent))
     monkeypatch.delenv("AXI_CHATGPT_PROXY_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setitem(config._ENV_SNAPSHOT, "ANTHROPIC_API_KEY", None)
 
     with pytest.raises(RuntimeError) as exc_info:
         config._chatgpt_proxy_env("gpt-5.4")

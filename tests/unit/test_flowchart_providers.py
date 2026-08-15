@@ -22,20 +22,34 @@ class TestTransform:
                       "model": "qwen3-coder:30b", "provider": "ollama-local"},
         })
         monkeypatch.setattr(flowchart_providers, "SHADOW_DIR", str(tmp_path / "shadow"))
-        with (
-            monkeypatch.context() as m,
-        ):
-            with patch("axi.flowchart_providers.resolve_runtime", return_value=(None, {
-                "ANTHROPIC_BASE_URL": "http://localhost:11434",
-                "ANTHROPIC_MODEL": "qwen3-coder:30b",
-            }, "ollama-local")):
-                shadow = flowchart_providers.transform_commands([str(src)])
+        with patch("axi.flowchart_providers.resolve_runtime", return_value=(None, {
+            "ANTHROPIC_BASE_URL": "http://localhost:11434",
+            "ANTHROPIC_MODEL": "qwen3-coder:30b",
+        }, "ollama-local")):
+            shadow = flowchart_providers.transform_commands([str(src)])
         assert shadow == str(tmp_path / "shadow")
         out = json.loads((tmp_path / "shadow" / "soul-lite-do.json").read_text())
         block = out["flowchart"]["blocks"]["start"]
         assert "provider" not in block
         assert block["env"]["ANTHROPIC_BASE_URL"] == "http://localhost:11434"
         assert block["model"] == "qwen3-coder:30b"
+
+    def test_valid_json_wrong_shape_skipped_without_crash(self, tmp_path, monkeypatch) -> None:
+        # A command file that is valid JSON but not the expected command
+        # shape (top-level array, 'flowchart' not an object, 'blocks' not an
+        # object) must be skipped, not crash the transform — it runs on
+        # every engine launch / /flowcharts listing.
+        src = tmp_path / "src"
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "array.json").write_text("[]")
+        (src / "no-flowchart.json").write_text(json.dumps({"name": "x"}))
+        (src / "blocks-list.json").write_text(json.dumps({
+            "name": "x", "flowchart": {"blocks": []},
+        }))
+        monkeypatch.setattr(flowchart_providers, "SHADOW_DIR", str(tmp_path / "shadow"))
+        shadow = flowchart_providers.transform_commands([str(src)])
+        assert shadow == ""
+        assert not (tmp_path / "shadow").exists()
 
     def test_no_provider_blocks_writes_nothing(self, tmp_path, monkeypatch) -> None:
         src = tmp_path / "src"

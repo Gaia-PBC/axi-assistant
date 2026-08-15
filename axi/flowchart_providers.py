@@ -79,7 +79,20 @@ def transform_commands(search_paths: list[str]) -> str:
         # serve the later path's transformed version instead of the first
         # path's original).
         seen_basenames.add(basename)
-        blocks = data.get("flowchart", {}).get("blocks", {})
+        # Guard the expected command shape: a file that is valid JSON but not
+        # a command object (e.g. a bare array) must be skipped, not crash the
+        # transform (which runs on every engine launch / /flowcharts listing).
+        if not isinstance(data, dict):
+            log.warning("Skipping command %s: not a JSON object", path)
+            continue
+        flowchart = data.get("flowchart") or {}
+        if not isinstance(flowchart, dict):
+            log.warning("Skipping command %s: 'flowchart' is not an object", path)
+            continue
+        blocks = flowchart.get("blocks") or {}
+        if not isinstance(blocks, dict):
+            log.warning("Skipping command %s: 'blocks' is not an object", path)
+            continue
         changed = False
         for key, block in blocks.items():
             if not isinstance(block, dict):

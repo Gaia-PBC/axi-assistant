@@ -119,17 +119,25 @@ _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 def _fetch_ollama(base_url: str) -> list[dict[str, Any]]:
     tags = _http_get(f"{base_url}/api/tags")
-    names = [m["name"] for m in tags.get("models", [])]
+    models = tags.get("models", [])
+    names = [m["name"] for m in models]
+    families = {m["name"]: (m.get("details") or {}).get("family") for m in models}
 
     def _show(name: str) -> dict[str, Any]:
         try:
             info = _http_post(f"{base_url}/api/show", {"model": name})
             model_info = info.get("model_info", {})
             ctx = None
-            for key, value in model_info.items():
-                if key.endswith(".context_length") and isinstance(value, int):
-                    ctx = value
-                    break
+            family = families.get(name)
+            if family:
+                ctx = model_info.get(f"{family}.context_length")
+            if not isinstance(ctx, int):
+                # Fall back to the first <arch>.context_length key.
+                ctx = None
+                for key, value in model_info.items():
+                    if key.endswith(".context_length") and isinstance(value, int):
+                        ctx = value
+                        break
             return {"id": name, "context_window": ctx, "reasoning": False}
         except Exception:
             log.warning("ollama /api/show failed for '%s'", name, exc_info=True)
