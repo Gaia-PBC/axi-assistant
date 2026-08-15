@@ -14,6 +14,22 @@ def _clear_discovery_cache():
     providers._cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_registry(tmp_path, monkeypatch):
+    """Point PROVIDERS_PATH at a tmp providers.json with the discovery providers.
+
+    Discovery/cache tests call list_models("ollama-local")/list_models("vllm")
+    and must not depend on an ambient providers.json at the runtime
+    AXI_USER_DATA path.
+    """
+    p = tmp_path / "providers.json"
+    p.write_text(json.dumps({"providers": [
+        {"name": "ollama-local", "type": "ollama", "base_url": "http://localhost:11434"},
+        {"name": "vllm", "type": "vllm", "base_url": "http://localhost:8199"},
+    ]}))
+    monkeypatch.setattr(providers, "PROVIDERS_PATH", str(p))
+
+
 class TestRegistry:
     def test_missing_file_yields_only_anthropic(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(providers, "PROVIDERS_PATH", str(tmp_path / "nope.json"))
@@ -41,6 +57,14 @@ class TestRegistry:
         ]}))
         monkeypatch.setattr(providers, "PROVIDERS_PATH", str(p))
         assert "no-url" not in providers.load_providers()
+
+    def test_non_object_file_yields_only_anthropic(self, tmp_path, monkeypatch) -> None:
+        p = tmp_path / "providers.json"
+        p.write_text(json.dumps([]))
+        monkeypatch.setattr(providers, "PROVIDERS_PATH", str(p))
+        reg = providers.load_providers()
+        assert set(reg) == {"anthropic"}
+        assert reg["anthropic"].type == "anthropic"
 
 
 class TestDiscovery:
@@ -143,3 +167,10 @@ class TestRoutingHelpers:
         }):
             assert providers.get_model_context_window("vllm", "m1") == 262144
             assert providers.get_model_context_window("vllm", "m2") is None
+
+    def test_failed_fetch_helpers_do_not_crash(self) -> None:
+        # A failed fetch makes list_models return {"error": ...} in place of
+        # the model list; both helpers must treat that as "no models".
+        with patch("axi.providers._http_get", side_effect=RuntimeError("conn refused")):
+            assert providers.get_model_context_window("ollama-local", "m1") is None
+            assert providers.find_providers_for_model("m1") == []

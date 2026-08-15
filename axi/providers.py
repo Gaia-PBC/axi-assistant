@@ -77,6 +77,9 @@ def load_providers() -> dict[str, Provider]:
     except Exception as e:
         log.warning("Failed to load providers.json: %s", e)
         return result
+    if not isinstance(data, dict):
+        log.warning("providers.json is not an object; ignored")
+        return result
     for entry in data.get("providers", []):
         name = str(entry.get("name", "")).strip()
         ptype = str(entry.get("type", "")).strip()
@@ -206,6 +209,8 @@ def get_model_context_window(provider: str, model: str) -> int | None:
     if entry.context_window is not None:
         return entry.context_window
     models = list_models(provider).get(provider, [])
+    if isinstance(models, dict):
+        return None
     for m in models:
         if m["id"] == model:
             return m.get("context_window")
@@ -220,6 +225,8 @@ def find_providers_for_model(model: str) -> list[str]:
         if entry.type == "anthropic":
             continue
         models = list_models(name).get(name, [])
+        if isinstance(models, dict):
+            continue
         ids = {m["id"] for m in models}
         if model in ids or model in entry.models:
             matches.append(name)
