@@ -248,6 +248,17 @@ FC_WRAP = get_fc_wrap()
 STREAMING_DISCORD = os.environ.get("STREAMING_DISCORD", "").lower() in ("1", "true", "yes")
 CLEAN_TOOL_MESSAGES = os.environ.get("CLEAN_TOOL_MESSAGES", "").lower() in ("1", "true", "yes")
 
+# FlowCoder spawn threads: route child-agent output to per-agent Discord threads.
+# Default on; set "0"/"false"/"no"/"off" to keep child output in the parent channel.
+FC_SPAWN_THREADS = _env_bool("FC_SPAWN_THREADS", default=True)
+
+# FlowCoder spawn-thread archive grace: delay after spawn_complete before the
+# thread is archived, in seconds. Default 300 (5 minutes).
+try:
+    FC_THREAD_GRACE_SECS = max(0, int(os.environ.get("FC_THREAD_GRACE_SECS", "300")))
+except ValueError:
+    FC_THREAD_GRACE_SECS = 300
+
 # Context compaction threshold — fraction of context window that triggers auto-compact.
 # Default 0.80 (80%). Set lower to compact earlier, higher to use more context before compacting.
 COMPACT_THRESHOLD = float(os.environ.get("COMPACT_THRESHOLD", "0.80"))

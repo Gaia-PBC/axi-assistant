@@ -1,5 +1,6 @@
 """Unit tests for Axi harness/model configuration."""
 
+import importlib
 from unittest.mock import patch
 
 import pytest
@@ -98,6 +99,40 @@ class TestFlowCoderWrap:
     def test_invalid_wrap_disables(self) -> None:
         with patch.dict("os.environ", {"AXI_FC_WRAP": "../bad"}, clear=True):
             assert get_fc_wrap() is None
+
+
+class TestFlowCoderSpawnThreads:
+    def test_fc_spawn_threads_defaults_on(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            importlib.reload(config)
+        try:
+            assert config.FC_SPAWN_THREADS is True
+        finally:
+            importlib.reload(config)
+
+    def test_fc_spawn_threads_opt_out(self) -> None:
+        with patch.dict("os.environ", {"FC_SPAWN_THREADS": "0"}, clear=True):
+            importlib.reload(config)
+        try:
+            assert config.FC_SPAWN_THREADS is False
+        finally:
+            importlib.reload(config)
+
+    def test_fc_thread_grace_secs_default(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            importlib.reload(config)
+        try:
+            assert config.FC_THREAD_GRACE_SECS == 300
+        finally:
+            importlib.reload(config)
+
+    def test_fc_thread_grace_secs_override(self) -> None:
+        with patch.dict("os.environ", {"FC_THREAD_GRACE_SECS": "5"}, clear=True):
+            importlib.reload(config)
+        try:
+            assert config.FC_THREAD_GRACE_SECS == 5
+        finally:
+            importlib.reload(config)
 
 
 class TestGetModel:
