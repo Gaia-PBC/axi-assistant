@@ -126,6 +126,10 @@ _tracer = trace.get_tracer(__name__)
                 "type": "string",
                 "description": "Optional provider name (from providers.json, e.g. 'ollama-local', 'vllm'). Leave unset to auto-route the model.",
             },
+            "no_mcp": {
+                "type": "boolean",
+                "description": "Skip attaching standard MCP servers (utils, schedule, axi, discord, playwright). Use for engine agents that only need bash/spawn blocks.",
+            },
         },
         "required": ["name", "prompt"],
     },
@@ -152,6 +156,7 @@ async def axi_spawn_agent(args: McpArgs) -> McpResult:
         error = config.validate_model(agent_model)
         if error:
             return {"content": [{"type": "text", "text": f"Error: {error}"}], "is_error": True}
+    no_mcp: bool = args.get("no_mcp", False)
     agent_provider: str | None = args.get("provider")
     if agent_provider is not None and config.get_provider(agent_provider) is None:
         return {"content": [{"type": "text", "text": f"Error: unknown provider '{agent_provider}'"}], "is_error": True}
@@ -275,6 +280,7 @@ async def axi_spawn_agent(args: McpArgs) -> McpResult:
                 write_dirs=write_dirs,
                 model=agent_model,
                 provider=agent_provider,
+                no_mcp=no_mcp,
             )
         except Exception:
             channels.bot_creating_channels.discard(agents.namespaced_channel_name(agent_name))

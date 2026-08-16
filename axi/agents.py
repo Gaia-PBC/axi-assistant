@@ -1545,6 +1545,7 @@ async def spawn_agent(
     write_dirs: list[str] | None = None,
     model: str | None = None,
     provider: str | None = None,
+    no_mcp: bool = False,
 ) -> AgentSession:
     """Spawn a new agent session and run its initial prompt in the background."""
     agent_type = agent_type or config.get_default_agent_type()
@@ -1569,7 +1570,10 @@ async def spawn_agent(
         set_agent_context(name)
         set_trigger("spawn", detail=f"type={agent_type}")
 
-        mcp_servers = _build_mcp_servers(name, cwd, extra_mcp_servers=extra_mcp_servers)
+        if no_mcp:
+            mcp_servers = {}
+        else:
+            mcp_servers = _build_mcp_servers(name, cwd, extra_mcp_servers=extra_mcp_servers)
 
         mcp_names = list(extra_mcp_servers.keys()) if extra_mcp_servers else None
         prompt = make_spawned_agent_system_prompt(cwd, extensions=extensions, compact_instructions=compact_instructions, agent_name=name)
