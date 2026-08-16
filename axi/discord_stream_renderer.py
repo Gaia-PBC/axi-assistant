@@ -16,6 +16,8 @@ import os
 import time
 from typing import TYPE_CHECKING, Any, cast
 
+import discord
+
 from axi import config
 from axi.discord_stream import (
     _agent_context_label,
@@ -832,8 +834,14 @@ class DiscordStreamRenderer:
             if parent_thread is not None:
                 thread_name = f"{parent_thread.name}/{event.agent_name}"
         try:
+            # discord.py's create_thread with message=None defaults to a
+            # PRIVATE thread (type 12) unless type is passed explicitly —
+            # private threads are invisible to non-members. The design
+            # requires public threads.
             thread = await self._channel.create_thread(
-                name=thread_name, auto_archive_duration=60
+                name=thread_name,
+                auto_archive_duration=60,
+                type=discord.ChannelType.public_thread,
             )
         except Exception as e:
             log.warning(

@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+import discord
+
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
 os.environ.setdefault("ALLOWED_USER_IDS", "1")
 os.environ.setdefault("DISCORD_GUILD_ID", "1")
@@ -42,8 +44,11 @@ class _FakeChannel:
         self.id = 4242
         self.threads: list[_FakeThread] = []
 
-    async def create_thread(self, *, name: str, auto_archive_duration: int) -> _FakeThread:
+    async def create_thread(
+        self, *, name: str, auto_archive_duration: int, type: Any = None
+    ) -> _FakeThread:
         t = _FakeThread(name)
+        t.type = type
         self.threads.append(t)
         return t
 
@@ -431,6 +436,9 @@ async def test_spawn_start_creates_thread_and_posts_status(
     assert len(channel.threads) == 1
     thread = channel.threads[0]
     assert thread.name == "lint"
+    assert thread.type == discord.ChannelType.public_thread, (
+        "threads must be public — private threads are invisible to non-members"
+    )
     assert discord_state(agent).spawn_threads == {"lint": thread.id}
     assert any(
         t is channel and "spawned" in text and "lint" in text for t, text in posted
