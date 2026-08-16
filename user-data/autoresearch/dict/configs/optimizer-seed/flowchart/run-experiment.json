@@ -49,7 +49,7 @@
         "id": "prep_entry",
         "type": "bash",
         "name": "PREP_PARENT_ENTRY",
-        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\n\"$PY\" - \"{{parent_dir}}/manifest.json\" <<'PYEOF'\nimport json, os, sys\nm = json.load(open(sys.argv[1]))\nentry = m.get(\"flowchart_entry\") or \"\"\nif not entry:\n    raise SystemExit(\"run-experiment: parent manifest has no flowchart_entry\")\nprint(os.path.splitext(os.path.basename(entry))[0])\nPYEOF",
+        "command": "set -eu\n# gaia-testbench config layout: the entry point is always flowchart-main.json,\n# resolved by FILENAME stem. There is no manifest.flowchart_entry any more.\ntest -f \"{{parent_dir}}/flowchart-main.json\" || {\n  echo \"run-experiment: parent is not a gaia-testbench config (no flowchart-main.json): {{parent_dir}}\" >&2\n  exit 1\n}\necho flowchart-main\n",
         "working_directory": "",
         "output_variable": "parent_entry",
         "continue_on_error": false
@@ -58,7 +58,7 @@
         "id": "prep_model",
         "type": "bash",
         "name": "PREP_PARENT_MODEL",
-        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\n\"$PY\" - \"{{parent_dir}}/manifest.json\" <<'PYEOF'\nimport json, sys\nm = json.load(open(sys.argv[1]))\nprint(m.get(\"main_model\") or \"\")   # empty -> spawn inherits the session model\nPYEOF",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\n\"$PY\" - \"{{parent_dir}}/config-meta.json\" <<'PYEOF'\nimport json, sys\nm = json.load(open(sys.argv[1]))\nmodel = (m.get(\"model\") or \"\").strip()\nif not model:\n    raise SystemExit(\"run-experiment: config-meta.json has no model\")\nprint(model)\nPYEOF\n",
         "working_directory": "",
         "output_variable": "parent_model",
         "continue_on_error": false
@@ -78,7 +78,7 @@
         "name": "MUTATE",
         "agent_name": "mutator",
         "command_name": "{{parent_entry}}",
-        "search_path": "{{parent_dir}}/flowchart",
+        "search_path": "{{parent_dir}}",
         "model": "{{parent_model}}",
         "arguments": "{{mutate_args}}",
         "exit_code_variable": "mutate_exit",
@@ -95,11 +95,16 @@
       },
       "eval": {
         "id": "eval",
-        "type": "command",
+        "type": "bash",
         "name": "EVAL",
-        "command_name": "evaluate-config",
-        "arguments": "{{out_dir}} seed",
-        "merge_output": true
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nSB=/home/acer01/axi-assistant/user-data/soul-benchmarks\nES=\"$AR/scratch/eval-$(basename \"{{out_dir}}\")\"\nrm -rf \"$ES\"\nmkdir -p \"$ES\"\n# gaia-testbench 23dfcd4: one `evaluate batch` replaces the entire\n# evaluate-config -> eval-case -> judge fan-out. --config takes the candidate\n# bundle directly (no bundle_dir plumbing), and <out>/score.json is already\n# the {aggregate, per_criterion, per_task, ...} vector DECIDE's\n# compare_scores.py reads -- so there is no translation step.\n#\n# --max-cost-usd counts JUDGE spend as well as agent spend. 16 tasks at the\n# ~$0.33/case measured on this box is ~$5 of agent cost, and the judge runs\n# once per rubric criterion per cell on the most expensive model, so 40 is a\n# ceiling with headroom -- not a target, and not optional.\n# A candidate's model need not be Claude, and its spawn blocks may pin a\n# different provider than its main session. resolve_config writes a routed COPY\n# (per-spawn env; the original is what COMMIT moves into dict/, so no\n# box-specific endpoint is ever stored) and execs `evaluate` with the main\n# session's routing scoped to that process via GAIA_AGENT_ENV -- not exported,\n# because the judge runs in the same process and needs the harness's own auth.\n# All-Anthropic candidates resolve to an empty env, i.e. exactly the old path.\nPY=/home/acer01/axi-assistant/.venv/bin/python\n\"$PY\" \"$AR/dict/configs/optimizer-seed/scripts/resolve_config.py\" \\\n    \"{{out_dir}}\" \"$ES/config-resolved\" --exec -- \\\n    \"$SB/.venv/bin/evaluate\" batch \\\n        --config \"$ES/config-resolved\" \\\n        --tasks \"$SB/tasks\" \\\n        --out \"$ES\" \\\n        --max-cost-usd 40\ncp \"$ES/score.json\" \"{{out_dir}}/score.json\"\necho \"eval: $(basename \"{{out_dir}}\") scored -> {{out_dir}}/score.json\"\n",
+        "working_directory": "",
+        "output_variable": null,
+        "continue_on_error": false
       },
       "decide": {
         "id": "decide",
