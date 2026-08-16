@@ -27,6 +27,7 @@ from agenthub.stream_types import (
     BlockStart,
     CompactStart,
     FlowchartEnd,
+    FlowchartStart,
     QueryResult,
     RateLimitHit,
     SpawnEnd,
@@ -530,15 +531,6 @@ async def test_receive_response_safe_defaults_context_when_absent(monkeypatch: p
 # ---------------------------------------------------------------------------
 
 
-def _ctx_for(msg: Any) -> str:
-    """Mirror of the implementation's _msg_session."""
-    c = getattr(msg, "_session_context", None)
-    if c and c.get("session"):
-        return c.get("session", "")
-    data = getattr(msg, "data", None) or {}
-    return str(data.get("data", {}).get("session", ""))
-
-
 def _raw_block_start(session: str) -> dict:
     return {
         "type": "system",
@@ -619,6 +611,20 @@ async def test_child_flowchart_events_tagged(monkeypatch: pytest.MonkeyPatch) ->
     blocks = [e for e in events if isinstance(e, BlockStart)]
     assert len(blocks) == 1 and blocks[0].session == "lint"
 
+    # The child's flowchart lifecycle is also session-tagged.
+    fc_start = {"type": "system", "subtype": "flowchart_start",
+                "data": {"command": "lint-fix", "block_count": 2, "session": "lint"}}
+    fc_complete = {"type": "system", "subtype": "flowchart_complete",
+                   "data": {"status": "completed", "duration_ms": 10,
+                            "cost_usd": 0.0, "blocks_executed": 2, "session": "lint"}}
+    session2 = types.SimpleNamespace(client=types.SimpleNamespace(_query=_FakeQuery(
+        [_raw_spawn_start(), fc_start, fc_complete, _raw_spawn_complete(), _raw_result()])))
+    events2 = [e async for e in streaming_mod.stream_response(session2)]
+    starts = [e for e in events2 if isinstance(e, FlowchartStart)]
+    ends = [e for e in events2 if isinstance(e, FlowchartEnd)]
+    assert len(starts) == 1 and starts[0].session == "lint"
+    assert len(ends) == 1 and ends[0].session == "lint"
+
 
 @pytest.mark.asyncio
 async def test_child_events_do_not_mutate_parent_activity(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -634,3 +640,64 @@ async def test_child_events_do_not_mutate_parent_activity(monkeypatch: pytest.Mo
     events = [e async for e in streaming_mod.stream_response(session)]
     assert session.activity.phase == "idle", "child tool use must not touch parent activity"
     assert session.activity.tool_name is None
+
+
+@pytest.mark.asyncio
+async def test_child_tool_use_end_emitted_and_tagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A child's tool_use start/delta/stop yields a tagged ToolUseEnd even with the
+    parent in 'writing' phase — the child path must not read session.activity."""
+    from agenthub import streaming as streaming_mod
+
+    start = _raw_stream_event(session="lint")
+    start["event"] = {"type": "content_block_start",
+                      "content_block": {"type": "tool_use", "name": "Bash", "id": "t9"},
+                      "index": 0}
+    delta = _raw_stream_event(session="lint", uuid="u2")
+    delta["event"] = {"type": "content_block_delta",
+                      "delta": {"type": "input_json_delta", "partial_json": '{"command":"ls"}'}}
+    stop = _raw_stream_event(session="lint", uuid="u3")
+    stop["event"] = {"type": "content_block_stop"}
+    session = types.SimpleNamespace(
+        client=types.SimpleNamespace(_query=_FakeQuery([start, delta, stop, _raw_result()])),
+        activity=types.SimpleNamespace(phase="writing", tool_name="Read", query_started=None),
+    )
+    events = [e async for e in streaming_mod.stream_response(session)]
+    ends = [e for e in events if isinstance(e, ToolUseEnd)]
+    assert len(ends) == 1, "child ToolUseEnd must not be dropped by parent phase"
+    assert ends[0].session == "lint"
+    assert ends[0].tool_name == "Bash"
+    assert ends[0].preview == "ls"
+
+
+@pytest.mark.asyncio
+async def test_child_thinking_text_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A child's thinking deltas accumulate per-session; its ThinkingEnd carries the
+    child's text, never the parent's live session.activity.thinking_text."""
+    from agenthub import streaming as streaming_mod
+
+    start = _raw_stream_event(session="lint")
+    start["event"] = {"type": "content_block_start",
+                      "content_block": {"type": "thinking", "thinking": ""}}
+    d1 = _raw_stream_event(session="lint", uuid="u2")
+    d1["event"] = {"type": "content_block_delta",
+                   "delta": {"type": "thinking_delta", "thinking": "child thinks "}}
+    d2 = _raw_stream_event(session="lint", uuid="u3")
+    d2["event"] = {"type": "content_block_delta",
+                   "delta": {"type": "thinking_delta", "thinking": "deeply"}}
+    stop = _raw_stream_event(session="lint", uuid="u4")
+    stop["event"] = {"type": "content_block_start",
+                     "content_block": {"type": "text"}}
+    session = types.SimpleNamespace(
+        client=types.SimpleNamespace(_query=_FakeQuery([start, d1, d2, stop, _raw_result()])),
+        activity=types.SimpleNamespace(phase="idle", tool_name=None, thinking_text="PARENT THINKING"),
+    )
+    events = [e async for e in streaming_mod.stream_response(session)]
+    ends = [e for e in events if isinstance(e, ThinkingEnd)]
+    assert len(ends) == 1
+    assert ends[0].session == "lint"
+    assert ends[0].thinking_text == "child thinks deeply"
+    # The child's thinking must never leak the parent's activity value.
+    assert "PARENT" not in ends[0].thinking_text
+    # Parent activity must be untouched by the child's thinking events.
+    assert session.activity.phase == "idle"
+    assert session.activity.thinking_text == "PARENT THINKING"

@@ -135,6 +135,7 @@ class _Ctx:
         "in_thinking",
         "msg_total",
         "text_buffer",
+        "thinking_text",
         "tool_input_json",
     )
 
@@ -146,6 +147,7 @@ class _Ctx:
         self.msg_total = 0
         self.flush_count = 0
         self.text_buffer = ""
+        self.thinking_text = ""
         self.tool_input_json = ""
         self.current_tool_name = ""
         # Carried from content_block_start to content_block_stop, which does not
@@ -317,11 +319,11 @@ async def _handle_stream_event(
         block_type = block.get("type", "")
         if block_type == "thinking":
             ctx.in_thinking = True
+            ctx.thinking_text = ""  # per-session accumulator (parent: fed by update_activity below)
             yield ThinkingStart(session=session_tag)
         elif ctx.in_thinking:
             ctx.in_thinking = False
-            yield ThinkingEnd(thinking_text=session.activity.thinking_text or "",
-                              session=session_tag)
+            yield ThinkingEnd(thinking_text=ctx.thinking_text, session=session_tag)
 
     # Tool use tracking
     if event_type == "content_block_start":
@@ -344,9 +346,23 @@ async def _handle_stream_event(
             partial = delta.get("partial_json", "")
             ctx.tool_input_json += partial
             yield ToolInputDelta(partial_json=partial)
-    elif event_type == "content_block_stop" and session.activity.phase == "waiting":
-        tool_name = session.activity.tool_name or ctx.current_tool_name
-        if tool_name:
+        elif delta.get("type") == "thinking_delta":
+            # Per-session accumulator (parent: update_activity mirrors this into
+            # session.activity.thinking_text).
+            ctx.thinking_text += delta.get("thinking", "")
+    elif event_type == "content_block_stop":
+        # Emit ToolUseEnd when a tool was in progress. The parent path keeps
+        # its activity-phase gate (a top-level tool's stop lands while
+        # activity is "waiting"); the child path never reads session.activity,
+        # so it gates purely on per-session ctx tool state — a child ToolUseEnd
+        # is never dropped, and never tagged with the parent's tool name.
+        if session_tag:
+            tool_ready = bool(ctx.current_tool_name)
+            tool_name = ctx.current_tool_name
+        else:
+            tool_ready = session.activity.phase == "waiting"
+            tool_name = session.activity.tool_name or ctx.current_tool_name
+        if tool_ready:
             tool_input = {}
             if ctx.tool_input_json:
                 try:
