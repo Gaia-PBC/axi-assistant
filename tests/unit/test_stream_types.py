@@ -12,6 +12,8 @@ from agenthub.stream_types import (
     QueryResult,
     RateLimitHit,
     SessionId,
+    SpawnEnd,
+    SpawnStart,
     StreamEnd,
     StreamKilled,
     StreamOutput,
@@ -138,3 +140,36 @@ class TestStreamOutputTypes:
         assert StreamEnd().elapsed_s == 0.0
         assert QueryResult().session_id is None
         assert QueryResult().is_error is False
+
+
+def test_spawn_start_defaults_and_fields() -> None:
+    ev = SpawnStart(agent_name="lint", command_name="lint-fix", model="opus",
+                    backend="claude", parent_session="main")
+    assert ev.agent_name == "lint"
+    assert ev.parent_session == "main"
+    assert ev.session == ""  # parent-emitted by default
+    assert SpawnStart(agent_name="x").command_name == ""
+
+
+def test_spawn_end_defaults_and_fields() -> None:
+    ev = SpawnEnd(agent_name="lint", status="completed", duration_ms=1234,
+                  cost_usd=0.042, session="lint")
+    assert ev.duration_ms == 1234
+    assert ev.cost_usd == 0.042
+    assert SpawnEnd(agent_name="x").status == ""
+
+
+def test_routed_events_have_session_defaulting_to_parent() -> None:
+    assert TextDelta(text="hi").session == ""
+    assert TextFlush(text="hi").session == ""
+    assert BlockStart(block_name="b").session == ""
+    assert BlockStart(block_name="b", session="lint").session == "lint"
+    assert QueryResult().session == ""
+    assert ToolUseStart(tool_name="x").session == ""
+    assert ThinkingStart().session == ""
+
+
+def test_spawn_events_are_stream_output() -> None:
+    members = set(StreamOutput.__args__)
+    assert SpawnStart in members
+    assert SpawnEnd in members
