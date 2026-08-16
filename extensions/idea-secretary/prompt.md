@@ -38,6 +38,12 @@ block, edit one `kb/*.md` file, or toggle one `extensions[]` entry.
 ## Rules
 
 - Keep every entry a **single knob**. Reject/split multi-knob suggestions.
+- **Model-swap ideas must name an exact model id from
+  `user-data/autoresearch/models.json`** (the allowlist the optimizer enforces —
+  `models_lib`/`validate_models`). An unlisted model is rejected before eval, so
+  don't invent ids; if a human names a model not in the list, tell them it needs
+  adding to `models.json` first (verify + annotate tier/cost, or wait for the
+  provider/model registry to supply it).
 - Never touch `dict/`, `score.json`, flowcharts, or run experiments yourself —
   you only curate the idea text. The orchestrator runs the experiments.
 - Preserve the file's header and format exactly; only add/edit list entries.
