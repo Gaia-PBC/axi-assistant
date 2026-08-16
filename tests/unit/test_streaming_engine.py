@@ -29,6 +29,8 @@ from agenthub.stream_types import (
     FlowchartEnd,
     QueryResult,
     RateLimitHit,
+    SpawnEnd,
+    SpawnStart,
     StreamEnd,
     StreamKilled,
     StreamOutput,
@@ -521,3 +523,114 @@ async def test_receive_response_safe_defaults_context_when_absent(monkeypatch: p
     session = types.SimpleNamespace(client=types.SimpleNamespace(_query=_FakeQuery([raw, _raw_result()])))
     async for parsed in streaming_mod.receive_response_safe(session):
         assert getattr(parsed, "_session_context", {}) == {}
+
+
+# ---------------------------------------------------------------------------
+# Per-session streaming (Task 3): session tagging + spawn events
+# ---------------------------------------------------------------------------
+
+
+def _ctx_for(msg: Any) -> str:
+    """Mirror of the implementation's _msg_session."""
+    c = getattr(msg, "_session_context", None)
+    if c and c.get("session"):
+        return c.get("session", "")
+    data = getattr(msg, "data", None) or {}
+    return str(data.get("data", {}).get("session", ""))
+
+
+def _raw_block_start(session: str) -> dict:
+    return {
+        "type": "system",
+        "subtype": "block_start",
+        "data": {"block_id": "b2", "block_name": "Prompt", "block_type": "prompt",
+                 "session": session},
+    }
+
+
+def _raw_spawn_start() -> dict:
+    return {
+        "type": "system",
+        "subtype": "spawn_start",
+        "data": {"agent_name": "lint", "command_name": "lint-fix",
+                 "model": "opus", "backend": "claude",
+                 "cwd": "/tmp", "parent_session": "main"},
+    }
+
+
+def _raw_spawn_complete(status: str = "completed") -> dict:
+    return {
+        "type": "system",
+        "subtype": "spawn_complete",
+        "data": {"agent_name": "lint", "status": status,
+                 "duration_ms": 1234, "cost_usd": 0.042, "result": "{}"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_spawn_events_are_yielded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agenthub import streaming as streaming_mod
+
+    session = types.SimpleNamespace(client=types.SimpleNamespace(_query=_FakeQuery(
+        [_raw_spawn_start(), _raw_spawn_complete(), _raw_result()])))
+    events = [e async for e in streaming_mod.stream_response(session)]
+    spawns = [e for e in events if isinstance(e, (SpawnStart, SpawnEnd))]
+    assert len(spawns) == 2
+    assert isinstance(spawns[0], SpawnStart) and spawns[0].agent_name == "lint"
+    assert spawns[0].parent_session == "main"
+    assert isinstance(spawns[1], SpawnEnd) and spawns[1].status == "completed"
+    assert spawns[1].duration_ms == 1234
+
+
+@pytest.mark.asyncio
+async def test_child_block_start_tagged_and_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agenthub import streaming as streaming_mod
+
+    session = types.SimpleNamespace(client=types.SimpleNamespace(_query=_FakeQuery(
+        [_raw_block_start("lint"), _raw_result()])))
+    events = [e async for e in streaming_mod.stream_response(session)]
+    blocks = [e for e in events if isinstance(e, BlockStart)]
+    assert len(blocks) == 1 and blocks[0].session == "lint"
+
+
+@pytest.mark.asyncio
+async def test_child_text_flushed_on_spawn_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agenthub import streaming as streaming_mod
+
+    raw = _raw_stream_event(session="lint")  # text delta, see Task 2 helper
+    raw["event"] = {"type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "child says hi"}}
+    session = types.SimpleNamespace(client=types.SimpleNamespace(_query=_FakeQuery(
+        [raw, _raw_spawn_complete(), _raw_result()])))
+    events = [e async for e in streaming_mod.stream_response(session)]
+    flushes = [e for e in events if isinstance(e, TextFlush) and e.session == "lint"]
+    assert flushes and flushes[-1].reason == "spawn_complete"
+    assert "child says hi" in flushes[-1].text
+
+
+@pytest.mark.asyncio
+async def test_child_flowchart_events_tagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agenthub import streaming as streaming_mod
+
+    raw = _raw_block_start("lint")
+    session = types.SimpleNamespace(client=types.SimpleNamespace(_query=_FakeQuery(
+        [_raw_spawn_start(), raw, _raw_spawn_complete(), _raw_result()])))
+    events = [e async for e in streaming_mod.stream_response(session)]
+    blocks = [e for e in events if isinstance(e, BlockStart)]
+    assert len(blocks) == 1 and blocks[0].session == "lint"
+
+
+@pytest.mark.asyncio
+async def test_child_events_do_not_mutate_parent_activity(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agenthub import streaming as streaming_mod
+
+    raw = _raw_stream_event(session="lint")
+    raw["event"] = {"type": "content_block_start",
+                    "content_block": {"type": "tool_use", "name": "Bash", "id": "t1"}}
+    session = types.SimpleNamespace(
+        client=types.SimpleNamespace(_query=_FakeQuery([raw, _raw_result()])),
+        activity=types.SimpleNamespace(phase="idle", tool_name=None, query_started=None),
+    )
+    events = [e async for e in streaming_mod.stream_response(session)]
+    assert session.activity.phase == "idle", "child tool use must not touch parent activity"
+    assert session.activity.tool_name is None
