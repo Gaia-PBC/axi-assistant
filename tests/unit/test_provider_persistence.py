@@ -1,8 +1,6 @@
 """Unit tests for provider persistence and spawn plumbing."""
 from unittest.mock import patch
 
-import pytest
-
 from axi import commands_api, config
 
 

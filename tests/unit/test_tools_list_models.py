@@ -13,8 +13,10 @@ class TestListModelsTool:
             result = await tools.axi_list_models.handler({})
         assert result["is_error"] is False
         text = result["content"][0]["text"]
-        assert "anthropic" in text and "opus" in text
-        assert "ollama-local" in text and "qwen3-coder:30b" in text
+        assert "anthropic" in text
+        assert "opus" in text
+        assert "ollama-local" in text
+        assert "qwen3-coder:30b" in text
 
     async def test_provider_filter(self) -> None:
         with patch("axi.providers.list_models", return_value={

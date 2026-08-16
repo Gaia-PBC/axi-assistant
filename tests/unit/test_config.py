@@ -4,8 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from axi import config
-from axi import providers
+from axi import config, providers
 from axi.config import (
     CHATGPT_PROXY_DEFAULT_ENV,
     VALID_HARNESSES,
@@ -333,9 +332,11 @@ class TestResolveRuntime:
         assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "262144"
 
     def test_unknown_provider_raises(self) -> None:
-        with patch("axi.providers.load_providers", return_value=self._reg()):
-            with pytest.raises(ValueError, match="Unknown provider 'nope'"):
-                config.resolve_runtime("m1", provider="nope")
+        with (
+            patch("axi.providers.load_providers", return_value=self._reg()),
+            pytest.raises(ValueError, match="Unknown provider 'nope'"),
+        ):
+            config.resolve_runtime("m1", provider="nope")
 
     def test_auto_route_single_match(self) -> None:
         reg = self._reg(providers.Provider(
@@ -357,9 +358,9 @@ class TestResolveRuntime:
         with (
             patch("axi.providers.load_providers", return_value=self._reg()),
             patch("axi.providers.find_providers_for_model", return_value=["a", "b"]),
+            pytest.raises(ValueError, match=r"multiple providers.*a.*b"),
         ):
-            with pytest.raises(ValueError, match="multiple providers.*a.*b"):
-                config.resolve_runtime("shared-model")
+            config.resolve_runtime("shared-model")
 
     def test_auto_route_no_match_falls_back_to_anthropic(self) -> None:
         with (
