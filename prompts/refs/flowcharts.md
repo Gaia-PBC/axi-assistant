@@ -54,6 +54,8 @@ Canonical source: `BlockType` enum + class definitions in `/home/pride/coding-pr
 | `exit` | `exit_code` (int), `exit_message` (str) | Terminate flowchart with explicit (often non-zero) exit. |
 | `input` | opt `output_variable` | Pause flowchart, accept user input via the agent's Discord channel, bind to variable. |
 
+Spawned agents' output streams to per-agent Discord threads (recursive naming — a grandchild spawn lands in `child/grandchild` — auto-archived after completion). Input blocks inside spawned children still render in the parent channel.
+
 ## Variable Substitution
 
 Two distinct mechanisms — don't mix them up:
