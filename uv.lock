@@ -292,8 +292,8 @@ requires-dist = [
     { name = "discord-py", extras = ["voice"], specifier = ">=2.7" },
     { name = "discordquery", editable = "packages/discordquery" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "flowcoder-engine", git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-engine&rev=1f2f2b4437dcc0b9aa54aabfa7f7ecba1a34c042" },
-    { name = "flowcoder-flowchart", git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-flowchart&rev=1f2f2b4437dcc0b9aa54aabfa7f7ecba1a34c042" },
+    { name = "flowcoder-engine", editable = "/home/acer01/coding-projects/flowcoder/packages/flowcoder-engine" },
+    { name = "flowcoder-flowchart", editable = "/home/acer01/coding-projects/flowcoder/packages/flowcoder-flowchart" },
     { name = "httpx", extras = ["socks"] },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.20" },
@@ -666,19 +666,35 @@ wheels = [
 [[package]]
 name = "flowcoder-engine"
 version = "0.1.0"
-source = { git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-engine&rev=1f2f2b4437dcc0b9aa54aabfa7f7ecba1a34c042#1f2f2b4437dcc0b9aa54aabfa7f7ecba1a34c042" }
+source = { editable = "/home/acer01/coding-projects/flowcoder/packages/flowcoder-engine" }
 dependencies = [
     { name = "flowcoder-flowchart" },
     { name = "opentelemetry-api" },
 ]
 
+[package.metadata]
+requires-dist = [
+    { name = "flowcoder-flowchart", specifier = ">=0.1.0" },
+    { name = "opentelemetry-api", specifier = ">=1.20.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
+]
+provides-extras = ["dev"]
+
 [[package]]
 name = "flowcoder-flowchart"
 version = "0.1.0"
-source = { git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-flowchart&rev=1f2f2b4437dcc0b9aa54aabfa7f7ecba1a34c042#1f2f2b4437dcc0b9aa54aabfa7f7ecba1a34c042" }
+source = { editable = "/home/acer01/coding-projects/flowcoder/packages/flowcoder-flowchart" }
 dependencies = [
     { name = "pydantic" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "frozenlist"
