@@ -1,6 +1,11 @@
 """Unit tests for axi_types.tool_display()."""
 
-from axi.axi_types import tool_display
+from agenthub.types import AgentSession
+from axi.axi_types import discord_state, tool_display
+
+
+def _make_session() -> AgentSession:
+    return AgentSession(name="test")
 
 
 class TestToolDisplay:
@@ -20,3 +25,17 @@ class TestToolDisplay:
 
     def test_empty_string(self) -> None:
         assert tool_display("") == "using "
+
+
+class TestDiscordStateSpawnThreads:
+    def test_spawn_threads_default_empty(self) -> None:
+        session = _make_session()
+        ds = discord_state(session)
+        assert ds.spawn_threads == {}
+        assert ds.pending_archives == {}
+
+    def test_spawn_threads_roundtrip(self) -> None:
+        session = _make_session()
+        ds = discord_state(session)
+        ds.spawn_threads["lint"] = 123456789
+        assert discord_state(session).spawn_threads == {"lint": 123456789}
