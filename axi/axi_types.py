@@ -24,6 +24,7 @@ __all__ = [
     "tool_display",
 ]
 
+import asyncio
 import logging
 import os
 import threading
@@ -116,6 +117,11 @@ class DiscordAgentState:
     fc_current_command: str | None = None
     # FlowCoder: pending input block (set on input_request, cleared when user responds)
     pending_input_block_id: str | None = None
+    # FlowCoder spawn threads: child agent name -> thread id (survives
+    # renderer recreation on reconnect; renderer re-fetches Thread objects).
+    spawn_threads: dict[str, int] = field(default_factory=lambda: dict[str, int]())
+    # Archive tasks pending the grace delay after spawn_complete.
+    pending_archives: dict[str, asyncio.Task] = field(default_factory=lambda: dict[str, asyncio.Task]())
 
 
 def discord_state(session: AgentSession) -> DiscordAgentState:
