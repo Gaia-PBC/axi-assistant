@@ -37,3 +37,63 @@ class TestMakeAgentOptionsModelSelection:
 
         assert options.model == "sonnet"
         assert "ANTHROPIC_MODEL" not in options.env
+
+
+class TestMakeAgentOptionsProviderFallback:
+    def test_value_error_falls_back_to_auto_route(self) -> None:
+        session = AgentSession(name="test", cwd="/tmp", model="gpt-5.4")
+
+        calls = {"n": 0}
+
+        def _resolve(model, provider=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError(f"Unknown provider '{provider}'")
+            return "sonnet", {"ANTHROPIC_MODEL": "sonnet"}, "anthropic"
+
+        with (
+            patch("axi.agents.make_stderr_callback", return_value=None),
+            patch("axi.hub_wiring.config.resolve_runtime", side_effect=_resolve) as mock_resolve,
+        ):
+            options = _make_agent_options(session, resume_id=None)
+
+        assert options.model == "sonnet"
+        assert options.env["ANTHROPIC_MODEL"] == "sonnet"
+        # explicit-provider attempt failed, then the fallback re-resolved
+        # without the provider (auto-route)
+        assert mock_resolve.call_count == 2
+        assert mock_resolve.call_args_list[1].kwargs.get("provider") is None
+
+
+class TestMakeAgentOptionsDefaultProvider:
+    def test_global_default_provider_used_when_session_provider_unset(self) -> None:
+        # session.model is None (no override) -> global default provider applies
+        session = AgentSession(name="test", cwd="/tmp", model=None)
+
+        with (
+            patch("axi.agents.make_stderr_callback", return_value=None),
+            patch("axi.hub_wiring.config.get_model", return_value="sonnet"),
+            patch("axi.hub_wiring.config.get_provider_default", return_value="ollama-local"),
+            patch("axi.hub_wiring.config.resolve_runtime", return_value=("sonnet", {}, "ollama-local")) as mock_resolve,
+        ):
+            options = _make_agent_options(session, resume_id=None)
+
+        assert options.model == "sonnet"
+        # session.provider is None, so the global default provider is used
+        assert mock_resolve.call_args_list[0].kwargs.get("provider") == "ollama-local"
+
+    def test_explicit_model_override_does_not_inherit_default_provider(self) -> None:
+        # session.model is set (explicit override) and provider is None ->
+        # auto-route: resolve_runtime called with provider=None
+        session = AgentSession(name="test", cwd="/tmp", model="sonnet")
+
+        with (
+            patch("axi.agents.make_stderr_callback", return_value=None),
+            patch("axi.hub_wiring.config.get_model", return_value="opus"),
+            patch("axi.hub_wiring.config.get_provider_default", return_value="ollama-local"),
+            patch("axi.hub_wiring.config.resolve_runtime", return_value=("sonnet", {}, "anthropic")) as mock_resolve,
+        ):
+            options = _make_agent_options(session, resume_id=None)
+
+        assert options.model == "sonnet"
+        assert mock_resolve.call_args_list[0].kwargs.get("provider") is None

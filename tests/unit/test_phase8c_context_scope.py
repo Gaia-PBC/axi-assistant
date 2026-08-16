@@ -120,7 +120,7 @@ async def test_model_validation_error(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_model_set_global(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "validate_model", lambda m: "")
     monkeypatch.setattr(config, "normalize_model", lambda m: "opus")
-    monkeypatch.setattr(config, "set_model", lambda m: "")
+    monkeypatch.setattr(config, "set_model", lambda m, provider=None: "")
     monkeypatch.setattr(config, "get_model", lambda: "opus")
     r = await commands_api.set_model(None, "opus")
     assert r.ok and "Default model set" in r.message

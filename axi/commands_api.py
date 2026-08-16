@@ -502,9 +502,9 @@ async def skip(name: str) -> CommandResult:
     return CommandResult(message=msg, data={"status": "skipping", "queued": queued})
 
 
-def validate_spawn(name: str, cwd: str | None, model: str | None) -> CommandResult:
-    """Synchronous validation for spawn (name/master/exists/cwd/model). On ok, data carries
-    the resolved {cwd, model}."""
+def validate_spawn(name: str, cwd: str | None, model: str | None, provider: str | None = None) -> CommandResult:
+    """Synchronous validation for spawn (name/master/exists/cwd/model/provider). On ok, data carries
+    the resolved {cwd, model, provider}."""
     agent_name = (name or "").strip()
     if not agent_name:
         return CommandResult(message="Agent name cannot be empty.", ok=False, ephemeral=True)
@@ -521,11 +521,14 @@ def validate_spawn(name: str, cwd: str | None, model: str | None) -> CommandResu
             return CommandResult(message=f"*System:* {error}", ok=False, ephemeral=True)
     if not any(agent_cwd == d or agent_cwd.startswith(d + os.sep) for d in config.ALLOWED_CWDS):
         return CommandResult(message="Error: cwd is not in allowed directories.", ok=False, ephemeral=True)
-    return CommandResult(message="", data={"cwd": agent_cwd, "model": agent_model})
+    if provider is not None and config.get_provider(provider) is None:
+        return CommandResult(message=f"*System:* Unknown provider '{provider}'.", ok=False, ephemeral=True)
+    return CommandResult(message="", data={"cwd": agent_cwd, "model": agent_model, "provider": provider})
 
 
 async def spawn(
-    name: str, prompt: str, *, cwd: str | None = None, resume: str | None = None, model: str | None = None
+    name: str, prompt: str, *, cwd: str | None = None, resume: str | None = None,
+    model: str | None = None, provider: str | None = None,
 ) -> CommandResult:
     """Spawn (or resume-replace) an agent. Validates, reclaims the name on resume, then
     agents.spawn_agent (which creates the channel via the frontend on_spawn)."""
@@ -536,18 +539,21 @@ async def spawn(
             ok=False,
             ephemeral=True,
         )
-    valid = validate_spawn(agent_name, cwd, model)
+    valid = validate_spawn(agent_name, cwd, model, provider=provider)
     if not valid.ok:
         return valid
     agent_cwd = valid.data["cwd"]
     agent_model = valid.data["model"]
+    agent_provider = valid.data["provider"]
     if agent_name in agents.agents and resume:
         await agents.reclaim_agent_name(agent_name)
-    await agents.spawn_agent(agent_name, agent_cwd, prompt, resume=resume, model=agent_model)
+    await agents.spawn_agent(agent_name, agent_cwd, prompt, resume=resume, model=agent_model, provider=agent_provider)
     model_suffix = f" using **{agent_model}**" if agent_model else ""
+    if agent_provider:
+        model_suffix += f" on **{agent_provider}**"
     return CommandResult(
         message=f"*System:* Spawned agent **{agent_name}** in `{agent_cwd}`{model_suffix}.",
-        data={"name": agent_name, "cwd": agent_cwd, "model": agent_model},
+        data={"name": agent_name, "cwd": agent_cwd, "model": agent_model, "provider": agent_provider},
     )
 
 
@@ -613,35 +619,45 @@ async def reset_context(agent: str, cwd: str | None = None) -> CommandResult:
     )
 
 
-async def set_model(agent: str | None, model: str | None) -> CommandResult:
+async def set_model(agent: str | None, model: str | None, provider: str | None = None) -> CommandResult:
     """Get or set the model. agent=None targets the global default; a name targets that agent
-    (which is saved + restarted with a fresh session)."""
+    (which is saved + restarted with a fresh session). ``provider:model`` is parsed internally;
+    an explicit ``provider`` argument overrides the parsed provider when set."""
     if model is None:  # view
         if agent and agent in agents.agents:
-            current = agents.agents[agent].model or config.get_model()
-            return CommandResult(message=f"Current model for **{agent}**: **{current}**", data={"agent": agent, "model": current})
+            session = agents.agents[agent]
+            current = session.model or config.get_model()
+            if session.provider:
+                current = f"{session.provider}:{current}"
+            return CommandResult(message=f"Current model for **{agent}**: **{current}**", data={"agent": agent, "model": current, "provider": session.provider})
         current = config.get_model()
         return CommandResult(message=f"Current default model: **{current}**", data={"agent": None, "model": current})
 
-    error = config.validate_model(model)
+    parsed_provider, bare_model = config.parse_provider_model(model)
+    if provider is None:
+        provider = parsed_provider
+    error = config.validate_model(bare_model)
     if error:
         return CommandResult(message=f"*System:* {error}", ok=False, ephemeral=True)
-    normalized = config.normalize_model(model)
+    normalized = config.normalize_model(bare_model)
     if agent and agent in agents.agents:
         session = agents.agents[agent]
         session.model = normalized
+        session.provider = provider
         agent_cfg = agents._load_agent_config(agent)
-        agents._save_agent_config(agent, session.mcp_server_names, extensions=agent_cfg.get("extensions"), model=normalized)
+        agents._save_agent_config(agent, session.mcp_server_names, extensions=agent_cfg.get("extensions"), model=normalized, provider=provider)
         await agents.reset_session(agent)
+        display = f"{provider}:{normalized}" if provider else normalized
         return CommandResult(
-            message=f"*System:* Agent **{agent}** switched to **{normalized}** and restarted with a fresh session.",
-            data={"agent": agent, "model": normalized},
+            message=f"*System:* Agent **{agent}** switched to **{display}** and restarted with a fresh session.",
+            data={"agent": agent, "model": normalized, "provider": provider},
         )
-    error = config.set_model(normalized)
+    error = config.set_model(normalized, provider=provider)
     if error:
         return CommandResult(message=f"*System:* {error}", ok=False, ephemeral=True)
+    display = f"{provider}:{normalized}" if provider else normalized
     return CommandResult(
-        message=f"*System:* Default model set to **{config.get_model()}**.", data={"agent": None, "model": config.get_model()}
+        message=f"*System:* Default model set to **{display}**.", data={"agent": None, "model": config.get_model()}
     )
 
 

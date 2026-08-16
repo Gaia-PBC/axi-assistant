@@ -49,7 +49,7 @@ Canonical source: `BlockType` enum + class definitions in `/home/pride/coding-pr
 | `bash` | `command` (str); opt `capture_output`, `output_variable`, `output_type`, `continue_on_error`, `working_directory`, `exit_code_variable` | Execute a shell command. |
 | `command` | `command_name` (str); opt `arguments`, `inherit_variables`, `merge_output` | Compose — run another flowchart inline. `arguments` accepts the same `$1`/`$2`/`{{var}}` substitution. |
 | `refresh` | opt `target_session` | Kill the Claude subprocess and restart with a fresh context window. Flowchart variables persist; conversation history does not. |
-| `spawn` | `agent_name`, `command_name`; opt `arguments`, `inherit_variables`, `exit_code_variable`, `config_file`, `model`, `backend` | Spawn an axi sub-agent asynchronously running a named command. Parent flowchart proceeds immediately. |
+| `spawn` | `agent_name`, `command_name`; opt `arguments`, `inherit_variables`, `exit_code_variable`, `config_file`, `model`, `backend`, `provider` | Spawn an axi sub-agent asynchronously running a named command. `provider` (a name from providers.json) resolves the block's model to that provider's env; omit it to inherit the parent agent's env (a model-only block is sent to the parent's provider via the inherited env). Parent flowchart proceeds immediately. |
 | `wait` | `wait_for` (list of agent names); opt `timeout_seconds` | Block the parent flowchart until all named spawned agents complete. |
 | `exit` | `exit_code` (int), `exit_message` (str) | Terminate flowchart with explicit (often non-zero) exit. |
 | `input` | opt `output_variable` | Pause flowchart, accept user input via the agent's Discord channel, bind to variable. |

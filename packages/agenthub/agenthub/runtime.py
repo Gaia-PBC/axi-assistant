@@ -107,6 +107,7 @@ class AgentHub:
         extra_excluded_commands: list[str] | None = None,
         extra_write_dirs: list[str] | None = None,
         model: str | None = None,
+        provider: str | None = None,
     ) -> AgentSession:
         Path(cwd).mkdir(parents=True, exist_ok=True)
         # All fields below are generic AgentSession fields. system_prompt_hash is set
@@ -126,6 +127,7 @@ class AgentHub:
             extra_excluded_commands=list(extra_excluded_commands or []),
             extra_write_dirs=list(extra_write_dirs or []),
             model=model,
+            provider=provider,
         )
         session.state = replace(session.state, session_id=session_id)
         session.agent_log = make_agent_log(name, persist_dir=self.log_dir)

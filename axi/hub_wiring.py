@@ -44,7 +44,26 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
     from axi.agents import make_stderr_callback
 
     selected_model = session.model or config.get_model()
-    resolved_model, resolved_env = config.get_model_runtime(selected_model)
+    session_provider = getattr(session, "provider", None)
+    provider = session_provider
+    if provider is None and session.model is None:
+        provider = config.get_provider_default()
+    try:
+        resolved_model, resolved_env, _ = config.resolve_runtime(selected_model, provider=provider)
+    except ValueError:
+        log.warning(
+            "Provider resolution failed for agent '%s' (model=%s provider=%s); falling back to auto-routing",
+            session.name, selected_model, provider,
+        )
+        resolved_model, resolved_env, _ = config.resolve_runtime(selected_model)
+    # The SDK merges the bot process's full os.environ into the child env
+    # ({**os.environ, **options.env} in claude_agent_sdk subprocess_cli.py), so
+    # popping from base_env alone never removes stale ANTHROPIC_*/CLAUDE_CODE_*
+    # values that reached the process env (e.g. via .env). Pop them from
+    # os.environ itself; the resolved env for THIS session is re-added via
+    # options.env below, so each session still gets its own provider env.
+    for key in config.MANAGED_ENV_VARS:
+        os.environ.pop(key, None)
     minflow_data_dir = os.environ.get("MINFLOW_DATA_DIR") or os.path.expanduser("~/.config/minflow")
     base_env = {
         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "100",
@@ -52,7 +71,7 @@ def _make_agent_options(session: AgentSession, resume_id: str | None) -> Any:
         "MINFLOW_DATA_DIR": minflow_data_dir,
         "PATH": os.path.join(config.BOT_DIR, "bin") + ":" + os.environ.get("PATH", ""),
     }
-    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
+    for key in config.MANAGED_ENV_VARS:
         base_env.pop(key, None)
     base_env.update(resolved_env)
 
