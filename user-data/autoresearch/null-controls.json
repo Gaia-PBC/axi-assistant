@@ -1,0 +1,15 @@
+{
+  "_doc": "Candidates KEPT on an edit that provably could not change behaviour. Not a mistake to hide — each is a null control, and the largest gain any of them showed over its parent is a MEASURED noise floor for the benchmark. config_evidence.py labels these rows for the mutator and reports the floor, so the generator stops reading sub-noise deltas as real effects. Identified by hackathon-rnd 2026-08-16 while converting bundles to the config-directory layout.",
+  "controls": [
+    {
+      "candidate_id": "cand-1786874124727756553",
+      "idea_id": "idea-main-haiku",
+      "reason": "main_model re-set to claude-haiku-4-5-20251001, which the parent already had; the mutator's own report labelled it (NO-OP)"
+    },
+    {
+      "candidate_id": "cand-1786874369776962385",
+      "idea_id": "idea-do-haiku",
+      "reason": "edited manifest.spawn_block_models.spawn_do only, a mirror field nothing reads; the live spawn block kept claude-opus-4-8"
+    }
+  ]
+}

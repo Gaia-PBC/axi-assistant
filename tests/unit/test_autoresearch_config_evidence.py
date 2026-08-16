@@ -103,3 +103,85 @@ def test_evidence_survives_a_completely_empty_root(tmp_path, monkeypatch):
     assert text.strip()
     sys.modules.pop("config_evidence", None)
     sys.modules.pop("ideas", None)
+
+
+# --- null controls: a measured noise floor -------------------------------
+#
+# Two candidates were KEPT on changes that could not affect behaviour: one
+# re-set main_model to the value the parent already had, the other edited
+# manifest.spawn_block_models, a mirror field the evaluator never reads. Both
+# "beat" their 0.80 parent. Suppressing them would hide the most honest thing
+# the search has produced — an empirical read on how much of a score delta is
+# noise. The evidence pack has to carry that, or the generator will keep
+# reading sub-noise deltas as real effects.
+
+NULL_RESULTS = (
+    "timestamp\tparent_id\tidea_id\tcandidate_id\tcand_score\tparent_score\tkept\tcost_usd\n"
+    "2026-08-16T09:58\tbaseline\tidea-main-haiku\tcand-A\t0.9333\t0.8000\ttrue\t\n"
+    "2026-08-16T10:04\tbaseline\tidea-do-haiku\tcand-B\t0.9111\t0.8000\ttrue\t\n"
+    "2026-08-16T10:30\tbaseline\treal-idea\tcand-C\t0.8600\t0.8000\ttrue\t\n"
+)
+
+
+def _with_null_controls(tmp_path):
+    (tmp_path / "results.tsv").write_text(NULL_RESULTS, encoding="utf-8")
+    (tmp_path / "null-controls.json").write_text(json.dumps({"controls": [
+        {"candidate_id": "cand-A", "reason": "main_model re-set to the value the parent already had"},
+        {"candidate_id": "cand-B", "reason": "edited manifest.spawn_block_models, which nothing reads"},
+    ]}), encoding="utf-8")
+
+
+def test_null_control_rows_are_labelled_in_the_lineage(ev, tmp_path):
+    mod, _ = ev
+    _with_null_controls(tmp_path)
+
+    text = mod.build("baseline")
+
+    line = next(ln for ln in text.splitlines() if "cand-A" in ln)
+    assert "NULL CONTROL" in line
+
+
+def test_the_measured_noise_floor_is_reported(ev, tmp_path):
+    """Largest null-control gain over parent is 0.9333-0.8000 = 0.1333."""
+    mod, _ = ev
+    _with_null_controls(tmp_path)
+
+    text = mod.build("baseline")
+
+    assert "noise floor" in text.lower()
+    assert "0.13" in text
+
+
+def test_a_real_candidate_below_the_noise_floor_is_flagged(ev, tmp_path):
+    """cand-C gained 0.06, under the 0.133 floor — not distinguishable."""
+    mod, _ = ev
+    _with_null_controls(tmp_path)
+
+    line = next(ln for ln in mod.build("baseline").splitlines() if "cand-C" in ln)
+    assert "below noise floor" in line.lower()
+
+
+def test_no_null_controls_means_no_noise_claim(ev, tmp_path):
+    """Never assert a floor that has not been measured."""
+    mod, _ = ev
+    (tmp_path / "results.tsv").write_text(NULL_RESULTS, encoding="utf-8")
+
+    text = mod.build("baseline")
+
+    assert "noise floor" not in text.lower()
+    assert "NULL CONTROL" not in text
+
+
+def test_the_idea_pool_also_marks_a_score_that_came_from_a_null_control(ev, tmp_path):
+    """The lineage section is not the only place the number appears — the pool
+    lists each idea's best score, and idea-main-haiku's best came from cand-A."""
+    mod, _ = ev
+    _with_null_controls(tmp_path)
+    ideas = sys.modules["ideas"]
+    ideas.propose("swap main_model to haiku", origin="human", idea_id="idea-main-haiku")
+    ideas.complete("idea-main-haiku", "cand-A", 0.9333, True)
+
+    line = next(ln for ln in mod.build("baseline").splitlines()
+                if "idea-main-haiku" in ln and "tried" in ln)
+
+    assert "null control" in line.lower()
