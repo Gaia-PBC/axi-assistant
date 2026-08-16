@@ -530,6 +530,20 @@ class DiscordStreamRenderer:
         self._in_flowchart = False
         self._suppress_stream = False
         self._fc_command = None
+        # Post the completion sentinel — mirrors the legacy discord_stream.py:1281-1287
+        # that this renderer migration dropped. The gaia-testbench `axi` adapter and
+        # axi's own `axi_test.py --wait-mode sentinel` both key on a message that
+        # starts with `*System:*` and contains "Flowchart **completed**"
+        # (axi_test.py:82,884), so the `*System:*` prefix is load-bearing here.
+        duration_s = event.duration_ms / 1000
+        status = "**completed**" if event.status == "completed" else "**failed**"
+        await self._send_long(
+            f"*System:* Flowchart {status} in {duration_s:.0f}s "
+            f"| Cost: ${event.cost_usd:.4f} | Blocks: {event.blocks_executed}"
+        )
+        test_sentinel = os.environ.get("AXI_TEST_SENTINEL")
+        if test_sentinel:
+            await self._send_long(test_sentinel)
 
     def _block_output_allowed(self) -> bool:
         """Whether per-block progress should be posted for the running flowchart.

@@ -1,0 +1,203 @@
+{
+  "id": "ad000003-txtd-4000-8000-auto00000003",
+  "name": "mil-txt",
+  "description": "Automatically execute to-do items from a Markdown/text file (checkbox tasks) — the text-file analogue of /mil, which iterates a minflow deck. Reads the file at $1, executes the top unchecked task, flips it to done, updates the Notes/Done sections, and loops.",
+  "flowchart": {
+    "blocks": {
+      "b0000001-start-4000-8000-000000000001": {
+        "id": "b0000001-start-4000-8000-000000000001",
+        "type": "start",
+        "name": "START",
+        "position": { "x": 150, "y": 50 }
+      },
+      "b0000002-get-4000-8000-000000000002": {
+        "id": "b0000002-get-4000-8000-000000000002",
+        "type": "prompt",
+        "name": "GET TOP TASK",
+        "position": { "x": 150, "y": 150 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nYou are iterating a Markdown to-do file. The file path is: $1\n\nRead that file. Its shape is:\n# <title>\n## Notes\n<notes>\n## Done\n<done>\n## Tasks\n- [ ] an incomplete task\n- [x] a completed task\n\nFind the FIRST unchecked task line (matching `- [ ]`) in the `## Tasks` section — that is the top card.\n\nReturn structured output:\n- has_card: true if an unchecked `- [ ]` task exists, false if none remain\n- card_text: the task text with the leading `- [ ] ` removed (empty if has_card is false)\n- todo_path: the exact file path you were given ($1)\n- deck_description: the file's title (the `# ...` line)\n- deck_done: the contents of the `## Done` section\n- deck_notes: the contents of the `## Notes` section\n\nDo NOT modify the file in this step.",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "has_card": { "type": "boolean" },
+            "card_text": { "type": "string" },
+            "todo_path": { "type": "string" },
+            "deck_description": { "type": "string" },
+            "deck_done": { "type": "string" },
+            "deck_notes": { "type": "string" }
+          },
+          "required": ["has_card", "todo_path"]
+        },
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000003-hasc-4000-8000-000000000003": {
+        "id": "b0000003-hasc-4000-8000-000000000003",
+        "type": "branch",
+        "name": "HAS TASK?",
+        "position": { "x": 150, "y": 270 },
+        "condition": "has_card"
+      },
+      "b0000004-exec-4000-8000-000000000004": {
+        "id": "b0000004-exec-4000-8000-000000000004",
+        "type": "prompt",
+        "name": "EXECUTE TASK",
+        "position": { "x": 150, "y": 370 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nProject context (read before starting):\n- Project: {{deck_description}}\n- Completed so far: {{deck_done}}\n- Notes: {{deck_notes}}\n\nExecute this task to the best of your ability:\n\n{{card_text}}\n\nIf this task is too large or complex for a single pass, split it: use Edit on {{todo_path}} to insert new `- [ ] <sub-task>` lines at the TOP of the `## Tasks` section (add in reverse order so they read top-to-bottom correctly). Do not ask permission to split — do it autonomously. Only pause (via AskUserQuestion) for genuinely ambiguous architectural decisions where multiple approaches have materially different risk or tradeoff profiles.\n\nWork thoroughly and completely. When finished, describe what you accomplished.",
+        "output_schema": null,
+        "sound_effect": null
+      },
+      "b0000005-chk-4000-8000-000000000005": {
+        "id": "b0000005-chk-4000-8000-000000000005",
+        "type": "prompt",
+        "name": "CHECK APPROVAL",
+        "position": { "x": 150, "y": 490 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nYou just worked on: {{card_text}}\n\nDetermine whether this work can be automatically marked complete, or whether it requires human review/approval.\n\nDefault to auto-completing. Only require approval in these cases:\n- Plan tasks: require approval ONLY if the plan involves very complex architecture or genuinely ambiguous requirements where you could easily go the wrong direction. Straightforward plans should auto-complete.\n- Research tasks: auto-complete UNLESS you uncovered something highly pertinent that the user would want to act on immediately (e.g. a critical finding, a decision point, something that changes project direction). Routine research summaries auto-complete.\n- Failed or incomplete work: ALWAYS requires approval\n\nAlways auto-complete in these cases:\n- Task restructuring/splitting: if you split the task into sub-tasks, auto-complete. The restructuring IS the completed work — sub-tasks will execute in subsequent iterations.\n- Gate/verification tasks with headless-verified assertions: if all assertions have passing automated tests and you have documented reasons for not live-testing specific ones, auto-complete with a gap note.\n\nEverything else (implementation, testing, git operations, etc.) should auto-complete.\n\nBias strongly toward auto-completing. The user wants momentum, not gatekeeping.",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "auto_completable": { "type": "boolean" },
+            "reason": { "type": "string" }
+          },
+          "required": ["auto_completable", "reason"]
+        },
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000006-appr-4000-8000-000000000006": {
+        "id": "b0000006-appr-4000-8000-000000000006",
+        "type": "branch",
+        "name": "AUTO-COMPLETABLE?",
+        "position": { "x": 150, "y": 610 },
+        "condition": "auto_completable"
+      },
+      "b0000007-mark-4000-8000-000000000007": {
+        "id": "b0000007-mark-4000-8000-000000000007",
+        "type": "prompt",
+        "name": "MARK COMPLETE",
+        "position": { "x": 150, "y": 730 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nMark the task complete in the file {{todo_path}}: use Edit to change the FIRST line that reads exactly `- [ ] {{card_text}}` into `- [x] {{card_text}}` — flip the checkbox only, change nothing else on the line. If several lines match identically, change only the first.\n\nThen briefly confirm to the user that \"{{card_text}}\" has been auto-completed.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000010-updk-4000-8000-000000000010": {
+        "id": "b0000010-updk-4000-8000-000000000010",
+        "type": "prompt",
+        "name": "UPDATE NOTES",
+        "position": { "x": 150, "y": 830 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nYou just completed: {{card_text}}\n\nUpdate the to-do file's narrative sections with Edit on {{todo_path}}:\n\n1. `## Done` — append what was just completed to the existing summary.\n2. `## Notes` — refresh with current project state (open questions, blockers, active context); remove stale info.\n\nKeep both fields concise. The `## Done` section is a running summary of completed milestones; `## Notes` is current context. Do not touch the `## Tasks` list here.\n\nDo not output any text to the user.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b0000008-refr-4000-8000-000000000008": {
+        "id": "b0000008-refr-4000-8000-000000000008",
+        "type": "refresh",
+        "name": "REFRESH",
+        "position": { "x": 150, "y": 950 }
+      },
+      "b0000009-noti-4000-8000-000000000009": {
+        "id": "b0000009-noti-4000-8000-000000000009",
+        "type": "prompt",
+        "name": "NOTIFY USER",
+        "position": { "x": 400, "y": 610 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nThe work on \"{{card_text}}\" requires human review before it can be marked complete.\n\nReason: {{reason}}\n\nSend a clear, concise summary to the user explaining:\n1. What was accomplished\n2. Why human review is needed\n3. What specifically they should review or verify",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b000000a-exit-4000-8000-00000000000a": {
+        "id": "b000000a-exit-4000-8000-00000000000a",
+        "type": "input",
+        "name": "WAIT FOR INPUT",
+        "position": { "x": 400, "y": 730 },
+        "output_variable": "user_response"
+      },
+      "b000000g-proc-4000-8000-00000000000g": {
+        "id": "b000000g-proc-4000-8000-00000000000g",
+        "type": "prompt",
+        "name": "PROCESS RESPONSE",
+        "position": { "x": 400, "y": 830 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nYou were working on: {{card_text}}\n\nThe user responded: {{user_response}}\n\nAct on the user's response. This could be:\n- Approval to continue (\"go\", \"approved\", \"yes\", etc.) — acknowledge briefly\n- A direction or instruction — follow it, then confirm what you did\n- A question — answer it\n\nAfter handling the response, the task will be marked complete and /mil-txt will continue to the next task.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": false
+      },
+      "b000000b-end-4000-8000-00000000000b": {
+        "id": "b000000b-end-4000-8000-00000000000b",
+        "type": "end",
+        "name": "ALL TASKS COMPLETE",
+        "position": { "x": 650, "y": 270 }
+      },
+      "b000000c-chkt-4000-8000-00000000000c": {
+        "id": "b000000c-chkt-4000-8000-00000000000c",
+        "type": "prompt",
+        "name": "CHECK MANUAL TEST",
+        "position": { "x": 400, "y": 150 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nReview the work completed during this /mil-txt session. Was any code, configuration, or functionality implemented or changed?\n\nSet needs_test to true if something was implemented that the user should manually verify. Set to false if the session only did planning, research, documentation, or git operations with no functional changes.",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "needs_test": { "type": "boolean" }
+          },
+          "required": ["needs_test"]
+        },
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b000000d-ntbr-4000-8000-00000000000d": {
+        "id": "b000000d-ntbr-4000-8000-00000000000d",
+        "type": "branch",
+        "name": "NEEDS TEST?",
+        "position": { "x": 400, "y": 270 },
+        "condition": "needs_test"
+      },
+      "b000000e-addt-4000-8000-00000000000e": {
+        "id": "b000000e-addt-4000-8000-00000000000e",
+        "type": "prompt",
+        "name": "ADD TEST TASK",
+        "position": { "x": 400, "y": 370 },
+        "prompt": "[Automated flowchart step — output goes to the user.]\n\nAdd a manual-testing task to the to-do file: use Edit on {{todo_path}} to insert the line `- [ ] Manually test changes` at the TOP of the `## Tasks` section.\n\nThen list the specific changes that require manual testing. For each change, state:\n- What was changed\n- What the user should do to test it (specific steps)\n- What a successful test looks like\n\nBe brief — use bullet points.",
+        "output_schema": null,
+        "sound_effect": null,
+        "disable_auto_git": true
+      },
+      "b000000f-exit-4000-8000-00000000000f": {
+        "id": "b000000f-exit-4000-8000-00000000000f",
+        "type": "end",
+        "name": "NEEDS TESTING",
+        "position": { "x": 400, "y": 470 }
+      }
+    },
+    "connections": [
+      { "id": "c0000001-0000-4000-8000-000000000001", "source_block_id": "b0000001-start-4000-8000-000000000001", "target_block_id": "b0000002-get-4000-8000-000000000002", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000002-0000-4000-8000-000000000002", "source_block_id": "b0000002-get-4000-8000-000000000002", "target_block_id": "b0000003-hasc-4000-8000-000000000003", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000003-0000-4000-8000-000000000003", "source_block_id": "b0000003-hasc-4000-8000-000000000003", "target_block_id": "b0000004-exec-4000-8000-000000000004", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000004-0000-4000-8000-000000000004", "source_block_id": "b0000003-hasc-4000-8000-000000000003", "target_block_id": "b000000c-chkt-4000-8000-00000000000c", "source_port": "right", "target_port": "left", "is_true_path": false, "condition": null, "label": "no tasks left" },
+      { "id": "c000000c-0000-4000-8000-00000000000c", "source_block_id": "b000000c-chkt-4000-8000-00000000000c", "target_block_id": "b000000d-ntbr-4000-8000-00000000000d", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c000000d-0000-4000-8000-00000000000d", "source_block_id": "b000000d-ntbr-4000-8000-00000000000d", "target_block_id": "b000000e-addt-4000-8000-00000000000e", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c000000e-0000-4000-8000-00000000000e", "source_block_id": "b000000d-ntbr-4000-8000-00000000000d", "target_block_id": "b000000b-end-4000-8000-00000000000b", "source_port": "right", "target_port": "left", "is_true_path": false, "condition": null, "label": "no testing needed" },
+      { "id": "c000000f-0000-4000-8000-00000000000f", "source_block_id": "b000000e-addt-4000-8000-00000000000e", "target_block_id": "b000000f-exit-4000-8000-00000000000f", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000005-0000-4000-8000-000000000005", "source_block_id": "b0000004-exec-4000-8000-000000000004", "target_block_id": "b0000005-chk-4000-8000-000000000005", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000006-0000-4000-8000-000000000006", "source_block_id": "b0000005-chk-4000-8000-000000000005", "target_block_id": "b0000006-appr-4000-8000-000000000006", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000007-0000-4000-8000-000000000007", "source_block_id": "b0000006-appr-4000-8000-000000000006", "target_block_id": "b0000007-mark-4000-8000-000000000007", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000008-0000-4000-8000-000000000008", "source_block_id": "b0000006-appr-4000-8000-000000000006", "target_block_id": "b0000009-noti-4000-8000-000000000009", "source_port": "right", "target_port": "left", "is_true_path": false, "condition": null, "label": null },
+      { "id": "c0000009-0000-4000-8000-000000000009", "source_block_id": "b0000007-mark-4000-8000-000000000007", "target_block_id": "b0000010-updk-4000-8000-000000000010", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000010-0000-4000-8000-000000000010", "source_block_id": "b0000010-updk-4000-8000-000000000010", "target_block_id": "b0000008-refr-4000-8000-000000000008", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c000000a-0000-4000-8000-00000000000a", "source_block_id": "b0000008-refr-4000-8000-000000000008", "target_block_id": "b0000002-get-4000-8000-000000000002", "source_port": "top", "target_port": "left", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c000000b-0000-4000-8000-00000000000b", "source_block_id": "b0000009-noti-4000-8000-000000000009", "target_block_id": "b000000a-exit-4000-8000-00000000000a", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000011-0000-4000-8000-000000000011", "source_block_id": "b000000a-exit-4000-8000-00000000000a", "target_block_id": "b000000g-proc-4000-8000-00000000000g", "source_port": "bottom", "target_port": "top", "is_true_path": true, "condition": null, "label": null },
+      { "id": "c0000012-0000-4000-8000-000000000012", "source_block_id": "b000000g-proc-4000-8000-00000000000g", "target_block_id": "b0000007-mark-4000-8000-000000000007", "source_port": "bottom", "target_port": "left", "is_true_path": true, "condition": null, "label": null }
+    ],
+    "start_block_id": "b0000001-start-4000-8000-000000000001"
+  },
+  "metadata": {
+    "created": "2026-08-15T12:00:00.000000",
+    "modified": "2026-08-15T12:00:00.000000",
+    "version": "1.0",
+    "author": null,
+    "tags": ["automation", "todo", "task-loop", "low-approval", "text-file"]
+  },
+  "arguments": []
+}
