@@ -40,6 +40,8 @@ from agenthub.stream_types import (
     QueryResult,
     RateLimitHit,
     SessionId,
+    SpawnEnd,
+    SpawnStart,
     StreamEnd,
     StreamKilled,
     StreamOutput,
@@ -61,6 +63,28 @@ if TYPE_CHECKING:
     from agenthub.types import AgentSession
 
 log = logging.getLogger(__name__)
+
+
+def _msg_session(msg: Any) -> str:
+    """Session tag for a parsed SDK message: '' == parent channel.
+
+    'main' is normalized to '': the flowcoder transport stamps EVERY forwarded
+    inner message — including the main session's own turn — with the emitting
+    session name, so the parent's own messages arrive stamped session='main'.
+    The handler gates test truthiness, so returning 'main' verbatim would
+    route the parent's turn through the child branches (activity updates,
+    SessionId, compaction handling all live on the parent path). This mirrors
+    the renderer's _resolve_target normalization.
+    """
+    ctxd = getattr(msg, "_session_context", None)
+    if ctxd and ctxd.get("session"):
+        session = ctxd.get("session", "")
+        return "" if session == "main" else session
+    data = getattr(msg, "data", None)
+    if isinstance(data, dict):
+        session = str(data.get("data", {}).get("session", ""))
+        return "" if session == "main" else session
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +116,11 @@ async def receive_response_safe(session: AgentSession) -> AsyncIterator[Any]:
                     json.dumps(data)[:500],
                 )
             continue
+        # Carry the flowcoder transport's session stamp onto the parsed
+        # object. StreamEvent/AssistantMessage/ResultMessage dataclasses are
+        # non-slotted, so this attaches cleanly; SystemMessage keeps the raw
+        # dict anyway. Absent for non-flowcoder transports and the stub model.
+        parsed._session_context = data.get("_session_context", {})
         yield parsed
         if isinstance(parsed, ResultMessage):
             return
@@ -117,6 +146,7 @@ class _Ctx:
         "in_thinking",
         "msg_total",
         "text_buffer",
+        "thinking_text",
         "tool_input_json",
     )
 
@@ -128,6 +158,7 @@ class _Ctx:
         self.msg_total = 0
         self.flush_count = 0
         self.text_buffer = ""
+        self.thinking_text = ""
         self.tool_input_json = ""
         self.current_tool_name = ""
         # Carried from content_block_start to content_block_stop, which does not
@@ -173,49 +204,85 @@ async def stream_response(
         pending_compact = {}
 
     ctx = _Ctx()
+    child_ctxs: dict[str, _Ctx] = {}
     t0 = time.monotonic()
 
     yield StreamStart()
 
     async for msg in receive_response_safe(session):
-        ctx.msg_total += 1
+        msg_session = _msg_session(msg)
+        is_child = bool(msg_session) and msg_session != "main"
+        if not is_child:
+            ctx.msg_total += 1  # msg_total counts parent messages only
+        sctx = child_ctxs.setdefault(msg_session, _Ctx()) if is_child else ctx
 
         if isinstance(msg, StreamEvent):
-            async for out in _handle_stream_event(ctx, session, msg, set_session_id_fn):
+            async for out in _handle_stream_event(sctx, session, msg, set_session_id_fn,
+                                                  session_tag=msg_session):
                 yield out
 
         elif isinstance(msg, AssistantMessage):
-            async for out in _handle_assistant_message(ctx, session, msg):
+            async for out in _handle_assistant_message(sctx, session, msg, session_tag=msg_session):
                 yield out
 
         elif isinstance(msg, ResultMessage):
             async for out in _handle_result_message(
-                ctx, session, msg, set_session_id_fn, record_usage_fn
+                sctx, session, msg, set_session_id_fn, record_usage_fn, session_tag=msg_session
             ):
                 yield out
 
         elif isinstance(msg, SystemMessage):
             if msg.subtype == "flowchart_start":
-                ctx.in_flowchart = True
+                sctx.in_flowchart = True
             elif msg.subtype == "flowchart_complete":
-                ctx.in_flowchart = False
+                sctx.in_flowchart = False
             async for out in _handle_system_message(
-                ctx, session, msg, self_compacting_names, compact_start_times, pending_compact
+                sctx, session, msg, self_compacting_names, compact_start_times,
+                pending_compact, session_tag=msg_session,
             ):
+                if isinstance(out, SpawnEnd):
+                    # The child's session name is its agent_name (the engine
+                    # names child sessions after the spawn block's agent_name).
+                    # Flush the child's leftover text BEFORE yielding the
+                    # SpawnEnd: the renderer's _on_spawn_end drains the child's
+                    # deferred buffer and pops the spawn_threads mapping as soon
+                    # as it sees SpawnEnd, so a residual flush yielded after
+                    # would miss the thread and fall back to the parent channel.
+                    tail = child_ctxs.get(out.agent_name)
+                    if tail is not None and tail.text_buffer.strip():
+                        tail.flush_count += 1
+                        yield TextFlush(text=tail.text_buffer, reason="spawn_complete",
+                                        session=out.agent_name)
+                        tail.text_buffer = ""
+                    child_ctxs.pop(out.agent_name, None)
                 yield out
 
-        # Mid-turn text splitting (when buffer gets large)
-        if not ctx.hit_rate_limit and len(ctx.text_buffer) >= 1800:
-            split_at = ctx.text_buffer.rfind("\n", 0, 1800)
+        # Mid-turn text splitting — per-session buffer
+        if not sctx.hit_rate_limit and len(sctx.text_buffer) >= 1800:
+            split_at = sctx.text_buffer.rfind("\n", 0, 1800)
             if split_at == -1:
                 split_at = 1800
-            flush_text = ctx.text_buffer[:split_at]
-            ctx.text_buffer = ctx.text_buffer[split_at:].lstrip("\n")
-            ctx.flush_count += 1
-            yield TextFlush(text=flush_text, reason="mid_turn_split")
+            flush_text = sctx.text_buffer[:split_at]
+            sctx.text_buffer = sctx.text_buffer[split_at:].lstrip("\n")
+            sctx.flush_count += 1
+            yield TextFlush(text=flush_text, reason="mid_turn_split", session=msg_session)
 
     # Post-loop: determine terminal state
     elapsed = time.monotonic() - t0
+
+    # Never-drop for child sessions: a child whose spawn_complete never arrived
+    # (hard kill, StreamKilled, engine teardown mid-spawn) would otherwise lose
+    # its residual text_buffer forever — child_ctxs entries were abandoned when
+    # the stream ended. Flush each remaining buffer as a post_kill flush so the
+    # renderer's deferred-buffer drain at StreamEnd surfaces it in the thread
+    # (or the [agent] fallback) before the thread is archived.
+    for child_name, child_ctx in child_ctxs.items():
+        if child_ctx.text_buffer.strip():
+            child_ctx.flush_count += 1
+            yield TextFlush(text=child_ctx.text_buffer, reason="post_kill",
+                            session=child_name)
+            child_ctx.text_buffer = ""
+    child_ctxs.clear()
 
     if ctx.hit_rate_limit:
         pass  # Already yielded RateLimitHit
@@ -258,19 +325,22 @@ async def _handle_stream_event(
     session: AgentSession,
     msg: StreamEvent,
     set_session_id_fn: Any,
+    session_tag: str = "",
 ) -> AsyncIterator[StreamOutput]:
     """Transform a StreamEvent into StreamOutput events."""
     event = msg.event
     event_type = event.get("type", "")
 
-    # Session ID tracking
-    if not ctx.in_flowchart and msg.session_id and msg.session_id != session.session_id:
+    # Session ID tracking (parent only — a child's session_id must never
+    # overwrite the parent agent's persisted session).
+    if not session_tag and not ctx.in_flowchart and msg.session_id and msg.session_id != session.session_id:
         if set_session_id_fn:
             await set_session_id_fn(session, msg.session_id)
         yield SessionId(session_id=msg.session_id)
 
-    # Activity tracking (updates session.activity in-place)
-    update_activity(session.activity, event)
+    # Activity tracking (parent only — child events have no AgentSession)
+    if not session_tag:
+        update_activity(session.activity, event)
 
     # Thinking indicators
     if event_type == "content_block_start":
@@ -278,10 +348,11 @@ async def _handle_stream_event(
         block_type = block.get("type", "")
         if block_type == "thinking":
             ctx.in_thinking = True
-            yield ThinkingStart()
+            ctx.thinking_text = ""  # per-session accumulator (parent: fed by update_activity below)
+            yield ThinkingStart(session=session_tag)
         elif ctx.in_thinking:
             ctx.in_thinking = False
-            yield ThinkingEnd(thinking_text=session.activity.thinking_text or "")
+            yield ThinkingEnd(thinking_text=ctx.thinking_text, session=session_tag)
 
     # Tool use tracking
     if event_type == "content_block_start":
@@ -296,6 +367,7 @@ async def _handle_stream_event(
                 index=event.get("index", 0),
                 tool_use_id=ctx.current_tool_use_id,
                 parent_tool_use_id=ctx.current_tool_parent_id,
+                session=session_tag,
             )
     elif event_type == "content_block_delta":
         delta = event.get("delta", {})
@@ -303,9 +375,23 @@ async def _handle_stream_event(
             partial = delta.get("partial_json", "")
             ctx.tool_input_json += partial
             yield ToolInputDelta(partial_json=partial)
-    elif event_type == "content_block_stop" and session.activity.phase == "waiting":
-        tool_name = session.activity.tool_name or ctx.current_tool_name
-        if tool_name:
+        elif delta.get("type") == "thinking_delta":
+            # Per-session accumulator (parent: update_activity mirrors this into
+            # session.activity.thinking_text).
+            ctx.thinking_text += delta.get("thinking", "")
+    elif event_type == "content_block_stop":
+        # Emit ToolUseEnd when a tool was in progress. The parent path keeps
+        # its activity-phase gate (a top-level tool's stop lands while
+        # activity is "waiting"); the child path never reads session.activity,
+        # so it gates purely on per-session ctx tool state — a child ToolUseEnd
+        # is never dropped, and never tagged with the parent's tool name.
+        if session_tag:
+            tool_ready = bool(ctx.current_tool_name)
+            tool_name = ctx.current_tool_name
+        else:
+            tool_ready = session.activity.phase == "waiting"
+            tool_name = session.activity.tool_name or ctx.current_tool_name
+        if tool_ready:
             tool_input = {}
             if ctx.tool_input_json:
                 try:
@@ -322,6 +408,7 @@ async def _handle_stream_event(
                 preview=preview,
                 tool_use_id=ctx.current_tool_use_id,
                 parent_tool_use_id=ctx.current_tool_parent_id,
+                session=session_tag,
             )
 
             # Special case: TodoWrite (tool_input may be a non-dict on malformed/partial
@@ -343,22 +430,23 @@ async def _handle_stream_event(
         if delta.get("type") == "text_delta":
             text = delta.get("text", "")
             ctx.text_buffer += text
-            yield TextDelta(text=text)
+            yield TextDelta(text=text, session=session_tag)
     elif event_type == "message_delta":
         stop_reason = event.get("delta", {}).get("stop_reason")
         if stop_reason == "end_turn" and ctx.text_buffer.strip():
             ctx.flush_count += 1
-            yield TextFlush(text=ctx.text_buffer, reason="end_turn")
+            yield TextFlush(text=ctx.text_buffer, reason="end_turn", session=session_tag)
             ctx.text_buffer = ""
             if ctx.in_thinking:
                 ctx.in_thinking = False
-                yield ThinkingEnd()
+                yield ThinkingEnd(session=session_tag)
 
 
 async def _handle_assistant_message(
     ctx: _Ctx,
     session: AgentSession,
     msg: AssistantMessage,
+    session_tag: str = "",
 ) -> AsyncIterator[StreamOutput]:
     """Transform an AssistantMessage into StreamOutput events."""
     if msg.error in ("rate_limit", "billing_error"):
@@ -370,10 +458,10 @@ async def _handle_assistant_message(
 
         if ctx.in_thinking:
             ctx.in_thinking = False
-            yield ThinkingEnd()
+            yield ThinkingEnd(session=session_tag)
         if ctx.text_buffer.strip():
             ctx.flush_count += 1
-            yield TextFlush(text=ctx.text_buffer, reason="rate_limit")
+            yield TextFlush(text=ctx.text_buffer, reason="rate_limit", session=session_tag)
         ctx.text_buffer = ""
         ctx.hit_rate_limit = True
         yield RateLimitHit(error_type=msg.error, error_text=error_text.strip())
@@ -387,10 +475,10 @@ async def _handle_assistant_message(
 
         if ctx.in_thinking:
             ctx.in_thinking = False
-            yield ThinkingEnd()
+            yield ThinkingEnd(session=session_tag)
         if ctx.text_buffer.strip():
             ctx.flush_count += 1
-            yield TextFlush(text=ctx.text_buffer, reason="assistant_error")
+            yield TextFlush(text=ctx.text_buffer, reason="assistant_error", session=session_tag)
         ctx.text_buffer = ""
         ctx.hit_transient_error = msg.error
 
@@ -402,11 +490,11 @@ async def _handle_assistant_message(
                     ctx.text_buffer += cast("str", getattr(block, "text", ""))
         if ctx.text_buffer.strip():
             ctx.flush_count += 1
-            yield TextFlush(text=ctx.text_buffer, reason="assistant_msg")
+            yield TextFlush(text=ctx.text_buffer, reason="assistant_msg", session=session_tag)
         ctx.text_buffer = ""
         if ctx.in_thinking:
             ctx.in_thinking = False
-            yield ThinkingEnd()
+            yield ThinkingEnd(session=session_tag)
 
 
 async def _handle_result_message(
@@ -415,25 +503,26 @@ async def _handle_result_message(
     msg: ResultMessage,
     set_session_id_fn: Any,
     record_usage_fn: Any,
+    session_tag: str = "",
 ) -> AsyncIterator[StreamOutput]:
     """Transform a ResultMessage into StreamOutput events."""
     ctx.got_result = True
 
     if ctx.in_thinking:
         ctx.in_thinking = False
-        yield ThinkingEnd()
+        yield ThinkingEnd(session=session_tag)
 
     if not ctx.hit_rate_limit and ctx.text_buffer.strip():
         ctx.flush_count += 1
-        yield TextFlush(text=ctx.text_buffer, reason="result_msg")
+        yield TextFlush(text=ctx.text_buffer, reason="result_msg", session=session_tag)
     ctx.text_buffer = ""
 
     is_flowchart = msg.session_id == "flowchart"
 
-    if not is_flowchart and set_session_id_fn:
+    if not session_tag and not is_flowchart and set_session_id_fn:
         await set_session_id_fn(session, msg)
 
-    if not is_flowchart and record_usage_fn:
+    if not session_tag and not is_flowchart and record_usage_fn:
         record_usage_fn(session.name, msg)
 
     yield QueryResult(
@@ -443,6 +532,7 @@ async def _handle_result_message(
         duration_ms=msg.duration_ms or 0,
         is_error=bool(msg.is_error),
         is_flowchart=is_flowchart,
+        session=session_tag,
     )
 
 
@@ -456,8 +546,12 @@ async def _handle_system_message(
     self_compacting_names: set[str],
     compact_start_times: dict[str, float],
     pending_compact: dict[str, dict[str, int | float]],
+    session_tag: str = "",
 ) -> AsyncIterator[StreamOutput]:
     """Transform a SystemMessage into StreamOutput events."""
+    if session_tag and msg.subtype in ("status", "compact_boundary"):
+        return  # child compactions don't render; the parent thread owns compaction UX
+
     if msg.subtype == "status" and msg.data.get("status") == "compacting":
         # Set compacting flag — prevents interrupts during compaction
         session.compacting = True
@@ -487,6 +581,7 @@ async def _handle_system_message(
         yield FlowchartStart(
             command=data.get("command", ""),
             block_count=data.get("block_count", 0),
+            session=session_tag,
         )
 
     elif msg.subtype == "flowchart_complete":
@@ -496,13 +591,14 @@ async def _handle_system_message(
             duration_ms=data.get("duration_ms", 0),
             cost_usd=data.get("cost_usd", 0.0),
             blocks_executed=data.get("blocks_executed", 0),
+            session=session_tag,
         )
 
     elif msg.subtype == "block_start":
         # Flush any pending text before the block
         if ctx.text_buffer.strip():
             ctx.flush_count += 1
-            yield TextFlush(text=ctx.text_buffer, reason="block_start")
+            yield TextFlush(text=ctx.text_buffer, reason="block_start", session=session_tag)
             ctx.text_buffer = ""
         data = msg.data.get("data", {})
         block_name = data.get("block_name", "?")
@@ -512,19 +608,42 @@ async def _handle_system_message(
                 block_name=block_name,
                 block_type=block_type,
                 has_output_schema=bool(data.get("has_output_schema")),
+                session=session_tag,
             )
 
     elif msg.subtype == "block_complete":
         if ctx.text_buffer.strip():
             ctx.flush_count += 1
-            yield TextFlush(text=ctx.text_buffer, reason="block_complete")
+            yield TextFlush(text=ctx.text_buffer, reason="block_complete", session=session_tag)
             ctx.text_buffer = ""
         data = msg.data.get("data", {})
         if not data.get("success", True):
             yield BlockComplete(
                 block_name=data.get("block_name", "?"),
                 success=False,
+                session=session_tag,
             )
+
+    elif msg.subtype == "spawn_start":
+        data = msg.data.get("data", {})
+        yield SpawnStart(
+            agent_name=data.get("agent_name", ""),
+            command_name=data.get("command_name", ""),
+            model=data.get("model", ""),
+            backend=data.get("backend", ""),
+            parent_session=data.get("parent_session", ""),
+            session=_msg_session(msg),
+        )
+
+    elif msg.subtype == "spawn_complete":
+        data = msg.data.get("data", {})
+        yield SpawnEnd(
+            agent_name=data.get("agent_name", ""),
+            status=data.get("status", ""),
+            duration_ms=data.get("duration_ms", 0),
+            cost_usd=data.get("cost_usd", 0.0),
+            session=_msg_session(msg),
+        )
 
     else:
         yield SystemNotification(subtype=msg.subtype, data=msg.data)
