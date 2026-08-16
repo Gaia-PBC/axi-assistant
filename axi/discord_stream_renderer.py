@@ -273,6 +273,15 @@ class DiscordStreamRenderer:
             await self._send_long(self._deferred_msg)
             self._deferred_msg = ""
 
+        # Drain every child's deferred buffer: a child stream that ends without
+        # SpawnEnd (hard kill, StreamKilled, error teardown) must still surface
+        # its last chunk — the never-drop contract. This runs before the
+        # rate-limit/error return on purpose.
+        for child_name, deferred in list(self._child_deferred.items()):
+            if deferred:
+                await self._send_child(child_name, deferred)
+        self._child_deferred.clear()
+
         # Rate limit / transient error: the old path returned before the ping
         # (discord_stream.py:1455, :1466). Pinging here would summon the user to
         # a turn that produced no answer and no explanation.
@@ -597,11 +606,36 @@ class DiscordStreamRenderer:
     # --- Flowchart ---
 
     async def _on_flowchart_start(self, event: FlowchartStart) -> None:
+        s = event.session
+        if s and s != "main":
+            # Child flowchart: record the command so the child's block lines are
+            # quiet-gated (_child_fc_command drives _on_block_start's check).
+            # Never touch the parent's _in_flowchart/_fc_command state.
+            self._child_fc_command[s] = event.command or ""
+            return
         self._in_flowchart = True
         self._suppress_stream = False
         self._fc_command = event.command or None
 
     async def _on_flowchart_end(self, event: FlowchartEnd) -> None:
+        s = event.session
+        if s and s != "main":
+            self._child_fc_command.pop(s, None)
+            # Completion summary routes into the child's thread (full-stream
+            # fidelity — the child's flowchart renders where its text renders).
+            # The *System:* prefix is load-bearing for sentinel consumers,
+            # mirroring the parent path below.
+            duration_s = event.duration_ms / 1000
+            status = "**completed**" if event.status == "completed" else "**failed**"
+            await self._send_child(
+                s,
+                f"*System:* Flowchart {status} in {duration_s:.0f}s "
+                f"| Cost: ${event.cost_usd:.4f} | Blocks: {event.blocks_executed}",
+            )
+            test_sentinel = os.environ.get("AXI_TEST_SENTINEL")
+            if test_sentinel:
+                await self._send_child(s, test_sentinel)
+            return
         self._in_flowchart = False
         self._suppress_stream = False
         self._fc_command = None
@@ -864,7 +898,12 @@ class DiscordStreamRenderer:
             msg = await send_long(self._channel, f"[{session}] {text}")
         else:
             msg = await send_long(target, text)
-        if msg is not None:
+        # _last_flushed_* feeds _on_query_result's timing-suffix edit, which is
+        # parent-channel-only. A child's thread message must never overwrite it:
+        # if a child drain is the last send before the parent's QueryResult, the
+        # suffix would try to edit the child's thread and fail (posting a stray
+        # timing line in the parent channel). Record parent sends only.
+        if msg is not None and not session:
             self._last_flushed_msg_id = str(msg.id)
             self._last_flushed_channel_id = self._channel.id
             self._last_flushed_content = msg.content
