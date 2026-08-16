@@ -292,8 +292,8 @@ requires-dist = [
     { name = "discord-py", extras = ["voice"], specifier = ">=2.7" },
     { name = "discordquery", editable = "packages/discordquery" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "flowcoder-engine", git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-engine&rev=ee47828ac605c64154ae616598957e130350696b" },
-    { name = "flowcoder-flowchart", git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-flowchart&rev=ee47828ac605c64154ae616598957e130350696b" },
+    { name = "flowcoder-engine", git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-engine&rev=7e2195c50f84671e0462aec416d395a3c28acbe4" },
+    { name = "flowcoder-flowchart", git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-flowchart&rev=7e2195c50f84671e0462aec416d395a3c28acbe4" },
     { name = "httpx", extras = ["socks"] },
     { name = "opentelemetry-api", specifier = ">=1.20" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.20" },
@@ -666,7 +666,7 @@ wheels = [
 [[package]]
 name = "flowcoder-engine"
 version = "0.1.0"
-source = { git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-engine&rev=ee47828ac605c64154ae616598957e130350696b#ee47828ac605c64154ae616598957e130350696b" }
+source = { git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-engine&rev=7e2195c50f84671e0462aec416d395a3c28acbe4#7e2195c50f84671e0462aec416d395a3c28acbe4" }
 dependencies = [
     { name = "flowcoder-flowchart" },
     { name = "opentelemetry-api" },
@@ -675,7 +675,7 @@ dependencies = [
 [[package]]
 name = "flowcoder-flowchart"
 version = "0.1.0"
-source = { git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-flowchart&rev=ee47828ac605c64154ae616598957e130350696b#ee47828ac605c64154ae616598957e130350696b" }
+source = { git = "https://github.com/Gaia-PBC/flowcoder-core.git?subdirectory=packages%2Fflowcoder-flowchart&rev=7e2195c50f84671e0462aec416d395a3c28acbe4#7e2195c50f84671e0462aec416d395a3c28acbe4" }
 dependencies = [
     { name = "pydantic" },
 ]
