@@ -49,15 +49,35 @@ class _FakeChannel:
 
 @pytest.fixture
 def system_msgs(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Capture everything the renderer routes through _send_system."""
+    """Capture everything the renderer sends — both egress paths.
+
+    ``_send_system`` resolves ``audited_channel_send`` lazily out of
+    axi.discord_wire, so patching that module reaches it. ``_send_long``
+    (renderer :728) does not: it calls ``axi.agents.send_long``, which uses the
+    name bound by ``from axi.discord_wire import audited_channel_send`` at
+    agents.py:86 — import-time binding the patch above cannot reach. That path
+    used to be stubbed only by accident of collection order (if axi.agents was
+    first imported *after* this fixture ran, its import-time binding picked up
+    the fake), so ``test_flowchart_end_clears_command`` passed alone and failed
+    in a full-suite run, where an earlier module had already bound the real
+    function and _FakeChannel.send()'s ``None`` crashed the wire logger.
+    Stubbing send_long directly makes both paths order-independent, matching
+    test_discord_renderer_block_suppression.py:67-79.
+    """
     captured: list[str] = []
 
     async def _fake_send(channel: Any, text: str, **kwargs: Any) -> None:
         captured.append(text)
 
+    async def _fake_send_long(channel: Any, text: str) -> Any:
+        captured.append(text)
+        return None
+
+    import axi.agents
     import axi.discord_wire
 
     monkeypatch.setattr(axi.discord_wire, "audited_channel_send", _fake_send)
+    monkeypatch.setattr(axi.agents, "send_long", _fake_send_long)
     return captured
 
 

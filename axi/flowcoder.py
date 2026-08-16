@@ -327,6 +327,14 @@ def build_engine_cli_args(options: ClaudeAgentOptions) -> list[str]:
     cmd: list[str] = [get_engine_binary()]
     for sp in get_search_paths():
         cmd += ["--search-path", sp]
+    # Unbounded block execution. The engine's default 1000-block cap exists to
+    # catch flowcharts that loop by accident, but agents here loop on purpose:
+    # a secretary flowchart parks on an input block and burns two blocks per
+    # message, so the cap is a delayed crash (~500 exchanges), not a safety
+    # net. 0 or less disables it (flowcoder-core 2c47100, engine cli.py).
+    # Must precede the passthrough args below — the engine claims its own
+    # flags via parse_known_args and forwards the rest to inner Claude.
+    cmd += ["--max-blocks", "0"]
 
     # Claude CLI flags — built directly from options
     cmd += _build_claude_cli_args(options)
