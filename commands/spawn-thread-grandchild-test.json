@@ -1,0 +1,79 @@
+{
+  "id": "ad000033-thread-4000-8000-grand0000001",
+  "name": "spawn-thread-grandchild-test",
+  "description": "Throwaway e2e probe: the grandchild spawned by spawn-thread-nested-test.",
+  "flowchart": {
+    "blocks": {
+      "b0000001-start-4000-8000-000000000001": {
+        "id": "b0000001-start-4000-8000-000000000001",
+        "type": "start",
+        "name": "START",
+        "position": { "x": 150, "y": 50 }
+      },
+      "b0000002-spawn-4000-8000-000000000002": {
+        "id": "b0000002-spawn-4000-8000-000000000002",
+        "type": "spawn",
+        "name": "SPAWN GRANDCHILD",
+        "position": { "x": 150, "y": 150 },
+        "agent_name": "grandprobe",
+        "command_name": "prompt",
+        "arguments": "Say hello from the grandchild agent.",
+        "inherit_variables": false
+      },
+      "b0000003-wait-4000-8000-000000000003": {
+        "id": "b0000003-wait-4000-8000-000000000003",
+        "type": "wait",
+        "name": "WAIT FOR GRANDCHILD",
+        "position": { "x": 150, "y": 250 },
+        "wait_for": ["grandprobe"]
+      },
+      "b0000004-end-4000-8000-000000000004": {
+        "id": "b0000004-end-4000-8000-000000000004",
+        "type": "end",
+        "name": "DONE",
+        "position": { "x": 150, "y": 350 }
+      }
+    },
+    "connections": [
+      {
+        "id": "c0000001-0000-4000-8000-000000000001",
+        "source_block_id": "b0000001-start-4000-8000-000000000001",
+        "target_block_id": "b0000002-spawn-4000-8000-000000000002",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000002-0000-4000-8000-000000000002",
+        "source_block_id": "b0000002-spawn-4000-8000-000000000002",
+        "target_block_id": "b0000003-wait-4000-8000-000000000003",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000003-0000-4000-8000-000000000003",
+        "source_block_id": "b0000003-wait-4000-8000-000000000003",
+        "target_block_id": "b0000004-end-4000-8000-000000000004",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      }
+    ],
+    "start_block_id": "b0000001-start-4000-8000-000000000001"
+  },
+  "metadata": {
+    "created": "2026-08-16T00:00:00.000000",
+    "modified": "2026-08-16T00:00:00.000000",
+    "version": "1.0",
+    "author": "axi",
+    "tags": ["throwaway", "e2e", "spawn-thread"]
+  },
+  "arguments": []
+}
