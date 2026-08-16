@@ -1,7 +1,7 @@
 {
   "id": "run-experiment",
   "name": "run-experiment",
-  "description": "One experiment end-to-end (PLAN.md 2.2). Runs as a spawn child of the orchestrator (one lineage). Args are positional ($1 parent_id / $2 seed idea_id or 'none' / $3 lineage). THE RECURSION: MUTATE spawns the SAMPLED CONFIG ITSELF (command_name = the parent's flowchart_entry, search_path = the parent bundle's own flowchart/ dir, model = its main_model) handed prompts/mutate-config.md as its message, with the parent's kb/SYSTEM_PROMPT.md appended. IDEA GENERATION: the mutator GENERATES its own hypotheses (>= IDEA_GEN_MIN), deposits the promising ones via ideas.py propose, and claims the one it tests; $2 is only an inspiration seed and may be 'none'. PREP_MUTATE_ARGS assembles the evidence pack (config_evidence.py) + seed text + model allowlist into the prompt. IDEA_RECORD is deterministic bookkeeping OUTSIDE the mutator - the mutator runs the parent's own flowchart, which we do not author, so the tried-record cannot depend on model compliance. Requires flowcoder-core >= 96ae035 for SpawnBlock.search_path; on older engines BlockBase is extra=\"ignore\" and search_path is SILENTLY DROPPED. All data paths honor AUTORES_ROOT.",
+  "description": "One experiment end-to-end (PLAN.md 2.2). Runs as a spawn child of the orchestrator (one lineage). Args are positional ($1 parent_id / $2 seed idea_id or 'none' / $3 lineage). THE RECURSION: MUTATE spawns the SAMPLED CONFIG ITSELF (command_name = the parent's flowchart_entry, search_path = the parent bundle's own flowchart/ dir, model = its main_model) handed prompts/mutate-config.md as its message, with the parent's kb/SYSTEM_PROMPT.md appended. IDEA GENERATION: the mutator GENERATES its own hypotheses (>= IDEA_GEN_MIN), deposits the promising ones via ideas.py propose, and claims the one it tests; $2 is only an inspiration seed and may be 'none'. PREP_MUTATE_ARGS assembles the evidence pack (config_evidence.py) + seed text + model allowlist into the prompt. VALIDATE_MODELS gates on models.json before the eval is paid for (the old 'keep/discard IS the validation' stance predates the mutator inventing its own model ids). IDEA_RECORD is deterministic bookkeeping OUTSIDE the mutator - the mutator runs the parent's own flowchart, which we do not author, so the tried-record cannot depend on model compliance. Requires flowcoder-core >= 96ae035 for SpawnBlock.search_path; on older engines BlockBase is extra=\"ignore\" and search_path is SILENTLY DROPPED. All data paths honor AUTORES_ROOT.",
   "arguments": [
     {
       "name": "parent_id",
@@ -162,6 +162,15 @@
         "working_directory": "",
         "output_variable": "idea_record",
         "continue_on_error": false
+      },
+      "validate_models": {
+        "id": "validate_models",
+        "type": "bash",
+        "name": "VALIDATE_MODELS",
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=\"$AR/dict/configs/optimizer-seed/scripts\"\n# Gate BEFORE the eval: the mutator now invents its own model ids, so the\n# allowlist is the only thing between a hallucinated model and a paid run.\n# continue_on_error=false \u2014 fail the lineage cheaply. The claimed idea is left\n# `present` and the IDEA_STALE_SECONDS reaper returns it to `future`.\n\"$PY\" \"$SCRIPTS/validate_models.py\" \"{{out_dir}}\"",
+        "working_directory": "",
+        "output_variable": "models_ok",
+        "continue_on_error": false
       }
     },
     "connections": [
@@ -217,7 +226,7 @@
       {
         "id": "m7",
         "source_block_id": "wait_mutate",
-        "target_block_id": "eval",
+        "target_block_id": "validate_models",
         "source_port": "out",
         "target_port": "in"
       },
@@ -285,6 +294,13 @@
         "id": "c14b",
         "source_block_id": "idea_record",
         "target_block_id": "signal",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "m7b",
+        "source_block_id": "validate_models",
+        "target_block_id": "eval",
         "source_port": "out",
         "target_port": "in"
       }

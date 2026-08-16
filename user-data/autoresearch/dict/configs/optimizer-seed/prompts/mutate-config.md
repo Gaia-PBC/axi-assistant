@@ -47,9 +47,17 @@ predict and why the evidence in 2a supports it. Vary the kind of knob — do not
 You may build on the 2b seed, but do not merely restate it. Do not re-propose anything
 listed as already tried in 2a unless you are changing it in a specific, stated way.
 
-For a **model** target the value MUST be one of these exact ids. `rel_cost` is a coarse
-ordering hint (higher = pricier); the loop optimizes quality-per-cost. Null/empty means
-"inherit the process default".
+For a **model** target the value MUST be one of these exact ids — a candidate referencing
+anything else is rejected before its eval is paid for, so the lineage is wasted. `rel_cost`
+is a coarse ordering hint (higher = pricier); the loop optimizes quality-per-cost.
+Null/empty means "inherit the process default".
+
+**The model does not have to be Claude.** The soul being optimized is Axi's, whatever serves
+it. Entries with a non-`anthropic` provider are locally served (ollama / vLLM): `rel_cost=0`
+because there is no marginal token cost, traded against quality and latency. Routing is
+automatic from the id alone — you do not write the provider anywhere. A local model is a
+genuinely different region of the search space from a cheaper hosted tier, and the evidence
+in 2a will not contain it until someone tries it.
 
 @@AVAILABLE_MODELS@@
 

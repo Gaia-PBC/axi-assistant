@@ -1,13 +1,87 @@
 {
-  "_doc": "Available models the config-generator (mutate-config) may propose for a bundle's main_model or a flowchart spawn-block model. This is the autoresearch-side cache of what the box can actually run — same single-source-of-truth pattern as tunables.json / benchmark-manifest.json. `models` is the ALLOWLIST: it's both what PLAN_EDIT is shown and what the STAMP guard (scripts/validate_models.py) enforces, so a mutation can never ship a hallucinated or unservable model to a paid eval. Only loop-verified ids belong in `models`. `rel_cost` is a COARSE ordering hint (haiku<sonnet<opus) for quality-per-cost reasoning; the authoritative cost is each eval's measured cost_usd. `candidates` are listed-but-unverified ids kept OUT of the allowlist (so they can't waste an eval) until a smoke check promotes them. SOURCE OF TRUTH going forward: regenerate this from the provider/model registry (axi_list_models / axi.providers, currently unmerged) via scripts/refresh_models.py once it lands — the registry does live discovery of on-box ollama/vLLM models plus the hardcoded Anthropic table.",
-  "generated_by": "hand-seeded 2026-08-16 (registry unmerged); regenerate via scripts/refresh_models.py when axi.providers lands",
+  "_doc": "Models the mutator may propose for a bundle's main_model or a flowchart spawn-block model. Generated from the provider/model registry (axi.providers.list_models) by scripts/refresh_models.py \u2014 regenerate rather than hand-editing, except to add/adjust the `tier` and `rel_cost` annotations, which discovery cannot supply and which regeneration preserves. `provider` is the entry from user-data/providers.json that serves the id; axi auto-routes an id that is unique to one non-anthropic provider, so the eval only needs the id. `rel_cost` is a COARSE ordering hint for quality-per-cost reasoning (local models are 0 \u2014 no marginal token cost, but they trade quality and latency); the authoritative cost is each eval's measured cost_usd. ENFORCEMENT: run-experiment's VALIDATE_MODELS block gates on this list before paying for an eval, so an id absent here fails the lineage fast rather than burning a run. `candidates` are listed-but-unverified ids kept OUT of the allowlist.",
+  "generated_by": "scripts/refresh_models.py from axi.providers.list_models()",
   "models": [
-    { "id": "claude-haiku-4-5-20251001", "tier": "haiku", "rel_cost": 1, "reasoning": false, "verified": true },
-    { "id": "claude-sonnet-5", "tier": "sonnet", "rel_cost": 5, "reasoning": true, "verified": true },
-    { "id": "claude-opus-4-8", "tier": "opus", "rel_cost": 15, "reasoning": true, "verified": true }
+    {
+      "id": "claude-haiku-4-5",
+      "provider": "anthropic",
+      "tier": "haiku",
+      "rel_cost": 1,
+      "reasoning": false,
+      "context_window": 200000,
+      "verified": true
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "tier": "haiku",
+      "rel_cost": 1,
+      "reasoning": false,
+      "verified": true,
+      "provider": "anthropic",
+      "retained": true
+    },
+    {
+      "id": "claude-opus-4-8",
+      "provider": "anthropic",
+      "tier": "opus",
+      "rel_cost": 15,
+      "reasoning": true,
+      "context_window": 200000,
+      "verified": true
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "tier": "sonnet",
+      "rel_cost": 5,
+      "reasoning": true,
+      "context_window": 200000,
+      "verified": true
+    },
+    {
+      "id": "claude-sonnet-5",
+      "tier": "sonnet",
+      "rel_cost": 5,
+      "reasoning": true,
+      "verified": true,
+      "provider": "anthropic",
+      "retained": true
+    },
+    {
+      "id": "nemotron-3.5-lightning",
+      "provider": "vllm",
+      "tier": "local",
+      "rel_cost": 0,
+      "reasoning": true,
+      "context_window": 131072,
+      "verified": true
+    }
   ],
   "candidates": [
-    { "id": "claude-opus-5", "tier": "opus", "note": "current flagship; promote to `models` after a smoke check or via the registry" },
-    { "id": "claude-fable-5", "tier": "fable", "note": "small/fast tier; verify role + cost before adding" }
+    {
+      "id": "claude-fable-5",
+      "tier": "fable",
+      "note": "small/fast tier; verify role + cost before adding"
+    },
+    {
+      "id": "claude-opus-5",
+      "tier": "opus",
+      "note": "current flagship; promote to `models` after a smoke check or via the registry"
+    },
+    {
+      "id": "haiku",
+      "provider": "anthropic",
+      "note": "bare tier alias \u2014 remaps over time, so an experiment attributed to it is not reproducible. Pin a dated id."
+    },
+    {
+      "id": "opus",
+      "provider": "anthropic",
+      "note": "bare tier alias \u2014 remaps over time, so an experiment attributed to it is not reproducible. Pin a dated id."
+    },
+    {
+      "id": "sonnet",
+      "provider": "anthropic",
+      "note": "bare tier alias \u2014 remaps over time, so an experiment attributed to it is not reproducible. Pin a dated id."
+    }
   ]
 }

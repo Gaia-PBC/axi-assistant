@@ -39,10 +39,24 @@ def is_valid(model_id: str) -> bool:
     return model_id in model_ids()
 
 
+def provider_for(model_id: str) -> str | None:
+    """Which provider serves this id, or None if it is not allowlisted."""
+    for m in models():
+        if m.get("id") == model_id:
+            return m.get("provider")
+    return None
+
+
 def render_for_prompt() -> str:
+    """The allowlist as the mutator sees it.
+
+    Provider is shown because a soul-config's model need not be Claude — a local
+    (ollama/vLLM) model is a legitimate knob value, and its cost profile is
+    completely different from a hosted one.
+    """
     rows = [
-        f"  - {m['id']}  (tier={m.get('tier','?')}, rel_cost={m.get('rel_cost','?')}, "
-        f"reasoning={m.get('reasoning','?')})"
+        f"  - {m['id']}  (provider={m.get('provider','?')}, tier={m.get('tier','?')}, "
+        f"rel_cost={m.get('rel_cost','?')}, reasoning={m.get('reasoning','?')})"
         for m in models()
     ]
     return "\n".join(rows) if rows else "  (no models listed — models.json missing or empty)"
