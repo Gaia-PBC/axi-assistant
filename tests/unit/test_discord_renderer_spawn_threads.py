@@ -14,6 +14,9 @@ os.environ.setdefault("DISCORD_GUILD_ID", "1")
 
 from agenthub.stream_types import (
     BlockStart,
+    FlowchartEnd,
+    FlowchartStart,
+    QueryResult,
     SpawnEnd,
     SpawnStart,
     StreamEnd,
@@ -193,3 +196,192 @@ async def test_child_output_schema_suppression_is_per_session(
     await renderer.handle(StreamEnd())
 
     assert any(t is channel and "parent visible" in text for t, text in flushed)
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1 regressions
+# ---------------------------------------------------------------------------
+
+
+async def test_stream_end_drains_child_deferred_without_spawn_end(
+    env, agent: AgentSession, flushed: list[tuple[Any, str]]
+) -> None:
+    """A child stream ending without SpawnEnd still surfaces its last chunk.
+
+    Hard kill / StreamKilled / error teardown never emit SpawnEnd, so the
+    stream-end drain is the never-drop backstop for child buffers.
+    """
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    thread = _FakeThread("lint")
+    bot._threads[888] = thread
+    discord_state(agent).spawn_threads["lint"] = 888
+    renderer = _renderer(channel, bot)
+
+    await renderer.handle(TextFlush(text="final words", reason="mid_turn_split", session="lint"))
+    # No SpawnEnd — the stream just dies.
+    await renderer.handle(StreamEnd())
+
+    assert any(t is thread and "final words" in text for t, text in flushed)
+    assert renderer._child_deferred == {}, "buffer must be cleared after the drain"
+
+
+async def test_stream_end_child_fallback_prefix_without_thread(
+    env, agent: AgentSession, flushed: list[tuple[Any, str]]
+) -> None:
+    """Stream-end drain of a threadless child uses the [agent] fallback."""
+    channel = _FakeChannel()
+    renderer = _renderer(channel, _FakeBot())
+
+    await renderer.handle(TextFlush(text="orphan tail", reason="mid_turn_split", session="lint"))
+    await renderer.handle(StreamEnd())
+
+    assert any(
+        t is channel and "[lint]" in text and "orphan tail" in text for t, text in flushed
+    )
+
+
+async def test_child_drain_does_not_clobber_parent_last_flushed(
+    env, agent: AgentSession, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_send_long(session=...) must not hijack the parent's timing-suffix edit.
+
+    Regression: _send_long recorded _last_flushed_msg_id from a child's thread
+    message but set _last_flushed_channel_id to the parent's — an inconsistent
+    pair. If a child send is the last one before the parent's QueryResult, the
+    suffix edit would target the parent channel with the child's message id
+    (editing the wrong message) and then post a stray timing line. Parent-only
+    bookkeeping fixes it.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from axi.axi_types import discord_state
+
+    # _elapsed_seconds measures from session.activity.query_started; seed it so
+    # the QueryResult path produces a timing suffix (mirrors the timing suite).
+    agent.activity = type(
+        "Activity", (), {"query_started": datetime.now(UTC) - timedelta(seconds=1.5)}
+    )()
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    thread = _FakeThread("lint")
+    bot._threads[888] = thread
+    discord_state(agent).spawn_threads["lint"] = 888
+    renderer = _renderer(channel, bot)
+
+    # send_long returns distinguishable messages per channel so the edit's
+    # target message id reveals whether a child send hijacked the bookkeeping.
+    sent: list[tuple[Any, str]] = []
+
+    class _Msg:
+        def __init__(self, id: str, content: str) -> None:
+            self.id = id
+            self.content = content
+
+    async def _fake_send_long(target: Any, text: str) -> _Msg:
+        sent.append((target, text))
+        return _Msg("child-msg" if getattr(target, "id", None) == 888 else "parent-msg", text)
+
+    import axi.agents
+
+    monkeypatch.setattr(axi.agents, "send_long", _fake_send_long)
+
+    edits: list[tuple[int, str, str]] = []
+
+    class _Client:
+        async def edit_message(self, channel_id: int, message_id: str, content: str) -> None:
+            edits.append((channel_id, message_id, content))
+
+    from axi import config
+
+    monkeypatch.setattr(config, "discord_client", _Client())
+
+    # Parent text first: establishes the parent's last-flushed message.
+    await renderer.handle(TextFlush(text="parent answer", reason="end_turn"))
+    await renderer.handle(StreamEnd())
+
+    # A child send via _send_long (e.g. a child drain before QueryResult) must
+    # NOT overwrite the parent's last-flushed bookkeeping.
+    await renderer._send_long("child tail", session="lint")
+
+    # The timing suffix must edit the PARENT's last message, not the child's.
+    await renderer.handle(QueryResult(cost_usd=0.0, duration_ms=1500, session=""))
+
+    assert any(t is thread and "child tail" in text for t, text in sent), (
+        "child text still routes to its thread"
+    )
+    assert edits, "expected the QueryResult timing edit to run"
+    assert all(mid == "parent-msg" for _, mid, _ in edits), (
+        f"timing edit must target the parent's message id, got {edits}"
+    )
+    assert any("1.5s" in content for _, _, content in edits)
+
+
+async def test_child_flowchart_events_are_isolated_from_parent(
+    env, agent: AgentSession, flushed: list[tuple[Any, str]]
+) -> None:
+    """Child flowchart events must not clobber the parent's FC state.
+
+    A child's FlowchartStart/End used to fall into the parent-only handlers,
+    mutating _fc_command/_in_flowchart — so a parent block after the child's
+    flowchart ran would inherit the child's quiet-command gating (or vice
+    versa). The child's completion summary renders into its thread.
+    """
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    thread = _FakeThread("lint")
+    bot._threads[888] = thread
+    discord_state(agent).spawn_threads["lint"] = 888
+    renderer = _renderer(channel, bot)
+
+    await renderer.handle(FlowchartStart(command="soul", block_count=1, session="lint"))
+    await renderer.handle(FlowchartEnd(
+        status="completed", duration_ms=5000, cost_usd=0.1, blocks_executed=2, session="lint",
+    ))
+
+    assert renderer._fc_command is None, "child flowchart must not set the parent's command"
+    assert renderer._in_flowchart is False, "child flowchart must not set the parent's flag"
+    assert "lint" not in renderer._child_fc_command, "child FC command cleared at end"
+    assert any(
+        t is thread and "Flowchart **completed**" in text and "5s" in text for t, text in flushed
+    ), "child completion summary routes into the child's thread"
+
+
+async def test_child_flowchart_command_quiet_gates_child_blocks_only(
+    env, agent: AgentSession, posted: list[tuple[Any, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child /soul flowchart quiet-gates the child's block lines, not the parent's."""
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    thread = _FakeThread("lint")
+    bot._threads[888] = thread
+    discord_state(agent).spawn_threads["lint"] = 888
+    renderer = _renderer(channel, bot)
+
+    # Quiet-gate check is _child_fc_command in _FC_QUIET_COMMANDS and NOT verbose.
+    from axi import config
+
+    monkeypatch.setattr(config, "FC_SPAWN_THREADS", True)
+    await renderer.handle(FlowchartStart(command="soul", block_count=1, session="lint"))
+    await renderer.handle(BlockStart(
+        block_name="CHILD", block_type="prompt", has_output_schema=False, session="lint",
+    ))
+    # Parent block lines are governed by the parent's own (unset) FC command.
+    await renderer.handle(BlockStart(
+        block_name="PARENT", block_type="prompt", has_output_schema=False,
+    ))
+
+    assert not any(t is thread and "CHILD" in text for t, text in posted), (
+        "child block line suppressed by child quiet command"
+    )
+    assert any(t is channel and "PARENT" in text for t, text in posted), (
+        "parent block line unaffected by the child's flowchart"
+    )
