@@ -1,0 +1,39 @@
+{
+  "id": "soul-lite-do",
+  "name": "soul-lite-do",
+  "description": "Child of soul-lite, run on opus-4.8 via the parent's spawn model override. Branches on the haiku classification (inherited): if ref topics apply, READ_REFS then BARE_DO_IT; otherwise BARE_DO_IT directly. Both prompts run in this one opus session.",
+  "arguments": [],
+  "flowchart": {
+    "start_block_id": "start",
+    "blocks": {
+      "start": { "id": "start", "type": "start", "name": "START" },
+      "has_refs": {
+        "id": "has_refs",
+        "type": "branch",
+        "name": "HAS_REF_TOPICS?",
+        "condition": "hasRefTopics"
+      },
+      "read_refs": {
+        "id": "read_refs",
+        "type": "prompt",
+        "name": "READ_REFS",
+        "prompt": "<sys>\nRead the reference doc(s) for these topics: {{refTopics}}.\nThey live under /home/pride/coding-projects/leo-axi/prompts/refs/ (Scheduling -> scheduling.md, Agent spawning -> agent-spawning.md). Use the Read tool to read the relevant file(s). Do NOT respond to the user yet — just read and absorb the material.\n</sys>"
+      },
+      "bare_do": {
+        "id": "bare_do",
+        "type": "prompt",
+        "name": "BARE_DO_IT",
+        "prompt": "<sys>\nYour response goes to the user. Do exactly what the user's message asks, using anything you just read. Be concise.\n</sys>\n<user>\n$5\n</user>"
+      },
+      "end": { "id": "end", "type": "end", "name": "END" }
+    },
+    "connections": [
+      { "id": "c1", "source_block_id": "start", "target_block_id": "has_refs", "source_port": "out", "target_port": "in" },
+      { "id": "c2", "source_block_id": "has_refs", "target_block_id": "read_refs", "source_port": "true", "target_port": "in", "is_true_path": true, "label": "has ref topics" },
+      { "id": "c3", "source_block_id": "has_refs", "target_block_id": "bare_do", "source_port": "false", "target_port": "in", "is_true_path": false, "label": "no ref topics" },
+      { "id": "c4", "source_block_id": "read_refs", "target_block_id": "bare_do", "source_port": "out", "target_port": "in" },
+      { "id": "c5", "source_block_id": "bare_do", "target_block_id": "end", "source_port": "out", "target_port": "in" }
+    ]
+  },
+  "metadata": { "created": "2026-08-09", "version": "1.0", "author": "axi-master" }
+}

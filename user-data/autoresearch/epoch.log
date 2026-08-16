@@ -1,0 +1,4 @@
+2026-08-15T23:48:22 epoch parent=cand-baseline-sonnet idea=idea-do-sonnet lineage_cost=0.0348833
+2026-08-15T23:51:35 epoch parent=cand-baseline-sonnet idea=idea-main-opus lineage_cost=0.0310723
+2026-08-15T23:54:40 epoch parent=cand-baseline-sonnet idea=idea-kb-concise lineage_cost=0.0507884
+2026-08-16T01:18:38 epoch parent=optimizer-seed idea=opt-main-sonnet lineage_cost=0.085183

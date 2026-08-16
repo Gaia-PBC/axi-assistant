@@ -1,0 +1,140 @@
+{
+  "id": "teacher",
+  "name": "teacher",
+  "description": "Phase 3 — co-evolve the gaia-testbench benchmark so configs can't overfit a frozen dataset (PLAN.md §2e/§3.1, IMPLEMENTATION.md §2.8). Runs as a whole agent turn, slow-cron-fired. Flow: READ_STATE (find_blind_spots.py: where the top configs all pass = no signal, + the dataset-ideas queue) -> READ_IDEA/CLAIM (top unclaimed dataset idea, or autonomous harden) -> EVOLVE (prompt/output_schema: design ONE new held-out task aimed at a blind spot) -> WRITE_TASK (prompt/file-tools: write tasks/<id>.toml) -> APPLY (apply_dataset_evolution.py: validate via gaia get_task, append to benchmark-manifest, bump version, regen evaluate-config fan-out) -> RESCORE top-2 targets on the new version (command evaluate-config x2; held-out demotes overfits) -> SIGNAL/LOG. State on disk; a crash re-fires the cron. This is the anti-overfitting engine and the validity precondition for Phase-4 recursion.",
+  "arguments": [],
+  "flowchart": {
+    "start_block_id": "start",
+    "blocks": {
+      "start": { "id": "start", "type": "start", "name": "START" },
+      "read_state": {
+        "id": "read_state",
+        "type": "bash",
+        "name": "READ_STATE",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nAR=/home/acer01/axi-assistant/user-data/autoresearch\nSCRIPTS=\"$AR/dict/configs/optimizer-seed/scripts\"\necho '=== BLIND-SPOT SCAN (top configs per-task discrimination; SATURATED = no signal) ==='\n\"$PY\" \"$SCRIPTS/find_blind_spots.py\"\necho ''\necho '=== DATASET-IDEAS QUEUE (maintained by the dataset-secretary) ==='\ngrep -E '^- \\[' \"$AR/dataset-ideas.md\" 2>/dev/null || echo '(no queued dataset ideas — harden a saturated task autonomously)'",
+        "working_directory": "",
+        "output_variable": "benchmark_state",
+        "continue_on_error": false
+      },
+      "read_idea": {
+        "id": "read_idea",
+        "type": "bash",
+        "name": "READ_DATASET_IDEA",
+        "command": "set -eu\nAR=/home/acer01/axi-assistant/user-data/autoresearch\nIDEAS=\"$AR/dataset-ideas.md\"\nLINE=$(grep -m1 -E '^- \\[ \\] ' \"$IDEAS\" 2>/dev/null || true)\nif [ -z \"$LINE\" ]; then echo 'dataset-auto-harden'; else echo \"$LINE\" | sed -E 's/^- \\[ \\] *//; s/:.*//'; fi",
+        "working_directory": "",
+        "output_variable": "dataset_idea_id",
+        "continue_on_error": false
+      },
+      "claim_idea": {
+        "id": "claim_idea",
+        "type": "bash",
+        "name": "CLAIM_DATASET_IDEA",
+        "command": "set -eu\nAR=/home/acer01/axi-assistant/user-data/autoresearch\nIDEAS=\"$AR/dataset-ideas.md\"\nsed -i -E \"s/^- \\[ \\] ({{dataset_idea_id}}:)/- [~] \\1/\" \"$IDEAS\" 2>/dev/null || true\necho \"claimed {{dataset_idea_id}}\"",
+        "working_directory": "",
+        "continue_on_error": true
+      },
+      "evolve": {
+        "id": "evolve",
+        "type": "prompt",
+        "name": "EVOLVE",
+        "prompt": "<sys>\nYou are the teacher for an autoresearch loop. Your job: design EXACTLY ONE new, harder / held-out gaia-testbench coding task that RESTORES DISCRIMINATION where the benchmark has gone flat — a task the current top configs would NOT all ace, so it separates good configs from better ones (PLAN.md §2e). This is the anti-overfitting engine.\n\nCurrent benchmark state (blind-spot scan + the dataset-secretary's queued ideas):\n{{benchmark_state}}\n\nGuidance:\n- Prefer the dataset idea '{{dataset_idea_id}}' if it names a concrete task; otherwise autonomously harden a SATURATED task (one every top config passes) — make a variant with an adversarial edge case, a stricter correctness bar, or a required verification step the easy version doesn't force.\n- The task must be SELF-CONTAINED and run on a no-egress box: Python stdlib / provided files / shell only. No pip installs, no network. (gaia-testbench's own runnable tasks are all stdlib/tool-only.)\n- It must have a DETERMINISTIC correctness oracle the judge can recompute by executing code (the judge can run Bash).\n- task_id: a short kebab token, unique, not already in the benchmark; it becomes the tasks/<task_id>.toml filename stem (must match exactly).\n- The three rubric criteria each tell the judge how to assign 1 (fails) / 2 (partial) / 3 (fully meets). 'verification' is judged from the tool-call trace only (did the agent test its own work?), the other two from the produced artifact.\n\nEmit the task as structured output.\n</sys>",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "task_id": { "type": "string", "description": "kebab id == the tasks/<id>.toml filename stem; unique, not already in the benchmark" },
+            "task_prompt": { "type": "string", "description": "the coding task prompt handed to the agent-under-test; self-contained, stdlib/tool-only, deterministic oracle" },
+            "correctness": { "type": "string", "description": "rubric: how the judge assigns 1/2/3 for correctness, recomputable by running code" },
+            "verification": { "type": "string", "description": "rubric: how the judge assigns 1/2/3 for verification, judged from the tool-call trace only" },
+            "code_quality": { "type": "string", "description": "rubric: how the judge assigns 1/2/3 for code quality from the artifact" },
+            "targets": { "type": "string", "description": "which saturated task or dataset-idea this hardens, and why it discriminates" },
+            "rationale": { "type": "string", "description": "why the current top configs would NOT all pass this" }
+          },
+          "required": ["task_id", "task_prompt", "correctness", "verification", "code_quality", "targets", "rationale"]
+        }
+      },
+      "write_task": {
+        "id": "write_task",
+        "type": "prompt",
+        "name": "WRITE_TASK",
+        "prompt": "<sys>\nWrite the new benchmark task to a TOML file, then stop. Change nothing else.\n\nWrite this EXACT file: /home/acer01/axi-assistant/user-data/soul-benchmarks/tasks/{{task_id}}.toml\n\nContents (use TOML triple-quoted '''...''' literals so no escaping is needed; the `id` MUST equal {{task_id}} exactly or gaia-testbench rejects the file):\n\n  id = \"{{task_id}}\"\n  prompt = '''<the task_prompt below, verbatim>'''\n  notes = '''authored by teacher.json; targets: {{targets}}'''\n  [rubric]\n  correctness = '''<the correctness rubric below, verbatim>'''\n  verification = '''<the verification rubric below, verbatim>'''\n  code_quality = '''<the code_quality rubric below, verbatim>'''\n\nField values to insert verbatim:\n- task_prompt: {{task_prompt}}\n- correctness: {{correctness}}\n- verification: {{verification}}\n- code_quality: {{code_quality}}\n\nUse the Write tool to create the file. If any field literally contains the sequence ''' , replace it with three single quotes spaced apart to keep the TOML valid. After writing, print 'wrote tasks/{{task_id}}.toml' and nothing else.\n</sys>"
+      },
+      "apply": {
+        "id": "apply",
+        "type": "bash",
+        "name": "APPLY_EVOLUTION",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/dict/configs/optimizer-seed/scripts\n\"$PY\" \"$SCRIPTS/apply_dataset_evolution.py\" \"{{task_id}}\" --note \"teacher: {{dataset_idea_id}} -> {{task_id}}\"",
+        "working_directory": "",
+        "output_variable": "new_version",
+        "continue_on_error": false
+      },
+      "read_topk_1": {
+        "id": "read_topk_1",
+        "type": "bash",
+        "name": "READ_TOPK_1",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/dict/configs/optimizer-seed/scripts\n\"$PY\" \"$SCRIPTS/top_k_dir.py\" 1",
+        "working_directory": "",
+        "output_variable": "topk_1",
+        "continue_on_error": false
+      },
+      "read_topk_2": {
+        "id": "read_topk_2",
+        "type": "bash",
+        "name": "READ_TOPK_2",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/dict/configs/optimizer-seed/scripts\n\"$PY\" \"$SCRIPTS/top_k_dir.py\" 2",
+        "working_directory": "",
+        "output_variable": "topk_2",
+        "continue_on_error": false
+      },
+      "rescore_1": {
+        "id": "rescore_1",
+        "type": "command",
+        "name": "RESCORE_TOPK_1",
+        "command_name": "evaluate-config",
+        "arguments": "{{topk_1}} {{new_version}}",
+        "merge_output": true
+      },
+      "rescore_2": {
+        "id": "rescore_2",
+        "type": "command",
+        "name": "RESCORE_TOPK_2",
+        "command_name": "evaluate-config",
+        "arguments": "{{topk_2}} {{new_version}}",
+        "merge_output": true
+      },
+      "signal": {
+        "id": "signal",
+        "type": "bash",
+        "name": "SIGNAL",
+        "command": "set -eu\nAR=/home/acer01/axi-assistant/user-data/autoresearch\necho \"$(date +%FT%T) teacher done idea={{dataset_idea_id}} added={{task_id}} version={{new_version}}\" >> \"$AR/epoch-signals.log\"\nsed -i -E \"s/^- \\[~\\] ({{dataset_idea_id}}:)/- [x] \\1/\" \"$AR/dataset-ideas.md\" 2>/dev/null || true\necho \"signalled dataset-secretary: done {{dataset_idea_id}}\"",
+        "working_directory": "",
+        "continue_on_error": true
+      },
+      "log": {
+        "id": "log",
+        "type": "bash",
+        "name": "LOG_TEACHER",
+        "command": "set -eu\nAR=/home/acer01/axi-assistant/user-data/autoresearch\necho \"$(date +%FT%T) teacher version={{new_version}} added={{task_id}} rescored={{topk_1}},{{topk_2}}\" >> \"$AR/teacher.log\"\ntail -1 \"$AR/teacher.log\"",
+        "working_directory": "",
+        "output_variable": "teacher_summary",
+        "continue_on_error": true
+      },
+      "end": { "id": "end", "type": "end", "name": "END" }
+    },
+    "connections": [
+      { "id": "c1", "source_block_id": "start", "target_block_id": "read_state", "source_port": "out", "target_port": "in" },
+      { "id": "c2", "source_block_id": "read_state", "target_block_id": "read_idea", "source_port": "out", "target_port": "in" },
+      { "id": "c3", "source_block_id": "read_idea", "target_block_id": "claim_idea", "source_port": "out", "target_port": "in" },
+      { "id": "c4", "source_block_id": "claim_idea", "target_block_id": "evolve", "source_port": "out", "target_port": "in" },
+      { "id": "c5", "source_block_id": "evolve", "target_block_id": "write_task", "source_port": "out", "target_port": "in" },
+      { "id": "c6", "source_block_id": "write_task", "target_block_id": "apply", "source_port": "out", "target_port": "in" },
+      { "id": "c7", "source_block_id": "apply", "target_block_id": "read_topk_1", "source_port": "out", "target_port": "in" },
+      { "id": "c8", "source_block_id": "read_topk_1", "target_block_id": "read_topk_2", "source_port": "out", "target_port": "in" },
+      { "id": "c9", "source_block_id": "read_topk_2", "target_block_id": "rescore_1", "source_port": "out", "target_port": "in" },
+      { "id": "c10", "source_block_id": "rescore_1", "target_block_id": "rescore_2", "source_port": "out", "target_port": "in" },
+      { "id": "c11", "source_block_id": "rescore_2", "target_block_id": "signal", "source_port": "out", "target_port": "in" },
+      { "id": "c12", "source_block_id": "signal", "target_block_id": "log", "source_port": "out", "target_port": "in" },
+      { "id": "c13", "source_block_id": "log", "target_block_id": "end", "source_port": "out", "target_port": "in" }
+    ]
+  },
+  "metadata": { "created": "2026-08-16", "version": "1.0-phase3", "author": "hackathon-rnd", "tags": ["autoresearch", "optimizer", "phase3", "teacher"] }
+}

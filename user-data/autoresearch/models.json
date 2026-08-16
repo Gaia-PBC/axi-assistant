@@ -1,0 +1,13 @@
+{
+  "_doc": "Available models the config-generator (mutate-config) may propose for a bundle's main_model or a flowchart spawn-block model. This is the autoresearch-side cache of what the box can actually run — same single-source-of-truth pattern as tunables.json / benchmark-manifest.json. `models` is the ALLOWLIST: it's both what PLAN_EDIT is shown and what the STAMP guard (scripts/validate_models.py) enforces, so a mutation can never ship a hallucinated or unservable model to a paid eval. Only loop-verified ids belong in `models`. `rel_cost` is a COARSE ordering hint (haiku<sonnet<opus) for quality-per-cost reasoning; the authoritative cost is each eval's measured cost_usd. `candidates` are listed-but-unverified ids kept OUT of the allowlist (so they can't waste an eval) until a smoke check promotes them. SOURCE OF TRUTH going forward: regenerate this from the provider/model registry (axi_list_models / axi.providers, currently unmerged) via scripts/refresh_models.py once it lands — the registry does live discovery of on-box ollama/vLLM models plus the hardcoded Anthropic table.",
+  "generated_by": "hand-seeded 2026-08-16 (registry unmerged); regenerate via scripts/refresh_models.py when axi.providers lands",
+  "models": [
+    { "id": "claude-haiku-4-5-20251001", "tier": "haiku", "rel_cost": 1, "reasoning": false, "verified": true },
+    { "id": "claude-sonnet-5", "tier": "sonnet", "rel_cost": 5, "reasoning": true, "verified": true },
+    { "id": "claude-opus-4-8", "tier": "opus", "rel_cost": 15, "reasoning": true, "verified": true }
+  ],
+  "candidates": [
+    { "id": "claude-opus-5", "tier": "opus", "note": "current flagship; promote to `models` after a smoke check or via the registry" },
+    { "id": "claude-fable-5", "tier": "fable", "note": "small/fast tier; verify role + cost before adding" }
+  ]
+}

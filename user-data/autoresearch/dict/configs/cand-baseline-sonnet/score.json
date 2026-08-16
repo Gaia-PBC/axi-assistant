@@ -1,0 +1,33 @@
+{
+  "aggregate": 0.8888888888888888,
+  "per_criterion": {
+    "correctness": 2.8333333333333335,
+    "verification": 2.3333333333333335,
+    "code_quality": 2.8333333333333335
+  },
+  "per_level": {
+    "L2": {
+      "aggregate": 0.8888888888888888,
+      "per_criterion": {
+        "correctness": 2.8333333333333335,
+        "verification": 2.3333333333333335,
+        "code_quality": 2.8333333333333335
+      },
+      "per_task": {
+        "fix-balanced-brackets": 1.0,
+        "flaky-api-retry": 0.8888888888888888,
+        "harden-brackets-context-aware": 1.0,
+        "refactor-user-validation": 0.8888888888888888,
+        "sales-report": 1.0,
+        "sqrt-67-digits": 0.5555555555555556
+      },
+      "cost_usd": 2.3880564,
+      "n_evals": 6,
+      "stderr": 0.06415002990995843
+    }
+  },
+  "n_evals": 6,
+  "stderr": 0.06415002990995843,
+  "cost_usd": 2.3880564,
+  "benchmark_version": "v2"
+}

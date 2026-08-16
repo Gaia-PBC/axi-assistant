@@ -1,0 +1,121 @@
+{
+  "id": "run-experiment",
+  "name": "run-experiment",
+  "description": "Phase 2 + Phase 4 — one experiment end-to-end (PLAN.md §2.2/§4.3, IMPLEMENTATION.md §2.2/§4). Runs as a spawn child of the orchestrator (one lineage). Flow: SETUP (unique scratch out_dir) -> MUTATE (command mutate-config -> candidate) -> READ_KIND (candidate manifest.kind) -> KIND branch: a TARGET candidate goes to EVAL (command evaluate-config -> out_dir/score.json, gaia-testbench); an OPTIMIZER candidate goes to SCORE_OPT (score_optimizer.py: run it against a sandboxed scratch dict, §4.3, scored by the configs it produces). Both converge at DECIDE (compare_scores.py -> improved 1|0 + decision.json) -> IMPROVED? branch -> COMMIT (atomic mv into dict/) or DISCARD (rm) -> RECORD (append results.tsv) -> SIGNAL. All data paths honor AUTORES_ROOT (default = the real autoresearch dir) so an optimizer being scored can be pointed at a throwaway dict. Args are positional ($1/$2).",
+  "arguments": [
+    { "name": "parent_id", "description": "id of the parent bundle to mutate ($1)", "required": true },
+    { "name": "idea_id", "description": "id of the mutation idea ($2)", "required": true }
+  ],
+  "flowchart": {
+    "start_block_id": "start",
+    "blocks": {
+      "start": { "id": "start", "type": "start", "name": "START" },
+      "setup": {
+        "id": "setup",
+        "type": "bash",
+        "name": "SETUP",
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nTS=$(date +%s%N)\nOUT=\"$AR/scratch/exp-$TS/cand-$TS\"\nmkdir -p \"$(dirname \"$OUT\")\"\necho \"$OUT\"",
+        "working_directory": "",
+        "output_variable": "out_dir",
+        "continue_on_error": false
+      },
+      "mutate": {
+        "id": "mutate",
+        "type": "command",
+        "name": "MUTATE",
+        "command_name": "mutate-config",
+        "arguments": "$1 $2 {{out_dir}}",
+        "merge_output": true
+      },
+      "read_kind": {
+        "id": "read_kind",
+        "type": "bash",
+        "name": "READ_KIND",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\n\"$PY\" - \"{{out_dir}}/manifest.json\" <<'PYEOF'\nimport json, sys\nprint(1 if json.load(open(sys.argv[1])).get(\"kind\") == \"optimizer\" else 0)\nPYEOF",
+        "working_directory": "",
+        "output_variable": "is_optimizer",
+        "continue_on_error": false
+      },
+      "kind_branch": { "id": "kind_branch", "type": "branch", "name": "IS_OPTIMIZER", "condition": "is_optimizer > 0" },
+      "score_opt": {
+        "id": "score_opt",
+        "type": "bash",
+        "name": "SCORE_OPTIMIZER",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/dict/configs/optimizer-seed/scripts\n\"$PY\" \"$SCRIPTS/score_optimizer.py\" \"{{out_dir}}\"",
+        "working_directory": "",
+        "output_variable": "opt_score",
+        "continue_on_error": false
+      },
+      "eval": {
+        "id": "eval",
+        "type": "command",
+        "name": "EVAL",
+        "command_name": "evaluate-config",
+        "arguments": "{{out_dir}} seed",
+        "merge_output": true
+      },
+      "decide": {
+        "id": "decide",
+        "type": "bash",
+        "name": "DECIDE",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/dict/configs/optimizer-seed/scripts\n\"$PY\" \"$SCRIPTS/compare_scores.py\" \"{{out_dir}}\" \"$1\" \"$2\"",
+        "working_directory": "",
+        "output_variable": "improved",
+        "continue_on_error": false
+      },
+      "improved": { "id": "improved", "type": "branch", "name": "IMPROVED", "condition": "improved > 0" },
+      "commit": {
+        "id": "commit",
+        "type": "bash",
+        "name": "COMMIT",
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nmkdir -p \"$AR/dict/configs\"\nDST=\"$AR/dict/configs/$(basename \"{{out_dir}}\")\"\nmv \"{{out_dir}}\" \"$DST\"\necho \"kept -> $DST\"",
+        "working_directory": "",
+        "continue_on_error": false
+      },
+      "discard": {
+        "id": "discard",
+        "type": "bash",
+        "name": "DISCARD",
+        "command": "set -eu\nrm -rf \"{{out_dir}}\"\necho \"discarded {{out_dir}}\"",
+        "working_directory": "",
+        "continue_on_error": false
+      },
+      "record": {
+        "id": "record",
+        "type": "bash",
+        "name": "RECORD",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/dict/configs/optimizer-seed/scripts\n\"$PY\" \"$SCRIPTS/record_experiment.py\" \"{{out_dir}}\"",
+        "working_directory": "",
+        "output_variable": "experiment_record",
+        "continue_on_error": false
+      },
+      "signal": {
+        "id": "signal",
+        "type": "bash",
+        "name": "SIGNAL",
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\necho \"$(date +%FT%T) done idea=$2 candidate=$(basename \"{{out_dir}}\")\" >> \"$AR/epoch-signals.log\"",
+        "working_directory": "",
+        "continue_on_error": true
+      },
+      "end": { "id": "end", "type": "end", "name": "END" }
+    },
+    "connections": [
+      { "id": "c1", "source_block_id": "start", "target_block_id": "setup", "source_port": "out", "target_port": "in" },
+      { "id": "c2", "source_block_id": "setup", "target_block_id": "mutate", "source_port": "out", "target_port": "in" },
+      { "id": "c3", "source_block_id": "mutate", "target_block_id": "read_kind", "source_port": "out", "target_port": "in" },
+      { "id": "c4", "source_block_id": "read_kind", "target_block_id": "kind_branch", "source_port": "out", "target_port": "in" },
+      { "id": "c5", "source_block_id": "kind_branch", "target_block_id": "score_opt", "source_port": "true", "target_port": "in", "is_true_path": true, "label": "optimizer: §4.3 sandboxed scoring" },
+      { "id": "c6", "source_block_id": "kind_branch", "target_block_id": "eval", "source_port": "false", "target_port": "in", "is_true_path": false, "label": "target: gaia-testbench eval" },
+      { "id": "c7", "source_block_id": "score_opt", "target_block_id": "decide", "source_port": "out", "target_port": "in" },
+      { "id": "c8", "source_block_id": "eval", "target_block_id": "decide", "source_port": "out", "target_port": "in" },
+      { "id": "c9", "source_block_id": "decide", "target_block_id": "improved", "source_port": "out", "target_port": "in" },
+      { "id": "c10", "source_block_id": "improved", "target_block_id": "commit", "source_port": "true", "target_port": "in", "is_true_path": true, "label": "candidate > parent" },
+      { "id": "c11", "source_block_id": "improved", "target_block_id": "discard", "source_port": "false", "target_port": "in", "is_true_path": false, "label": "not better" },
+      { "id": "c12", "source_block_id": "commit", "target_block_id": "record", "source_port": "out", "target_port": "in" },
+      { "id": "c13", "source_block_id": "discard", "target_block_id": "record", "source_port": "out", "target_port": "in" },
+      { "id": "c14", "source_block_id": "record", "target_block_id": "signal", "source_port": "out", "target_port": "in" },
+      { "id": "c15", "source_block_id": "signal", "target_block_id": "end", "source_port": "out", "target_port": "in" }
+    ]
+  },
+  "metadata": { "created": "2026-08-16", "version": "2.0-phase4", "author": "hackathon-rnd", "tags": ["autoresearch", "optimizer", "phase2", "phase4", "recursion"] }
+}
