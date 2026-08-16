@@ -890,6 +890,11 @@ class DiscordStreamRenderer:
             await self._send_child(event.agent_name, summary)
         else:
             log.warning("Spawn thread gone for '%s' (id=%s)", event.agent_name, thread_id)
+            ds.spawn_threads.pop(event.agent_name, None)
+            await self._send_system(
+                f"spawned **{event.agent_name}** {event.status or 'finished'}", event.session
+            )
+            return  # thread unresolvable — remove mapping, log, done (design doc §9)
         ds.spawn_threads.pop(event.agent_name, None)
         await self._send_system(
             f"spawned **{event.agent_name}** {event.status or 'finished'}", event.session

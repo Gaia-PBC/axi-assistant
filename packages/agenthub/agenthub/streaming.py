@@ -66,13 +66,24 @@ log = logging.getLogger(__name__)
 
 
 def _msg_session(msg: Any) -> str:
-    """Session tag for a parsed SDK message: '' == parent channel."""
+    """Session tag for a parsed SDK message: '' == parent channel.
+
+    'main' is normalized to '': the flowcoder transport stamps EVERY forwarded
+    inner message — including the main session's own turn — with the emitting
+    session name, so the parent's own messages arrive stamped session='main'.
+    The handler gates test truthiness, so returning 'main' verbatim would
+    route the parent's turn through the child branches (activity updates,
+    SessionId, compaction handling all live on the parent path). This mirrors
+    the renderer's _resolve_target normalization.
+    """
     ctxd = getattr(msg, "_session_context", None)
     if ctxd and ctxd.get("session"):
-        return ctxd.get("session", "")
+        session = ctxd.get("session", "")
+        return "" if session == "main" else session
     data = getattr(msg, "data", None)
     if isinstance(data, dict):
-        return str(data.get("data", {}).get("session", ""))
+        session = str(data.get("data", {}).get("session", ""))
+        return "" if session == "main" else session
     return ""
 
 
@@ -229,11 +240,14 @@ async def stream_response(
                 sctx, session, msg, self_compacting_names, compact_start_times,
                 pending_compact, session_tag=msg_session,
             ):
-                yield out
                 if isinstance(out, SpawnEnd):
                     # The child's session name is its agent_name (the engine
                     # names child sessions after the spawn block's agent_name).
-                    # Flush the child's leftover text, then drop its ctx.
+                    # Flush the child's leftover text BEFORE yielding the
+                    # SpawnEnd: the renderer's _on_spawn_end drains the child's
+                    # deferred buffer and pops the spawn_threads mapping as soon
+                    # as it sees SpawnEnd, so a residual flush yielded after
+                    # would miss the thread and fall back to the parent channel.
                     tail = child_ctxs.get(out.agent_name)
                     if tail is not None and tail.text_buffer.strip():
                         tail.flush_count += 1
@@ -241,6 +255,7 @@ async def stream_response(
                                         session=out.agent_name)
                         tail.text_buffer = ""
                     child_ctxs.pop(out.agent_name, None)
+                yield out
 
         # Mid-turn text splitting — per-session buffer
         if not sctx.hit_rate_limit and len(sctx.text_buffer) >= 1800:
@@ -254,6 +269,20 @@ async def stream_response(
 
     # Post-loop: determine terminal state
     elapsed = time.monotonic() - t0
+
+    # Never-drop for child sessions: a child whose spawn_complete never arrived
+    # (hard kill, StreamKilled, engine teardown mid-spawn) would otherwise lose
+    # its residual text_buffer forever — child_ctxs entries were abandoned when
+    # the stream ended. Flush each remaining buffer as a post_kill flush so the
+    # renderer's deferred-buffer drain at StreamEnd surfaces it in the thread
+    # (or the [agent] fallback) before the thread is archived.
+    for child_name, child_ctx in child_ctxs.items():
+        if child_ctx.text_buffer.strip():
+            child_ctx.flush_count += 1
+            yield TextFlush(text=child_ctx.text_buffer, reason="post_kill",
+                            session=child_name)
+            child_ctx.text_buffer = ""
+    child_ctxs.clear()
 
     if ctx.hit_rate_limit:
         pass  # Already yielded RateLimitHit
