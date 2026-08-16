@@ -910,7 +910,9 @@ class DiscordStreamRenderer:
             await asyncio.sleep(delay)
             thread = self._bot.get_channel(thread_id) if self._bot else None
             if thread is not None:
-                await thread.archive()
+                # discord.py 2.x has no Thread.archive(); archiving is
+                # Thread.edit(archived=True).
+                await thread.edit(archived=True)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -939,7 +941,7 @@ class DiscordStreamRenderer:
                 continue
             try:
                 await self._send_child(agent_name, "Spawn **interrupted** — stream ended")
-                await thread.archive()
+                await thread.edit(archived=True)
             except Exception as e:
                 log.warning("Failed to archive interrupted thread for '%s': %s", agent_name, e)
             ds.spawn_threads.pop(agent_name, None)

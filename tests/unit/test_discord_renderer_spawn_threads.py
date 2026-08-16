@@ -33,8 +33,8 @@ class _FakeThread:
         self.jump_url = f"https://discord.com/channels/1/2/{self.id}"
         self.archived = False
 
-    async def archive(self) -> None:
-        self.archived = True
+    async def edit(self, *, archived: bool = False, **_: object) -> None:
+        self.archived = archived
 
 
 class _FakeChannel:
