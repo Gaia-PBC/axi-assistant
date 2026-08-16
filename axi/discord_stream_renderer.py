@@ -16,6 +16,8 @@ import os
 import time
 from typing import TYPE_CHECKING, Any, cast
 
+import discord
+
 from axi import config
 from axi.discord_stream import (
     _agent_context_label,
@@ -37,6 +39,8 @@ from agenthub.stream_types import (
     QueryResult,
     RateLimitHit,
     SessionId,
+    SpawnEnd,
+    SpawnStart,
     StreamEnd,
     StreamKilled,
     StreamStart,
@@ -95,6 +99,10 @@ class DiscordStreamRenderer:
         "_agent_name",
         "_bot",
         "_channel",
+        "_child_deferred",
+        "_child_fc_command",
+        "_child_suppress",
+        "_child_thinking_msg_id",
         "_deferred_msg",
         "_fc_command",
         "_flush_count",
@@ -145,6 +153,11 @@ class DiscordStreamRenderer:
         self._in_flowchart = False
         self._suppress_stream = False
         self._fc_command: str | None = None
+        # Per-child-session rendering state (flush-based, no live-edit).
+        self._child_deferred: dict[str, str] = {}
+        self._child_suppress: dict[str, bool] = {}
+        self._child_fc_command: dict[str, str] = {}
+        self._child_thinking_msg_id: dict[str, str] = {}
         # Fallback wall-clock origin when the session has no query_started.
         self._stream_started_at: float | None = None
         # Top-level Agent tool calls announced this stream, keyed by tool_use_id:
@@ -172,7 +185,7 @@ class DiscordStreamRenderer:
         elif isinstance(event, TextFlush):
             await self._on_text_flush(event)
         elif isinstance(event, ThinkingStart):
-            await self._on_thinking_start()
+            await self._on_thinking_start(event)
         elif isinstance(event, ThinkingEnd):
             await self._on_thinking_end(event)
         elif isinstance(event, ToolUseStart):
@@ -207,6 +220,10 @@ class DiscordStreamRenderer:
             await self._on_flowchart_start(event)
         elif isinstance(event, FlowchartEnd):
             await self._on_flowchart_end(event)
+        elif isinstance(event, SpawnStart):
+            await self._on_spawn_start(event)
+        elif isinstance(event, SpawnEnd):
+            await self._on_spawn_end(event)
         elif isinstance(event, BlockStart):
             await self._on_block_start(event)
         elif isinstance(event, BlockComplete):
@@ -261,6 +278,19 @@ class DiscordStreamRenderer:
             await self._send_long(self._deferred_msg)
             self._deferred_msg = ""
 
+        # Drain every child's deferred buffer: a child stream that ends without
+        # SpawnEnd (hard kill, StreamKilled, error teardown) must still surface
+        # its last chunk — the never-drop contract. This runs before the
+        # rate-limit/error return on purpose.
+        for child_name, deferred in list(self._child_deferred.items()):
+            if deferred:
+                await self._send_child(child_name, deferred)
+        self._child_deferred.clear()
+
+        # Archive threads whose spawn never completed, AFTER the deferred-text
+        # drain so interrupted child output surfaces before the thread closes.
+        await self._cleanup_unfinished_spawn_threads()
+
         # Rate limit / transient error: the old path returned before the ping
         # (discord_stream.py:1455, :1466). Pinging here would summon the user to
         # a turn that produced no answer and no explanation.
@@ -277,6 +307,8 @@ class DiscordStreamRenderer:
     # --- Text rendering ---
 
     async def _on_text_delta(self, event: TextDelta) -> None:
+        if event.session and event.session != "main":
+            return  # child text arrives via TextFlush (flush-based rendering)
         if self._suppress_stream:
             return
         self._text_buffer += event.text
@@ -284,6 +316,19 @@ class DiscordStreamRenderer:
             await self._do_live_edit_tick()
 
     async def _on_text_flush(self, event: TextFlush) -> None:
+        s = event.session
+        if s and s != "main":
+            if self._child_suppress.get(s):
+                self._child_deferred.pop(s, None)
+                return
+            text = event.text
+            if not text.strip():
+                return
+            deferred = self._child_deferred.get(s, "")
+            if deferred:
+                await self._send_child(s, deferred)
+            self._child_deferred[s] = text.lstrip()
+            return
         # Suppressed blocks must drop their flush too, not just their deltas —
         # the old path skipped _flush_text entirely (discord_stream.py:1229-1232).
         # Without this the internal JSON still lands in the channel at block end.
@@ -309,7 +354,22 @@ class DiscordStreamRenderer:
 
     # --- Thinking indicators ---
 
-    async def _on_thinking_start(self) -> None:
+    async def _on_thinking_start(self, event: ThinkingStart) -> None:
+        s = event.session
+        if s and s != "main":
+            target = self._resolve_target(s)
+            if target is None:
+                return
+            try:
+                resp = await _retry_discord_503(
+                    config.discord_client.send_message,
+                    target.id,
+                    "*thinking...*",
+                )
+                self._child_thinking_msg_id[s] = resp["id"]
+            except Exception:
+                log.debug("Failed to post thinking indicator for '%s'", self._agent_name)
+            return
         try:
             resp = await _retry_discord_503(
                 config.discord_client.send_message,
@@ -321,6 +381,25 @@ class DiscordStreamRenderer:
             log.debug("Failed to post thinking indicator for '%s'", self._agent_name)
 
     async def _on_thinking_end(self, event: ThinkingEnd) -> None:
+        s = event.session
+        if s and s != "main":
+            msg_id = self._child_thinking_msg_id.pop(s, None)
+            if msg_id:
+                target = self._resolve_target(s)
+                if target is not None:
+                    try:
+                        await _retry_discord_503(
+                            config.discord_client.delete_message,
+                            target.id,
+                            msg_id,
+                        )
+                    except Exception:
+                        log.debug("Failed to delete thinking indicator for '%s'", self._agent_name)
+            # Verbose mode attaches the full thinking text as a file in the thread.
+            thinking = (event.thinking_text or "").strip()
+            if thinking and self._verbose() and self._resolve_target(s) is not None:
+                await self._post_verbose_file(thinking, s)
+            return
         if self._thinking_msg_id:
             try:
                 await _retry_discord_503(
@@ -341,6 +420,12 @@ class DiscordStreamRenderer:
     # --- Tool use ---
 
     async def _on_tool_use_start(self, event: ToolUseStart) -> None:
+        s = event.session
+        if s and s != "main":
+            if event.tool_use_id:
+                self._tool_parents[event.tool_use_id] = event.parent_tool_use_id
+            await self._announce_agent_tool_use(event.tool_name, event, None, s)
+            return
         log.debug("RENDER[%s] tool_use_start: %s", self._agent_name, event.tool_name)
         if event.tool_use_id:
             self._tool_parents[event.tool_use_id] = event.parent_tool_use_id
@@ -349,6 +434,13 @@ class DiscordStreamRenderer:
         await self._announce_agent_tool_use(event.tool_name, event, None)
 
     async def _on_tool_use_end(self, event: ToolUseEnd) -> None:
+        s = event.session
+        if s and s != "main":
+            await self._announce_agent_tool_use(event.tool_name, event, event.tool_input, s)
+            if event.tool_name and self._verbose():
+                preview = f": {event.preview[:120]}" if event.preview else ""
+                await self._send_system(f"`🔧 {event.tool_name}{preview}`", s)
+            return
         if event.preview:
             log.debug(
                 "RENDER[%s] tool_use_end: %s -> %s",
@@ -361,7 +453,7 @@ class DiscordStreamRenderer:
             preview = f": {event.preview[:120]}" if event.preview else ""
             await self._send_system(f"`🔧 {event.tool_name}{preview}`")
 
-    async def _post_verbose_file(self, thinking: str) -> None:
+    async def _post_verbose_file(self, thinking: str, session: str = "") -> None:
         """Attach thinking text as thinking.md, as the old verbose path did."""
         import io
 
@@ -371,7 +463,7 @@ class DiscordStreamRenderer:
 
         try:
             await audited_channel_send(
-                self._channel,
+                self._resolve_target(session) or self._channel,
                 "\U0001f4ad",
                 file=discord.File(io.BytesIO(thinking.encode("utf-8")), filename="thinking.md"),
                 retry_fn=_retry_discord_503,
@@ -382,6 +474,7 @@ class DiscordStreamRenderer:
 
     async def _announce_agent_tool_use(
         self, tool_name: str, event: Any, tool_input: dict[str, Any] | None,
+        session: str = "",
     ) -> None:
         """Post or enrich the announcement for a top-level Agent tool call.
 
@@ -411,12 +504,12 @@ class DiscordStreamRenderer:
         if tracked is None:
             fresh: list[Message] = []
             self._agent_announcements[tool_use_id] = fresh
-            await _render_chunked(self._channel, fresh, content)
+            await _render_chunked(self._resolve_target(session) or self._channel, fresh, content)
             return
 
         current = "".join(m.content for m in tracked if m.content != _BLANK_CONTENT)
         if payload and current != content:
-            await _render_chunked(self._channel, tracked, content)
+            await _render_chunked(self._resolve_target(session) or self._channel, tracked, content)
 
     # --- Todo ---
 
@@ -522,11 +615,36 @@ class DiscordStreamRenderer:
     # --- Flowchart ---
 
     async def _on_flowchart_start(self, event: FlowchartStart) -> None:
+        s = event.session
+        if s and s != "main":
+            # Child flowchart: record the command so the child's block lines are
+            # quiet-gated (_child_fc_command drives _on_block_start's check).
+            # Never touch the parent's _in_flowchart/_fc_command state.
+            self._child_fc_command[s] = event.command or ""
+            return
         self._in_flowchart = True
         self._suppress_stream = False
         self._fc_command = event.command or None
 
     async def _on_flowchart_end(self, event: FlowchartEnd) -> None:
+        s = event.session
+        if s and s != "main":
+            self._child_fc_command.pop(s, None)
+            # Completion summary routes into the child's thread (full-stream
+            # fidelity — the child's flowchart renders where its text renders).
+            # The *System:* prefix is load-bearing for sentinel consumers,
+            # mirroring the parent path below.
+            duration_s = event.duration_ms / 1000
+            status = "**completed**" if event.status == "completed" else "**failed**"
+            await self._send_child(
+                s,
+                f"*System:* Flowchart {status} in {duration_s:.0f}s "
+                f"| Cost: ${event.cost_usd:.4f} | Blocks: {event.blocks_executed}",
+            )
+            test_sentinel = os.environ.get("AXI_TEST_SENTINEL")
+            if test_sentinel:
+                await self._send_child(s, test_sentinel)
+            return
         self._in_flowchart = False
         self._suppress_stream = False
         self._fc_command = None
@@ -566,6 +684,17 @@ class DiscordStreamRenderer:
         return bool(discord_state(session).verbose)
 
     async def _on_block_start(self, event: BlockStart) -> None:
+        s = event.session
+        if s and s != "main":
+            if event.block_type in _SILENT_BLOCK_TYPES:
+                return
+            self._child_suppress[s] = event.has_output_schema and not _show_output_schema()
+            if self._child_fc_command.get(s) in _FC_QUIET_COMMANDS and not self._verbose():
+                return
+            label = f"**{event.block_name}**" if event.block_name else "?"
+            block_type = f" (`{event.block_type}`)" if event.block_type else ""
+            await self._send_system(f"▶ {label}{block_type}", s)
+            return
         if event.block_type in _SILENT_BLOCK_TYPES:
             return
         # A block with an output schema emits JSON for internal branching, not
@@ -579,6 +708,14 @@ class DiscordStreamRenderer:
         await self._send_system(f"▶ {label}{block_type}")
 
     async def _on_block_complete(self, event: BlockComplete) -> None:
+        s = event.session
+        if s and s != "main":
+            self._child_suppress.pop(s, None)
+            if not event.success:
+                await self._send_system(
+                    f"❌ Block **{event.block_name}** failed", s
+                )
+            return
         self._suppress_stream = False
         if not event.success and self._block_output_allowed():
             await self._send_system(f"❌ Block **{event.block_name}** failed")
@@ -675,6 +812,148 @@ class DiscordStreamRenderer:
             content += f"\n{' | '.join(details)}"
         await self._upsert_task_status(task_id, content)
 
+    # --- Spawn lifecycle ---
+
+    async def _on_spawn_start(self, event: SpawnStart) -> None:
+        if not config.FC_SPAWN_THREADS:
+            return
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        session = _agents_mod.agents.get(self._agent_name)
+        if session is None or self._bot is None:
+            await self._send_system(f"▶ spawned **{event.agent_name}**", event.session)
+            return
+        ds = discord_state(session)
+        if event.agent_name in ds.spawn_threads:
+            return  # duplicate spawn_start — already handled
+        thread_name = event.agent_name
+        parent_name = event.parent_session or "main"
+        if parent_name != "main":
+            parent_id = ds.spawn_threads.get(parent_name)
+            parent_thread = self._bot.get_channel(parent_id) if parent_id else None
+            if parent_thread is not None:
+                thread_name = f"{parent_thread.name}/{event.agent_name}"
+        try:
+            # discord.py's create_thread with message=None defaults to a
+            # PRIVATE thread (type 12) unless type is passed explicitly —
+            # private threads are invisible to non-members. The design
+            # requires public threads.
+            thread = await self._channel.create_thread(
+                name=thread_name,
+                auto_archive_duration=60,
+                type=discord.ChannelType.public_thread,
+            )
+        except Exception as e:
+            log.warning(
+                "Failed to create thread for spawned '%s': %s",
+                event.agent_name, e,
+            )
+            await self._send_system(f"▶ spawned **{event.agent_name}** (no thread)", event.session)
+            return
+        ds.spawn_threads[event.agent_name] = thread.id
+        # Status line routes to the emitting (parent) session: the parent
+        # channel for top-level spawns, the parent's thread for nested ones.
+        await self._send_system(f"▶ spawned **{event.agent_name}** → {thread.jump_url}", event.session)
+        await self._send_child(event.agent_name, f"▶ Spawned agent **{event.agent_name}**")
+        details = []
+        if event.command_name:
+            details.append(f"running `{event.command_name}`")
+        if event.model:
+            details.append(f"model `{event.model}`")
+        if event.backend:
+            details.append(f"backend `{event.backend}`")
+        if details:
+            await self._send_child(event.agent_name, " | ".join(details))
+
+    async def _on_spawn_end(self, event: SpawnEnd) -> None:
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        session = _agents_mod.agents.get(self._agent_name)
+        if session is None:
+            return
+        ds = discord_state(session)
+        # Drain any deferred child text FIRST — it must surface even when the
+        # thread is gone or was never created (fallback prefix applies).
+        deferred = self._child_deferred.pop(event.agent_name, "")
+        if deferred:
+            await self._send_child(event.agent_name, deferred)
+        thread_id = ds.spawn_threads.get(event.agent_name)
+        if not thread_id:
+            return  # no thread (creation failed, or FC_SPAWN_THREADS=0)
+        thread = self._bot.get_channel(thread_id) if self._bot else None
+        if thread is not None:
+            status = {
+                "completed": "**completed**",
+                "failed": "**failed**",
+                "cancelled": "**cancelled**",
+            }.get(event.status, "**finished**")
+            summary = f"Spawn {status}"
+            parts = []
+            if event.duration_ms:
+                parts.append(f"{event.duration_ms / 1000:.1f}s")
+            if event.cost_usd:
+                parts.append(f"${event.cost_usd:.4f}")
+            if parts:
+                summary += f" | {' | '.join(parts)}"
+            await self._send_child(event.agent_name, summary)
+        else:
+            log.warning("Spawn thread gone for '%s' (id=%s)", event.agent_name, thread_id)
+            ds.spawn_threads.pop(event.agent_name, None)
+            await self._send_system(
+                f"spawned **{event.agent_name}** {event.status or 'finished'}", event.session
+            )
+            return  # thread unresolvable — remove mapping, log, done (design doc §9)
+        ds.spawn_threads.pop(event.agent_name, None)
+        await self._send_system(
+            f"spawned **{event.agent_name}** {event.status or 'finished'}", event.session
+        )
+        ds.pending_archives[event.agent_name] = asyncio.create_task(
+            self._archive_after(thread_id, event.agent_name, config.FC_THREAD_GRACE_SECS)
+        )
+
+    async def _archive_after(self, thread_id: int, agent_name: str, delay: float) -> None:
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        try:
+            await asyncio.sleep(delay)
+            thread = self._bot.get_channel(thread_id) if self._bot else None
+            if thread is not None:
+                # discord.py 2.x has no Thread.archive(); archiving is
+                # Thread.edit(archived=True).
+                await thread.edit(archived=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("Failed to archive thread for '%s': %s", agent_name, e)
+        finally:
+            session = _agents_mod.agents.get(self._agent_name)
+            if session is not None:
+                discord_state(session).pending_archives.pop(agent_name, None)
+
+    async def _cleanup_unfinished_spawn_threads(self) -> None:
+        """Archive threads whose spawn never completed (hard kill / no event).
+
+        Only threads still in spawn_threads — spawns that completed are in
+        pending_archives and left to their grace-delay task.
+        """
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        session = _agents_mod.agents.get(self._agent_name)
+        if session is None:
+            return
+        ds = discord_state(session)
+        for agent_name, thread_id in list(ds.spawn_threads.items()):
+            thread = self._bot.get_channel(thread_id) if self._bot else None
+            if thread is None:
+                ds.spawn_threads.pop(agent_name, None)
+                continue
+            try:
+                await self._send_child(agent_name, "Spawn **interrupted** — stream ended")
+                await thread.edit(archived=True)
+            except Exception as e:
+                log.warning("Failed to archive interrupted thread for '%s': %s", agent_name, e)
+            ds.spawn_threads.pop(agent_name, None)
+
     # --- System notifications ---
 
     async def _on_system_notification(self, event: SystemNotification) -> None:
@@ -725,24 +1004,68 @@ class DiscordStreamRenderer:
 
     # --- Internal helpers ---
 
-    async def _send_long(self, text: str) -> None:
+    def _resolve_target(self, session_name: str):
+        """Thread for a child session, the channel for parent, None = fallback.
+
+        Fallback (None) means: render into the channel with a [agent] prefix.
+        When FC_SPAWN_THREADS is off, children render into the channel
+        unlabeled — exactly the pre-feature behavior.
+        """
+        if not session_name or session_name == "main":
+            return self._channel
+        if not config.FC_SPAWN_THREADS:
+            return self._channel
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        session = _agents_mod.agents.get(self._agent_name)
+        if session is None or self._bot is None:
+            return None
+        thread_id = discord_state(session).spawn_threads.get(session_name)
+        if not thread_id:
+            return None
+        return self._bot.get_channel(thread_id)
+
+    async def _send_long(self, text: str, session: str = "") -> None:
         from axi.agents import send_long
 
-        msg = await send_long(self._channel, text)
-        if msg is not None:
+        target = self._resolve_target(session)
+        if target is None:
+            msg = await send_long(self._channel, f"[{session}] {text}")
+        else:
+            msg = await send_long(target, text)
+        # _last_flushed_* feeds _on_query_result's timing-suffix edit, which is
+        # parent-channel-only. A child's thread message must never overwrite it:
+        # if a child drain is the last send before the parent's QueryResult, the
+        # suffix would try to edit the child's thread and fail (posting a stray
+        # timing line in the parent channel). Record parent sends only.
+        if msg is not None and not session:
             self._last_flushed_msg_id = str(msg.id)
             self._last_flushed_channel_id = self._channel.id
             self._last_flushed_content = msg.content
 
-    async def _send_system(self, text: str) -> None:
+    async def _send_system(self, text: str, session: str = "") -> None:
         from axi.discord_wire import audited_channel_send
 
+        target = self._resolve_target(session)
+        if target is None:
+            target = self._channel
+            text = f"[{session}] {text}"
         try:
             await audited_channel_send(
-                self._channel, text, operation="stream_renderer"
+                target, text, operation="stream_renderer"
             )
         except Exception:
             log.debug("Failed to send system message for '%s'", self._agent_name)
+
+    async def _send_child(self, session_name: str, text: str) -> None:
+        """Flush buffered child text into its thread (or prefixed fallback)."""
+        from axi.agents import send_long
+
+        target = self._resolve_target(session_name)
+        if target is None:
+            await send_long(self._channel, f"[{session_name}] {text}")
+            return
+        await send_long(target, text)
 
     async def _do_live_edit_tick(self) -> None:
         le = self._live_edit

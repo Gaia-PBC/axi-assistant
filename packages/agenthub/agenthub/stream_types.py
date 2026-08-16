@@ -22,6 +22,7 @@ class TextDelta:
     """Incremental text from the model's response."""
 
     text: str
+    session: str = ""  # emitting (parent) session
 
 
 @dataclass(slots=True)
@@ -34,6 +35,7 @@ class TextFlush:
 
     text: str
     reason: str = ""
+    session: str = ""  # emitting (parent) session
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +47,7 @@ class TextFlush:
 class ThinkingStart:
     """Model started extended thinking."""
 
+    session: str = ""  # emitting (parent) session
 
 
 @dataclass(slots=True)
@@ -52,6 +55,7 @@ class ThinkingEnd:
     """Model finished extended thinking."""
 
     thinking_text: str = ""  # full thinking text (available if debug mode)
+    session: str = ""  # emitting (parent) session
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +74,7 @@ class ToolUseStart:
     tool_use_id: str | None = None
     # None for a top-level call; set when the tool runs inside a subagent.
     parent_tool_use_id: str | None = None
+    session: str = ""  # emitting (parent) session
 
 
 @dataclass(slots=True)
@@ -88,6 +93,7 @@ class ToolUseEnd:
     preview: str | None = None  # short human-readable preview
     tool_use_id: str | None = None  # pairs with the matching ToolUseStart
     parent_tool_use_id: str | None = None
+    session: str = ""  # emitting (parent) session
 
 
 @dataclass(slots=True)
@@ -134,6 +140,7 @@ class QueryResult:
     duration_ms: int = 0
     is_error: bool = False
     is_flowchart: bool = False  # True for session_id="flowchart"
+    session: str = ""  # emitting (parent) session
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +197,7 @@ class FlowchartStart:
 
     command: str = ""
     block_count: int = 0
+    session: str = ""  # emitting (parent) session
 
 
 @dataclass(slots=True)
@@ -200,6 +208,7 @@ class FlowchartEnd:
     duration_ms: int = 0
     cost_usd: float = 0.0
     blocks_executed: int = 0
+    session: str = ""  # emitting (parent) session
 
 
 @dataclass(slots=True)
@@ -211,6 +220,7 @@ class BlockStart:
     # True when the block declares an output schema: its text is JSON produced
     # for internal branching, not prose for the user, so frontends suppress it.
     has_output_schema: bool = False
+    session: str = ""  # emitting (parent) session
 
 
 @dataclass(slots=True)
@@ -219,6 +229,30 @@ class BlockComplete:
 
     block_name: str = ""
     success: bool = True
+    session: str = ""  # emitting (parent) session
+
+
+@dataclass(slots=True)
+class SpawnStart:
+    """A flowcoder spawn block created a child agent session."""
+
+    agent_name: str
+    command_name: str = ""
+    model: str = ""
+    backend: str = ""
+    parent_session: str = ""  # "main" or the spawning agent's name
+    session: str = ""         # emitting (parent) session
+
+
+@dataclass(slots=True)
+class SpawnEnd:
+    """A spawned agent session finished (completed/failed/cancelled)."""
+
+    agent_name: str
+    status: str = ""
+    duration_ms: int = 0
+    cost_usd: float = 0.0
+    session: str = ""         # emitting (parent) session
 
 
 @dataclass(slots=True)
@@ -252,5 +286,7 @@ StreamOutput = (
     | FlowchartEnd
     | BlockStart
     | BlockComplete
+    | SpawnStart
+    | SpawnEnd
     | SystemNotification
 )
