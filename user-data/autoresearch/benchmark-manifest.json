@@ -1,0 +1,27 @@
+{
+  "_doc": "The current gaia-testbench benchmark as the autoresearch loop sees it (PLAN.md \u00a72e). gaia-testbench itself has NO version concept, so this is the autoresearch-side source of truth for (a) which task ids the eval runs over and (b) the benchmark_version stamped into every score.json. The teacher (teacher.json) evolves this: it appends a new held-out task id, bumps `version`, and logs the change under `history`. evaluate-config's task fan-out is regenerated from `tasks` by scripts/regen_evaluate_config.py so the object loop and the teacher's rescore always agree on the task set.",
+  "version": "v2",
+  "tasks": [
+    "sqrt-67-digits",
+    "sales-report",
+    "fix-balanced-brackets",
+    "refactor-user-validation",
+    "flaky-api-retry",
+    "harden-brackets-context-aware"
+  ],
+  "history": [
+    {
+      "version": "seed",
+      "tasks_added": [],
+      "note": "Initial benchmark = the Phase-1 fast-iteration subset (5 of gaia-testbench's 16 tasks). Rationale/evidence recorded in TODO.md Done + Notes."
+    },
+    {
+      "version": "v2",
+      "tasks_added": [
+        "harden-brackets-context-aware"
+      ],
+      "tasks_retired": [],
+      "note": "teacher: harden-brackets -> harden-brackets-context-aware"
+    }
+  ]
+}

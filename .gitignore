@@ -48,6 +48,19 @@
 !/.claude/commands/
 !/.claude/skills/
 
+# --- user-data/: track ONLY the autoresearch optimizer, never its scratch traces ---
+# scratch/ holds full agent reasoning traces (reasoning_trace.jsonl, run logs)
+# and stays ignored; everything else here is the optimizer's own source + its
+# durable search record (results.tsv, ideas/events.jsonl).
+!/user-data/
+/user-data/*
+!/user-data/autoresearch/
+/user-data/autoresearch/scratch/
+# runtime artifacts of the idea store: a zero-byte flock sidecar and a derived
+# render digest. events.jsonl IS tracked — it is the durable search record.
+/user-data/autoresearch/ideas/.lock
+/user-data/autoresearch/ideas/.render-hash
+
 # --- Build / cache artifacts anywhere in the tree ---
 **/__pycache__/
 **/*.py[cod]

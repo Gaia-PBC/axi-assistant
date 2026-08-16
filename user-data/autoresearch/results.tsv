@@ -1,0 +1,9 @@
+timestamp	parent_id	idea_id	candidate_id	cand_score	parent_score	kept	cost_usd
+2026-08-15	baseline-target	swap-main-model-to-claude-sonnet-5	cand-baseline-sonnet	0.8889	0.8000	true	2.285
+2026-08-15	cand-baseline-sonnet	idea-do-sonnet	cand-1786837506917663080	0.8889	0.8889	false	
+2026-08-15	cand-baseline-sonnet	idea-main-opus	cand-1786837740800247058	0.8444	0.8889	false	
+2026-08-15	cand-baseline-sonnet	idea-kb-concise	cand-1786837915996467506	0.8889	0.8889	false	
+2026-08-15	optimizer-seed	opt-main-sonnet	cand-1786842874097707855	0.8889		true	
+2026-08-15	baseline-target	idea-do-haiku	cand-1786873829864370072		0.8000	false	
+2026-08-15	baseline-target	idea-main-haiku	cand-1786874124727756553	0.9333	0.8000	true	
+2026-08-15	baseline-target	idea-do-haiku	cand-1786874369776962385	0.9111	0.8000	true	

@@ -1,0 +1,15 @@
+{"idea_id":"idea-do-sonnet","op":"propose","origin":"human","text":"Swap the spawn_do (child/doer) model from claude-opus-4-8 to claude-sonnet-5 \u2014 test whether a cheaper doer keeps quality (quality-per-cost).","ts":1786881133.039318}
+{"idea_id":"idea-main-opus","op":"propose","origin":"human","text":"Swap main_model to claude-opus-4-8 \u2014 strongest classifier, tests the quality ceiling regardless of cost.","ts":1786881133.0393848}
+{"idea_id":"idea-kb-concise","op":"propose","origin":"human","text":"Add one directive to kb/SYSTEM_PROMPT.md \u2014 prefer concise answers and always self-verify any numeric output before finalizing.","ts":1786881133.0394118}
+{"idea_id":"opt-main-sonnet","op":"propose","origin":"human","text":"Set main_model to claude-sonnet-5 (main-session model knob) \u2014 a single-knob edit that applies to a target OR an optimizer bundle (Phase-4 recursion).","ts":1786881133.0394323}
+{"idea_id":"idea-do-haiku","op":"propose","origin":"human","text":"Swap the spawn_do (doer) model to claude-haiku-4-5-20251001 \u2014 cheapest doer, tests the cost floor.","ts":1786881133.0394516}
+{"idea_id":"idea-main-haiku","op":"propose","origin":"human","text":"Swap main_model to claude-haiku-4-5-20251001 \u2014 the lightweight-classifier baseline knob.","ts":1786881133.0394695}
+{"idea_id":"swap-main-model-to-claude-sonnet-5","op":"propose","origin":"human","text":"(recovered from results.tsv \u2014 original text not in research-ideas.md)","ts":1786881133.0394878}
+{"candidate_id":"cand-baseline-sonnet","idea_id":"swap-main-model-to-claude-sonnet-5","kept":true,"op":"complete","score":0.8889,"ts":1786881133.0395057}
+{"candidate_id":"cand-1786837506917663080","idea_id":"idea-do-sonnet","kept":false,"op":"complete","score":0.8889,"ts":1786881133.0395253}
+{"candidate_id":"cand-1786837740800247058","idea_id":"idea-main-opus","kept":false,"op":"complete","score":0.8444,"ts":1786881133.0395443}
+{"candidate_id":"cand-1786837915996467506","idea_id":"idea-kb-concise","kept":false,"op":"complete","score":0.8889,"ts":1786881133.039562}
+{"candidate_id":"cand-1786842874097707855","idea_id":"opt-main-sonnet","kept":true,"op":"complete","score":0.8889,"ts":1786881133.039589}
+{"candidate_id":"cand-1786873829864370072","idea_id":"idea-do-haiku","kept":false,"op":"complete","score":null,"ts":1786881133.0396073}
+{"candidate_id":"cand-1786874124727756553","idea_id":"idea-main-haiku","kept":true,"op":"complete","score":0.9333,"ts":1786881133.0396247}
+{"candidate_id":"cand-1786874369776962385","idea_id":"idea-do-haiku","kept":true,"op":"complete","score":0.9111,"ts":1786881133.0396423}

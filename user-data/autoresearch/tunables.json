@@ -1,0 +1,19 @@
+{
+  "_doc": "Central tuning knobs for the autoresearch loop (Phase 3+4). Read by the optimizer-seed scripts; every knob has an env override (for tests) that takes precedence over this file, which takes precedence over the script default. See dict/configs/optimizer-seed/scripts/tunables.py.",
+  "L2_THRESHOLD": 0.7,
+  "_L2_THRESHOLD_doc": "Cost-cascade gate (PLAN.md App.B / IMPLEMENTATION.md \u00a74): a bundle's L2 aggregate must exceed this to pay for the L3 (real-bot) leg. Tuned to 0.7 \u2014 above it sit the proven configs (baseline 0.80, champion 0.889) and below it sit L2 failures, so only viable configs cascade. Env override: GAIA_L2_THRESHOLD.",
+  "L3_ENABLED": false,
+  "_L3_ENABLED_doc": "Master switch for the L3 (axi real-bot) cascade leg. false = L2-only scoring (default; no Discord round-trip, no instance needed). true requires a booted axi_test.py instance named in soul-benchmarks/config.yaml (axi_test_instance_name). Env override: GAIA_L3_ENABLED.",
+  "UCB_C": 1.0,
+  "_UCB_C_doc": "UCB exploration weight for sample-config (argmax aggregate + c*stderr). Higher = more exploration of under-evaluated bundles. Env override: AUTORES_UCB_C.",
+  "FANOUT_K": 3,
+  "_FANOUT_K_doc": "How many run-experiment lineages the orchestrator spawns per epoch (orchestrator.json INIT_FANOUT_K -> inner loop spawns lineage-1..K, then JOIN waits on all K). K=1 reproduces the old serial one-lineage-per-epoch behavior. Env override: AUTORES_FANOUT_K.",
+  "SAMPLE_STRATEGY": "thompson",
+  "_SAMPLE_STRATEGY_doc": "Parent-sampling strategy for sample-config/ucb_pick.py. 'thompson' (default) = weighted sampling from each scored bundle's Normal(aggregate, stderr) posterior, argmax of draws (weights toward high scores but stays stochastic so the K-way fan-out is diverse). 'argmax' = old deterministic UCB argmax(aggregate + c*stderr). Env override: AUTORES_SAMPLE_STRATEGY.",
+  "IDEA_STALE_SECONDS": 21600,
+  "_IDEA_STALE_SECONDS_doc": "How long a claimed idea may sit unterminated before ideas.py's fold reaps it back to `future`. Defaults to orchestrator.json's 21600s JOIN timeout — a lineage cannot outlive its own join, so an older claim is definitionally dead. Without this a lineage that dies holding an idea strands it forever, which is exactly what the legacy `[~]` marks did. Env override: AUTORES_IDEA_STALE_SECONDS.",
+  "IDEA_GEN_MIN": 5,
+  "_IDEA_GEN_MIN_doc": "Minimum distinct hypotheses the mutator must generate at mutate-config §2c before filtering down to the promising subset it deposits. Large enough that filtering is a real selection; small enough not to dominate the mutator's turn. Env override: AUTORES_IDEA_GEN_MIN.",
+  "THOMPSON_SD_FLOOR": 0.05,
+  "_THOMPSON_SD_FLOOR_doc": "Floor on a scored bundle's posterior sd (its stderr) for Thompson draws, so a 1-eval / zero-stderr bundle still gets exploration noise instead of collapsing to its mean. Env override: AUTORES_THOMPSON_SD_FLOOR. (SAMPLE_SEED is intentionally env-only via AUTORES_SAMPLE_SEED — tests/repro only; a fixed seed collapses the fan-out.)"
+}

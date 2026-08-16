@@ -1,0 +1,32 @@
+{
+  "aggregate": 0.8,
+  "per_criterion": {
+    "correctness": 3.0,
+    "verification": 1.8,
+    "code_quality": 2.4
+  },
+  "per_level": {
+    "L2": {
+      "aggregate": 0.8,
+      "per_criterion": {
+        "correctness": 3.0,
+        "verification": 1.8,
+        "code_quality": 2.4
+      },
+      "per_task": {
+        "fix-balanced-brackets": 1.0,
+        "flaky-api-retry": 0.8888888888888888,
+        "refactor-user-validation": 0.8888888888888888,
+        "sales-report": 0.5555555555555556,
+        "sqrt-67-digits": 0.6666666666666666
+      },
+      "cost_usd": 1.5039423,
+      "n_evals": 5,
+      "stderr": 0.07302967433402213
+    }
+  },
+  "n_evals": 5,
+  "stderr": 0.07302967433402213,
+  "cost_usd": 1.5039423,
+  "benchmark_version": "seed"
+}
