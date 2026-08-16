@@ -38,6 +38,7 @@ from agenthub.stream_types import (
     RateLimitHit,
     SessionId,
     SpawnEnd,
+    SpawnStart,
     StreamEnd,
     StreamKilled,
     StreamStart,
@@ -217,6 +218,8 @@ class DiscordStreamRenderer:
             await self._on_flowchart_start(event)
         elif isinstance(event, FlowchartEnd):
             await self._on_flowchart_end(event)
+        elif isinstance(event, SpawnStart):
+            await self._on_spawn_start(event)
         elif isinstance(event, SpawnEnd):
             await self._on_spawn_end(event)
         elif isinstance(event, BlockStart):
@@ -281,6 +284,10 @@ class DiscordStreamRenderer:
             if deferred:
                 await self._send_child(child_name, deferred)
         self._child_deferred.clear()
+
+        # Archive threads whose spawn never completed, AFTER the deferred-text
+        # drain so interrupted child output surfaces before the thread closes.
+        await self._cleanup_unfinished_spawn_threads()
 
         # Rate limit / transient error: the old path returned before the ping
         # (discord_stream.py:1455, :1466). Pinging here would summon the user to
@@ -805,19 +812,132 @@ class DiscordStreamRenderer:
 
     # --- Spawn lifecycle ---
 
-    async def _on_spawn_end(self, event: SpawnEnd) -> None:
-        """Drain a child's deferred text buffer at spawn_complete.
+    async def _on_spawn_start(self, event: SpawnStart) -> None:
+        if not config.FC_SPAWN_THREADS:
+            return
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        session = _agents_mod.agents.get(self._agent_name)
+        if session is None or self._bot is None:
+            await self._send_system(f"▶ spawned **{event.agent_name}**", event.session)
+            return
+        ds = discord_state(session)
+        if event.agent_name in ds.spawn_threads:
+            return  # duplicate spawn_start — already handled
+        thread_name = event.agent_name
+        parent_name = event.parent_session or "main"
+        if parent_name != "main":
+            parent_id = ds.spawn_threads.get(parent_name)
+            parent_thread = self._bot.get_channel(parent_id) if parent_id else None
+            if parent_thread is not None:
+                thread_name = f"{parent_thread.name}/{event.agent_name}"
+        try:
+            thread = await self._channel.create_thread(
+                name=thread_name, auto_archive_duration=60
+            )
+        except Exception as e:
+            log.warning(
+                "Failed to create thread for spawned '%s': %s",
+                event.agent_name, e,
+            )
+            await self._send_system(f"▶ spawned **{event.agent_name}** (no thread)", event.session)
+            return
+        ds.spawn_threads[event.agent_name] = thread.id
+        # Status line routes to the emitting (parent) session: the parent
+        # channel for top-level spawns, the parent's thread for nested ones.
+        await self._send_system(f"▶ spawned **{event.agent_name}** → {thread.jump_url}", event.session)
+        await self._send_child(event.agent_name, f"▶ Spawned agent **{event.agent_name}**")
+        details = []
+        if event.command_name:
+            details.append(f"running `{event.command_name}`")
+        if event.model:
+            details.append(f"model `{event.model}`")
+        if event.backend:
+            details.append(f"backend `{event.backend}`")
+        if details:
+            await self._send_child(event.agent_name, " | ".join(details))
 
-        Task 6 only routes text; this drains the buffer so a child's final
-        flush (the empty ``end_turn`` flush never self-drains) reaches its
-        thread (or ``[agent]``-prefixed fallback) exactly when the spawn
-        completes. Task 7 replaces this with the full lifecycle handler
-        (summary, thread removal, grace-delay archive), which keeps the same
-        drain-first ordering.
-        """
+    async def _on_spawn_end(self, event: SpawnEnd) -> None:
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        session = _agents_mod.agents.get(self._agent_name)
+        if session is None:
+            return
+        ds = discord_state(session)
+        # Drain any deferred child text FIRST — it must surface even when the
+        # thread is gone or was never created (fallback prefix applies).
         deferred = self._child_deferred.pop(event.agent_name, "")
         if deferred:
             await self._send_child(event.agent_name, deferred)
+        thread_id = ds.spawn_threads.get(event.agent_name)
+        if not thread_id:
+            return  # no thread (creation failed, or FC_SPAWN_THREADS=0)
+        thread = self._bot.get_channel(thread_id) if self._bot else None
+        if thread is not None:
+            status = {
+                "completed": "**completed**",
+                "failed": "**failed**",
+                "cancelled": "**cancelled**",
+            }.get(event.status, "**finished**")
+            summary = f"Spawn {status}"
+            parts = []
+            if event.duration_ms:
+                parts.append(f"{event.duration_ms / 1000:.1f}s")
+            if event.cost_usd:
+                parts.append(f"${event.cost_usd:.4f}")
+            if parts:
+                summary += f" | {' | '.join(parts)}"
+            await self._send_child(event.agent_name, summary)
+        else:
+            log.warning("Spawn thread gone for '%s' (id=%s)", event.agent_name, thread_id)
+        ds.spawn_threads.pop(event.agent_name, None)
+        await self._send_system(
+            f"spawned **{event.agent_name}** {event.status or 'finished'}", event.session
+        )
+        ds.pending_archives[event.agent_name] = asyncio.create_task(
+            self._archive_after(thread_id, event.agent_name, config.FC_THREAD_GRACE_SECS)
+        )
+
+    async def _archive_after(self, thread_id: int, agent_name: str, delay: float) -> None:
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        try:
+            await asyncio.sleep(delay)
+            thread = self._bot.get_channel(thread_id) if self._bot else None
+            if thread is not None:
+                await thread.archive()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("Failed to archive thread for '%s': %s", agent_name, e)
+        finally:
+            session = _agents_mod.agents.get(self._agent_name)
+            if session is not None:
+                discord_state(session).pending_archives.pop(agent_name, None)
+
+    async def _cleanup_unfinished_spawn_threads(self) -> None:
+        """Archive threads whose spawn never completed (hard kill / no event).
+
+        Only threads still in spawn_threads — spawns that completed are in
+        pending_archives and left to their grace-delay task.
+        """
+        from axi import agents as _agents_mod
+        from axi.axi_types import discord_state
+        session = _agents_mod.agents.get(self._agent_name)
+        if session is None:
+            return
+        ds = discord_state(session)
+        for agent_name, thread_id in list(ds.spawn_threads.items()):
+            thread = self._bot.get_channel(thread_id) if self._bot else None
+            if thread is None:
+                ds.spawn_threads.pop(agent_name, None)
+                continue
+            try:
+                await self._send_child(agent_name, "Spawn **interrupted** — stream ended")
+                await thread.archive()
+            except Exception as e:
+                log.warning("Failed to archive interrupted thread for '%s': %s", agent_name, e)
+            ds.spawn_threads.pop(agent_name, None)
 
     # --- System notifications ---
 
