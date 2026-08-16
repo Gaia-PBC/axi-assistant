@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "user-data/autoresearch/dict/configs/optimizer-seed/scripts"
+SCRIPTS = ROOT / "user-data/autoresearch/scripts"
 PY = str(ROOT / ".venv/bin/python")
 
 

@@ -14,7 +14,7 @@ import pytest
 
 SCRIPTS = (
     Path(__file__).resolve().parents[2]
-    / "user-data/autoresearch/dict/configs/optimizer-seed/scripts"
+    / "user-data/autoresearch/scripts"
 )
 
 LEGACY_MD = """# Research Ideas — config-mutation queue

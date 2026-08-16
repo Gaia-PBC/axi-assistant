@@ -1,0 +1,51 @@
+{
+  "id": "eval-case",
+  "name": "eval-case",
+  "description": "Phase 1 — score ONE gaia-testbench task at ONE level against a candidate bundle (PLAN.md §2.5 / IMPLEMENTATION.md §2.5). Runs as a spawn child (its own cwd) fanned out by evaluate-config. Flow: RUN the adapter (scripts/run_case.py: L2 flowcoder_cli or axi, using the bundle's own flowchart/kb/model) -> JUDGE (command judge.json on the produced artifact) -> WRITE case-result.json (task, level, cost, error, per-criterion). Cost is the ADAPTER's real total_cost_usd (captured to run-result.json), not this child's own session cost. RUN uses continue_on_error so one task's failure still records a result and never aborts the fan-out.",
+  "arguments": [
+    { "name": "bundle_dir", "description": "absolute path of the candidate bundle to score ($1)", "required": true },
+    { "name": "task_id", "description": "gaia-testbench task id ($2)", "required": true },
+    { "name": "level", "description": "L2 (flowcoder_cli) or axi ($3)", "required": true },
+    { "name": "workdir", "description": "absolute path of this case's workdir ($4)", "required": true }
+  ],
+  "flowchart": {
+    "start_block_id": "start",
+    "blocks": {
+      "start": { "id": "start", "type": "start", "name": "START" },
+      "run": {
+        "id": "run",
+        "type": "bash",
+        "name": "RUN_ADAPTER",
+        "command": "set -u\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/scripts\n\"$PY\" \"$SCRIPTS/run_case.py\" \"$1\" \"$2\" \"$4\" \"$3\" || echo \"run_case exited nonzero (adapter error recorded in $4/run-result.json)\" >&2",
+        "working_directory": "",
+        "output_variable": "run_result",
+        "continue_on_error": true
+      },
+      "judge": {
+        "id": "judge",
+        "type": "command",
+        "name": "JUDGE",
+        "command_name": "judge",
+        "arguments": "$4 $2",
+        "merge_output": true
+      },
+      "write": {
+        "id": "write",
+        "type": "bash",
+        "name": "WRITE_CASE_RESULT",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/scripts\n\"$PY\" \"$SCRIPTS/write_case_result.py\" \"$4\" \"$2\" \"$3\"",
+        "working_directory": "",
+        "output_variable": "case_result",
+        "continue_on_error": false
+      },
+      "end": { "id": "end", "type": "end", "name": "END" }
+    },
+    "connections": [
+      { "id": "c1", "source_block_id": "start", "target_block_id": "run", "source_port": "out", "target_port": "in" },
+      { "id": "c2", "source_block_id": "run", "target_block_id": "judge", "source_port": "out", "target_port": "in" },
+      { "id": "c3", "source_block_id": "judge", "target_block_id": "write", "source_port": "out", "target_port": "in" },
+      { "id": "c4", "source_block_id": "write", "target_block_id": "end", "source_port": "out", "target_port": "in" }
+    ]
+  },
+  "metadata": { "created": "2026-08-15", "version": "1.0-phase1", "author": "hackathon-rnd", "tags": ["autoresearch", "optimizer", "phase1"] }
+}

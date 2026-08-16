@@ -1,0 +1,312 @@
+{
+  "id": "teacher",
+  "name": "teacher",
+  "description": "Phase 3 \u2014 co-evolve the gaia-testbench benchmark so configs can't overfit a frozen dataset (PLAN.md \u00a72e/\u00a73.1, IMPLEMENTATION.md \u00a72.8). Runs as a whole agent turn, slow-cron-fired. Flow: READ_STATE (find_blind_spots.py: where the top configs all pass = no signal, + the dataset-ideas queue) -> READ_IDEA/CLAIM (top unclaimed dataset idea, or autonomous harden) -> EVOLVE (prompt/output_schema: design ONE new held-out task aimed at a blind spot) -> WRITE_TASK (prompt/file-tools: tasks/<id>/task.toml, incl. [[validators]]) -> WRITE_CHECKS (prompt/file-tools: answer_schema.json + validator.py for the x3 answer axis, or hidden/<test> for validators; no-op when check_kind=none) -> APPLY (apply_dataset_evolution.py: validate via gaia get_task, append to benchmark-manifest, bump version) -> RESCORE top-2 targets on the new task set (bash `evaluate batch` x2; held-out demotes overfits) -> SIGNAL/LOG. State on disk; a crash re-fires the cron. This is the anti-overfitting engine and the validity precondition for Phase-4 recursion. || HOW TO READ THE OUTPUTS -- full briefing at soul-benchmarks/docs/teacher-agent-prompt.md; READ IT before interpreting any number. Summary of what will mislead you: (1) `overall` is 0.0-1.0 and 1.0 IS THE CEILING, a weighted mean of only the criteria that were actually judged -- unjudged ones are EXCLUDED, not zeroed, so 1.0 can rest on a single axis. Always check how many contributed. (2) `answer-accuracy` is weighted x3 and is continuous 0.0-3.0, while the judge criteria are integers 1-3. On a task with a derivable answer, a perfect judge score beside an answer of 0 gives 0.25, not 0.5. There is no judge score meaning 'no answer at all'; 0.0 on this axis means absent, unparseable, or wrong from the first digit. (3) `verification` IS CURRENTLY DISABLED and is null on every new run, while older recorded runs carry real numbers -- never compare the two, and never read its null as a config failure. (4) `solved` is TRI-STATE: true / false / null, where null means the task defines NO validators and nothing was checked. Most tasks are null. Collapsing null into false makes most of the corpus read as failure. `solved_rate` must never be quoted without `n_validated`; the validated tasks are a minority and are mostly closed-form bug fixes, not a random sample. (5) `stderr` is the standard error of `aggregate`: if two configs differ by less than a couple of stderr YOU HAVE NOT MEASURED A DIFFERENCE -- say so instead of ranking them. One trial is anecdote; run-to-run variance is large. (6) Attribute failure before blaming the config: null criteria are usually the TASK's shape (it asked for no file, so the judge had nothing to read), a status other than ok is often the HARNESS, and only the remainder is the config. Check the trace's block sequence before reading a low score as poor performance -- a skipped task path scores badly for reasons unrelated to quality. || SCORE.JSON SHAPE BREAK: gaia now writes `per_task` at the TOP level and emits no `per_level` and no `benchmark_version`; the stored bundles under dict/configs/ still nest it at `per_level.L2.per_task`. RESCORE's `cp` converts a bundle to the new shape, after which find_blind_spots._per_task() reads {} for it -- rescore both top-2 and saturated_tasks silently comes back [], reporting NO BLIND SPOTS rather than failing. Fix find_blind_spots to prefer top-level per_task, falling back to per_level.L2, and re-stamp benchmark_version in RESCORE, before trusting an epoch.",
+  "arguments": [],
+  "flowchart": {
+    "start_block_id": "start",
+    "blocks": {
+      "start": {
+        "id": "start",
+        "type": "start",
+        "name": "START"
+      },
+      "read_state": {
+        "id": "read_state",
+        "type": "bash",
+        "name": "READ_STATE",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nAR=/home/acer01/axi-assistant/user-data/autoresearch\nSCRIPTS=\"$AR/scripts\"\necho '=== BLIND-SPOT SCAN (top configs per-task discrimination; SATURATED = no signal) ==='\n\"$PY\" \"$SCRIPTS/find_blind_spots.py\"\necho ''\necho '=== DATASET-IDEAS QUEUE (maintained by the dataset-secretary) ==='\ngrep -E '^- \\[' \"$AR/dataset-ideas.md\" 2>/dev/null || echo '(no queued dataset ideas \u2014 harden a saturated task autonomously)'",
+        "working_directory": "",
+        "output_variable": "benchmark_state",
+        "continue_on_error": false
+      },
+      "read_idea": {
+        "id": "read_idea",
+        "type": "bash",
+        "name": "READ_DATASET_IDEA",
+        "command": "set -eu\nAR=/home/acer01/axi-assistant/user-data/autoresearch\nIDEAS=\"$AR/dataset-ideas.md\"\nLINE=$(grep -m1 -E '^- \\[ \\] ' \"$IDEAS\" 2>/dev/null || true)\nif [ -z \"$LINE\" ]; then echo 'dataset-auto-harden'; else echo \"$LINE\" | sed -E 's/^- \\[ \\] *//; s/:.*//'; fi",
+        "working_directory": "",
+        "output_variable": "dataset_idea_id",
+        "continue_on_error": false
+      },
+      "claim_idea": {
+        "id": "claim_idea",
+        "type": "bash",
+        "name": "CLAIM_DATASET_IDEA",
+        "command": "set -eu\nAR=/home/acer01/axi-assistant/user-data/autoresearch\nIDEAS=\"$AR/dataset-ideas.md\"\nsed -i -E \"s/^- \\[ \\] ({{dataset_idea_id}}:)/- [~] \\1/\" \"$IDEAS\" 2>/dev/null || true\necho \"claimed {{dataset_idea_id}}\"",
+        "working_directory": "",
+        "continue_on_error": true
+      },
+      "evolve": {
+        "id": "evolve",
+        "type": "prompt",
+        "name": "EVOLVE",
+        "prompt": "<sys>\nYou are the teacher for an autoresearch loop. Your job: design EXACTLY ONE new, harder / held-out gaia-testbench coding task that RESTORES DISCRIMINATION where the benchmark has gone flat \u2014 a task the current top configs would NOT all ace, so it separates good configs from better ones (PLAN.md \u00a72e). This is the anti-overfitting engine.\n\nCurrent benchmark state (blind-spot scan + the dataset-secretary's queued ideas):\n{{benchmark_state}}\n\nGuidance:\n- Prefer the dataset idea '{{dataset_idea_id}}' if it names a concrete task; otherwise autonomously harden a SATURATED task (one every top config passes) \u2014 make a variant with an adversarial edge case, a stricter correctness bar, or a required verification step the easy version doesn't force.\n- The task must be SELF-CONTAINED and run on a no-egress box: Python stdlib / provided files / shell only. No pip installs, no network. (gaia-testbench's own runnable tasks are all stdlib/tool-only.)\n- It must have a DETERMINISTIC correctness oracle the judge can recompute by executing code (the judge can run Bash).\n- task_id: a short kebab token, unique, not already in the benchmark; it becomes the tasks/<task_id>.toml filename stem (must match exactly).\n- The three rubric criteria each tell the judge how to assign 1 (fails) / 2 (partial) / 3 (fully meets). 'verification' is judged from the tool-call trace only (did the agent test its own work?), the other two from the produced artifact.\n\nEmit the task as structured output.\n</sys>\n\nCHOOSE A DETERMINISTIC CHECK. A task scored only by the LLM judge is the easiest kind to overfit, because the judge is the axis that drifts -- and defeating overfitting is this whole loop's purpose. So decide `check_kind` FIRST, and prefer 'answer' whenever the task has a derivable ground truth: that axis is deterministic and weighted x3, which means it dominates the score. Reach for 'validators' when the result is a property to assert rather than a value to compare. Choose 'none' only when you genuinely cannot construct either, and say why in `rationale`.\n\nALSO: the judge finds what to score by scanning the agent's working directory. A prompt that does not require the agent to WRITE A FILE gets correctness and code_quality skipped, and a healthy run then scores about 0.33 and reads as a failure. Make task_prompt demand a written artifact.",
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "kebab id == the tasks/<id>.toml filename stem; unique, not already in the benchmark"
+            },
+            "task_prompt": {
+              "type": "string",
+              "description": "the coding task prompt handed to the agent-under-test; self-contained, stdlib/tool-only, deterministic oracle"
+            },
+            "correctness": {
+              "type": "string",
+              "description": "rubric: how the judge assigns 1/2/3 for correctness, recomputable by running code"
+            },
+            "verification": {
+              "type": "string",
+              "description": "rubric: how the judge assigns 1/2/3 for verification, judged from the tool-call trace only NOTE: the verification criterion is CURRENTLY DISABLED in the judge and will be null on every run. Write one line and move on -- do not spend effort here. It is retained only so the task still carries the criterion if the judge re-enables it."
+            },
+            "code_quality": {
+              "type": "string",
+              "description": "rubric: how the judge assigns 1/2/3 for code quality from the artifact"
+            },
+            "targets": {
+              "type": "string",
+              "description": "which saturated task or dataset-idea this hardens, and why it discriminates"
+            },
+            "rationale": {
+              "type": "string",
+              "description": "why the current top configs would NOT all pass this"
+            },
+            "check_kind": {
+              "type": "string",
+              "description": "Which deterministic check this task carries. 'answer' = the task has a derivable ground-truth answer; supply answer_schema + validator_source. This is the STRONGEST option: the answer-accuracy axis is deterministic and weighted x3, so it dominates the score and cannot drift the way a judge does. 'validators' = the answer is not a single value but a pass/fail property a script can assert; supply validators_toml + hidden_filename + hidden_source. 'none' = judge-only; choose this ONLY when neither is genuinely possible, because a judge-only task adds no deterministic signal and is the easiest kind to overfit."
+            },
+            "answer_schema": {
+              "type": "string",
+              "description": "check_kind='answer' only, else empty string. The complete JSON Schema source constraining the agent's final answer, as it will be written to answer_schema.json."
+            },
+            "validator_source": {
+              "type": "string",
+              "description": "check_kind='answer' only, else empty string. Complete Python source for validator.py. It receives the agent's structured answer and must DERIVE ground truth itself rather than hardcoding it. Scores 0.0-3.0 continuous. NOTE: the agent phase is not containerised, so this file is readable by the agent under test -- it raises the cost of cheating without preventing it. Prefer answers where deriving is the only practical route anyway."
+            },
+            "validators_toml": {
+              "type": "string",
+              "description": "check_kind='validators' only, else empty string. One or more TOML [[validators]] blocks, each with `id` and `run`. `run` executes via sh -c in a fresh container over the agent's tree, with the hidden directory exposed as $HIDDEN and the agent's files at /work. Exit 0 passes; exit 92 means 'the check could not be RUN' and is recorded as a harness error rather than blamed on the agent."
+            },
+            "hidden_filename": {
+              "type": "string",
+              "description": "check_kind='validators' only, else empty string. Filename only, no directory, e.g. test_thing.py -- it lands in hidden/ and the agent never sees it."
+            },
+            "hidden_source": {
+              "type": "string",
+              "description": "check_kind='validators' only, else empty string. Complete source of that hidden test. It should assert internally and print a nonce that the validator greps for, so that reading it would yield little."
+            }
+          },
+          "required": [
+            "task_id",
+            "task_prompt",
+            "correctness",
+            "code_quality",
+            "targets",
+            "rationale",
+            "check_kind"
+          ]
+        }
+      },
+      "write_task": {
+        "id": "write_task",
+        "type": "prompt",
+        "name": "WRITE_TASK",
+        "prompt": "<sys>\nWrite the new benchmark task's task.toml, then stop. Change nothing else.\nThe sibling check files are written by the NEXT block, not this one.\n\nA task is a DIRECTORY. Create it, then write the file inside it:\n  mkdir -p /home/acer01/axi-assistant/user-data/soul-benchmarks/tasks/{{task_id}}\nWrite this EXACT file: /home/acer01/axi-assistant/user-data/soul-benchmarks/tasks/{{task_id}}/task.toml\n\nUse TOML triple-quoted '''...''' literals so nothing needs escaping. The `id`\nMUST equal {{task_id}} exactly or gaia-testbench rejects the file.\n\n  id = \"{{task_id}}\"\n  prompt = '''<task_prompt below, verbatim>'''\n  notes = '''authored by teacher.json; targets: {{targets}}'''\n  [rubric]\n  correctness = '''<correctness below, verbatim>'''\n  verification = '''<verification below, verbatim>'''\n  code_quality = '''<code_quality below, verbatim>'''\n\nTHEN, only if check_kind is exactly `validators`, append the validators_toml\nblock below verbatim as the LAST thing in the file. [[validators]] tables must\ncome after the [rubric] table or TOML will nest them wrongly. If check_kind is\nanything else, append nothing.\n\nField values to insert verbatim:\n- check_kind: {{check_kind}}\n- task_prompt: {{task_prompt}}\n- correctness: {{correctness}}\n- verification: {{verification}}\n- code_quality: {{code_quality}}\n- validators_toml: {{validators_toml}}\n\nUse the Write tool. If any field literally contains ''' , replace that\nsequence with \" \" \" (three quote characters) so the TOML still parses.\n</sys>"
+      },
+      "apply": {
+        "id": "apply",
+        "type": "bash",
+        "name": "APPLY_EVOLUTION",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nAR=/home/acer01/axi-assistant/user-data/autoresearch\nSCRIPTS=\"$AR/scripts\"\n# Validation is strict and reports every fault at once: task.toml, and any\n# check files WRITE_CHECKS wrote (answer_schema.json + validator.py compile\n# and pair up, [[validators]] have runnable `run` strings, $HIDDEN resolves to\n# a real hidden/, fixture/ is non-empty, prepare.sh has a shebang). Failing\n# HERE is the point -- the next discovery point is RESCORE, at $40 a target.\n#\n# On failure the claim MUST be released. CLAIM_DATASET_IDEA marked this idea\n# `- [~]` and only SIGNAL flips it to `- [x]`; an abort here skips SIGNAL, and\n# READ_DATASET_IDEA only ever greps `- [ ]`, so a failed epoch would retire the\n# idea permanently without anyone acting on it. Release, then still exit\n# non-zero so the epoch stops rather than rescoring against a broken task.\nif ! NEW_VERSION=$(\"$PY\" \"$SCRIPTS/apply_dataset_evolution.py\" \"{{task_id}}\" \\\n        --note \"teacher: {{dataset_idea_id}} -> {{task_id}}\"); then\n    sed -i -E \"s/^- \\[~\\] ({{dataset_idea_id}}:)/- [ ] \\1/\" \"$AR/dataset-ideas.md\" 2>/dev/null || true\n    echo \"apply failed for {{task_id}}; released the claim on {{dataset_idea_id}} back to the queue\" >&2\n    exit 1\nfi\nprintf '%s\\n' \"$NEW_VERSION\"",
+        "working_directory": "",
+        "output_variable": "new_version",
+        "continue_on_error": false
+      },
+      "read_topk_1": {
+        "id": "read_topk_1",
+        "type": "bash",
+        "name": "READ_TOPK_1",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/scripts\n\"$PY\" \"$SCRIPTS/top_k_dir.py\" 1",
+        "working_directory": "",
+        "output_variable": "topk_1",
+        "continue_on_error": false
+      },
+      "read_topk_2": {
+        "id": "read_topk_2",
+        "type": "bash",
+        "name": "READ_TOPK_2",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/scripts\n\"$PY\" \"$SCRIPTS/top_k_dir.py\" 2",
+        "working_directory": "",
+        "output_variable": "topk_2",
+        "continue_on_error": false
+      },
+      "rescore_1": {
+        "id": "rescore_1",
+        "type": "bash",
+        "name": "RESCORE_TOPK_1",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nSB=/home/acer01/axi-assistant/user-data/soul-benchmarks\nBUNDLE=\"{{topk_1}}\"\nES=\"$AR/scratch/rescore-$(basename \"$BUNDLE\")\"\nrm -rf \"$ES\"\nmkdir -p \"$ES\"\n# CONTRACT WARNING (gaia-testbench origin/main 9429814): the score.json this\n# writes is NOT shaped like the one already in the bundle. gaia now puts\n# `per_task` at the top level and emits no `per_level` and no\n# `benchmark_version`; the stored bundles still nest per_task under\n# `per_level.L2`. The `cp` below therefore converts the bundle to the new\n# shape, and find_blind_spots._per_task() -- which reads per_level.L2.per_task\n# -- returns {} for it from then on. Rescore both top-2 and every task reads\n# unsaturated, so the blind-spot scan reports no signal rather than erroring.\n# Fix find_blind_spots to prefer top-level per_task before trusting an epoch.\n# New keys worth reading here: solved_rate / n_solved / n_validated (the\n# deterministic validator axis; denominator is only tasks defining validators).\n# Rescore against the CURRENT task set. `--tasks <dir>` discovers tasks from\n# the directory, so a task the teacher just added is picked up with no fan-out\n# to regenerate -- which is why APPLY no longer calls regen_evaluate_config.py.\n# Overwriting the bundle's score.json is the point: a config that overfit the\n# old dataset is demoted by its own new number.\n\"$SB/.venv/bin/evaluate\" batch \\\n    --config \"$BUNDLE\" \\\n    --tasks \"$SB/tasks\" \\\n    --out \"$ES\" \\\n    --max-cost-usd 40\ncp \"$ES/score.json\" \"$BUNDLE/score.json\"\n# gaia no longer writes benchmark_version into score.json, so the copy above\n# would strip the version APPLY_EVOLUTION just bumped from the very bundle it\n# was bumped for. Re-stamp it, plus the task list the number was actually\n# computed over -- a score whose version and task set disagree has to be\n# visible, not inferred.\n\"${PY:-/home/acer01/axi-assistant/.venv/bin/python}\" \"$AR/scripts/stamp_score_version.py\" \"$BUNDLE/score.json\" \"$AR/benchmark-manifest.json\" >/dev/null\necho \"rescore: $(basename \"$BUNDLE\") -> $BUNDLE/score.json\"\n",
+        "working_directory": "",
+        "output_variable": null,
+        "continue_on_error": false
+      },
+      "rescore_2": {
+        "id": "rescore_2",
+        "type": "bash",
+        "name": "RESCORE_TOPK_2",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nSB=/home/acer01/axi-assistant/user-data/soul-benchmarks\nBUNDLE=\"{{topk_2}}\"\nES=\"$AR/scratch/rescore-$(basename \"$BUNDLE\")\"\nrm -rf \"$ES\"\nmkdir -p \"$ES\"\n# CONTRACT WARNING (gaia-testbench origin/main 9429814): the score.json this\n# writes is NOT shaped like the one already in the bundle. gaia now puts\n# `per_task` at the top level and emits no `per_level` and no\n# `benchmark_version`; the stored bundles still nest per_task under\n# `per_level.L2`. The `cp` below therefore converts the bundle to the new\n# shape, and find_blind_spots._per_task() -- which reads per_level.L2.per_task\n# -- returns {} for it from then on. Rescore both top-2 and every task reads\n# unsaturated, so the blind-spot scan reports no signal rather than erroring.\n# Fix find_blind_spots to prefer top-level per_task before trusting an epoch.\n# New keys worth reading here: solved_rate / n_solved / n_validated (the\n# deterministic validator axis; denominator is only tasks defining validators).\n# Rescore against the CURRENT task set. `--tasks <dir>` discovers tasks from\n# the directory, so a task the teacher just added is picked up with no fan-out\n# to regenerate -- which is why APPLY no longer calls regen_evaluate_config.py.\n# Overwriting the bundle's score.json is the point: a config that overfit the\n# old dataset is demoted by its own new number.\n\"$SB/.venv/bin/evaluate\" batch \\\n    --config \"$BUNDLE\" \\\n    --tasks \"$SB/tasks\" \\\n    --out \"$ES\" \\\n    --max-cost-usd 40\ncp \"$ES/score.json\" \"$BUNDLE/score.json\"\n# gaia no longer writes benchmark_version into score.json, so the copy above\n# would strip the version APPLY_EVOLUTION just bumped from the very bundle it\n# was bumped for. Re-stamp it, plus the task list the number was actually\n# computed over -- a score whose version and task set disagree has to be\n# visible, not inferred.\n\"${PY:-/home/acer01/axi-assistant/.venv/bin/python}\" \"$AR/scripts/stamp_score_version.py\" \"$BUNDLE/score.json\" \"$AR/benchmark-manifest.json\" >/dev/null\necho \"rescore: $(basename \"$BUNDLE\") -> $BUNDLE/score.json\"\n",
+        "working_directory": "",
+        "output_variable": null,
+        "continue_on_error": false
+      },
+      "signal": {
+        "id": "signal",
+        "type": "bash",
+        "name": "SIGNAL",
+        "command": "set -eu\nAR=/home/acer01/axi-assistant/user-data/autoresearch\necho \"$(date +%FT%T) teacher done idea={{dataset_idea_id}} added={{task_id}} version={{new_version}}\" >> \"$AR/epoch-signals.log\"\nsed -i -E \"s/^- \\[~\\] ({{dataset_idea_id}}:)/- [x] \\1/\" \"$AR/dataset-ideas.md\" 2>/dev/null || true\necho \"signalled dataset-secretary: done {{dataset_idea_id}}\"",
+        "working_directory": "",
+        "continue_on_error": true
+      },
+      "log": {
+        "id": "log",
+        "type": "bash",
+        "name": "LOG_TEACHER",
+        "command": "set -eu\nAR=/home/acer01/axi-assistant/user-data/autoresearch\necho \"$(date +%FT%T) teacher version={{new_version}} added={{task_id}} rescored={{topk_1}},{{topk_2}}\" >> \"$AR/teacher.log\"\ntail -1 \"$AR/teacher.log\"",
+        "working_directory": "",
+        "output_variable": "teacher_summary",
+        "continue_on_error": true
+      },
+      "end": {
+        "id": "end",
+        "type": "end",
+        "name": "END"
+      },
+      "write_checks": {
+        "id": "write_checks",
+        "type": "prompt",
+        "name": "WRITE_CHECKS",
+        "prompt": "<sys>\nWrite the task's deterministic check files, then stop. Change nothing else.\ntask.toml already exists; do not touch it.\n\ncheck_kind is: {{check_kind}}\n\nIf check_kind is `none`: write NOTHING. Say \"no deterministic check for this\ntask\" and stop. This is a valid outcome, not a failure.\n\nIf check_kind is `answer`: write BOTH of these, contents verbatim.\n  /home/acer01/axi-assistant/user-data/soul-benchmarks/tasks/{{task_id}}/answer_schema.json   <- answer_schema below\n  /home/acer01/axi-assistant/user-data/soul-benchmarks/tasks/{{task_id}}/validator.py         <- validator_source below\n\nIf check_kind is `validators`: write this ONE file, contents verbatim.\n  /home/acer01/axi-assistant/user-data/soul-benchmarks/tasks/{{task_id}}/hidden/{{hidden_filename}}   <- hidden_source below\n  (mkdir -p the hidden/ directory first. The [[validators]] entries that invoke\n  it are already in task.toml, and reach it through $HIDDEN -- gaia mounts\n  hidden/ at a randomised path per cell, so nothing may hardcode /validate or\n  any other fixed location.)\n\nWrite files EXACTLY as given. Do not reformat, lint, add imports, or \"improve\"\nthem -- these are checks, and a check you edited is a check nobody verified.\nIf a field is empty when check_kind says it should not be, do NOT invent\ncontents: say so plainly and write nothing, so the next block fails loudly\nrather than validating a check that does not exist.\n\nContents:\n- answer_schema: {{answer_schema}}\n- validator_source: {{validator_source}}\n- hidden_filename: {{hidden_filename}}\n- hidden_source: {{hidden_source}}\n\nUse the Write tool.\n</sys>"
+      }
+    },
+    "connections": [
+      {
+        "id": "c1",
+        "source_block_id": "start",
+        "target_block_id": "read_state",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c2",
+        "source_block_id": "read_state",
+        "target_block_id": "read_idea",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c3",
+        "source_block_id": "read_idea",
+        "target_block_id": "claim_idea",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c4",
+        "source_block_id": "claim_idea",
+        "target_block_id": "evolve",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c5",
+        "source_block_id": "evolve",
+        "target_block_id": "write_task",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c6",
+        "source_block_id": "write_task",
+        "target_block_id": "write_checks",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c7",
+        "source_block_id": "apply",
+        "target_block_id": "read_topk_1",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c8",
+        "source_block_id": "read_topk_1",
+        "target_block_id": "read_topk_2",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c9",
+        "source_block_id": "read_topk_2",
+        "target_block_id": "rescore_1",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c10",
+        "source_block_id": "rescore_1",
+        "target_block_id": "rescore_2",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c11",
+        "source_block_id": "rescore_2",
+        "target_block_id": "signal",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c12",
+        "source_block_id": "signal",
+        "target_block_id": "log",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c13",
+        "source_block_id": "log",
+        "target_block_id": "end",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c6b",
+        "source_block_id": "write_checks",
+        "target_block_id": "apply",
+        "source_port": "out",
+        "target_port": "in"
+      }
+    ]
+  },
+  "metadata": {
+    "created": "2026-08-16",
+    "version": "1.0-phase3",
+    "author": "hackathon-rnd",
+    "tags": [
+      "autoresearch",
+      "optimizer",
+      "phase3",
+      "teacher"
+    ]
+  }
+}

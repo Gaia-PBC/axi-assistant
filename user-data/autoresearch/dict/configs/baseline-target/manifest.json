@@ -1,17 +1,7 @@
 {
   "id": "baseline-target",
   "parent_id": null,
-  "main_model": "claude-haiku-4-5-20251001",
-  "spawn_block_models": {
-    "spawn_do": "claude-opus-4-8"
-  },
   "extensions": [],
-  "kb_files": [
-    "SYSTEM_PROMPT.md",
-    "refs/scheduling.md",
-    "refs/agent-spawning.md"
-  ],
-  "flowchart_entry": "soul-lite.json",
   "idea_id": null,
   "dataset_version": "seed",
   "provenance": {
@@ -30,7 +20,7 @@
       "main_model records soul-lite's documented design intent: 'Haiku (main session) classifies' (commands/soul-lite.json:4). The flowchart does NOT pin the main-session model (only spawn blocks can set model per PLAN.md App. B), so at runtime the main session otherwise inherits the process default (this bot's .env currently has AXI_MODEL=opus).",
       "spawn_block_models.spawn_do = claude-opus-4-8 is verbatim from the SPAWN_OPUS_DO block in soul-lite.json.",
       "THIS BOX ROUTING: the gaia-testbench eval runs inside the no-egress Bash sandbox and routes all LLM calls through the local vLLM shim (localhost:8199, which serves nvidia/Qwen3.6-35B-A3B-NVFP4). These Anthropic model ids describe soul-lite's authored config; Phase-1 evaluate-config WIRE must remap them to a served model (config.yaml currently sets model=nvidia/Qwen3.6-35B-A3B-NVFP4).",
-      "kb/SYSTEM_PROMPT.md is verbatim prompts/SOUL.md, including the line-115 literal '%an'/'%ae' that triggers the known soul_md.py:57 `content % {...}` TypeError (tracked finding #1) — a Phase-1 soul-loading concern, not a seeding defect.",
+      "kb/SYSTEM_PROMPT.md is verbatim prompts/SOUL.md, including the line-115 literal '%an'/'%ae' that triggers the known soul_md.py:57 `content % {...}` TypeError (tracked finding #1) \u2014 a Phase-1 soul-loading concern, not a seeding defect.",
       "flowchart/soul-lite-do.json reads refs from a hardcoded absolute path (/home/pride/coding-projects/leo-axi/prompts/refs/, stale for this box). kb/refs/ is bundled per the PLAN.md 2c bundle shape, but the flowchart's ref-read path must be templated to the bundle's kb in Phase 1 for kb/refs to actually be part of the optimization target."
     ]
   }
