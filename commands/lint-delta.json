@@ -1,0 +1,117 @@
+{
+  "id": "ad000040-lint-4000-8000-deltacheck00001",
+  "name": "lint-delta",
+  "description": "Measure and clear a branch's lint delta against its base. Archives the base ref, runs ruff over the same file set on both sides, diffs the findings by file+rule, fixes only what the branch introduced, then verifies lint is back to baseline and the unit suite still passes. Leaves pre-existing repo-wide lint debt untouched.",
+  "flowchart": {
+    "blocks": {
+      "b0000001-start-4000-8000-000000000001": {
+        "id": "b0000001-start-4000-8000-000000000001",
+        "type": "start",
+        "name": "START",
+        "position": { "x": 150, "y": 50 }
+      },
+      "b0000002-measure-4000-8000-00000000002": {
+        "id": "b0000002-measure-4000-8000-00000000002",
+        "type": "prompt",
+        "name": "MEASURE DELTA",
+        "position": { "x": 150, "y": 150 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nMeasure the lint delta that branch `$1` introduces against base ref `$2`.\n\nWork in `$3`. First run `git -C $3 rev-parse --abbrev-ref HEAD` and confirm it matches `$1`; if it does not, STOP and report the mismatch instead of guessing.\n\nMethod — do NOT skip the baseline half, it is the whole point:\n\n1. `git -C $3 fetch --quiet origin` then list the changed Python files:\n   `git -C $3 diff $2...HEAD --name-only | grep '\\.py$'`\n   If that list is empty, report 'no Python changes' and stop.\n2. Run ruff over that file set on the BRANCH and record the findings.\n3. Materialise the base for comparison — do not check it out, that would disturb the worktree:\n   `git -C $3 archive $2 | tar -x -C <a fresh temp dir>`\n   Run ruff over the SAME relative paths there (skip any that do not exist on the base — those are new files, fully attributable to the branch). Pass the repo's ruff.toml explicitly with --config so the temp copy uses the same rules.\n4. Diff the two finding sets by (file, rule-code), NOT by raw count and NOT by line number — line numbers shift and will produce false deltas.\n\nReport, and be exact:\n- total findings on branch vs on base for that file set\n- the delta: every (file, rule) present on the branch but not on the base\n- which of those sit in files the branch ADDED (fully attributable) vs merely modified\n- whether any delta finding is in production code rather than tests\n\nIf the delta is empty, say so plainly and state that no fix is needed. Do not invent work.",
+        "output_schema": null,
+        "sound_effect": null
+      },
+      "b0000003-fix-4000-8000-000000000003": {
+        "id": "b0000003-fix-4000-8000-000000000003",
+        "type": "prompt",
+        "name": "FIX DELTA ONLY",
+        "position": { "x": 150, "y": 250 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nFix ONLY the delta findings you just measured. If the delta was empty, change nothing and say so.\n\nHARD RULES:\n- Do not touch findings that also exist on the base. Pre-existing repo-wide lint debt is out of scope and a large unrelated diff on a feature branch is a defect, not a bonus.\n- Do not run a bare `ruff check --fix .` or `ruff format .` across the repo. Scope every command to the specific files carrying delta findings.\n- Prefer ruff's autofix for mechanical rules (import sorting, __all__ ordering, unused imports). Hand-edit only where autofix is unavailable or would change behavior.\n- Never use --unsafe-fixes without saying explicitly which finding required it and why.\n- Fix the code, never silence the rule: no `# noqa`, no per-file ignores in ruff.toml, no deleting the assertion. If a finding genuinely should not apply, report that instead of suppressing it.\n- Splitting a compound assertion, collapsing nested `with` blocks, and making a regex raw are behavior-preserving; anything you are unsure is behavior-preserving, leave alone and flag it.\n\nList each edit you make as file → rule → what changed.",
+        "output_schema": null,
+        "sound_effect": null
+      },
+      "b0000004-verify-4000-8000-00000000004": {
+        "id": "b0000004-verify-4000-8000-00000000004",
+        "type": "prompt",
+        "name": "VERIFY",
+        "position": { "x": 150, "y": 350 },
+        "prompt": "[Automated flowchart step — not a user message.]\n\nVerify the fix landed and broke nothing.\n\n1. Re-run ruff over the same changed-file set. The count must now equal the base baseline you measured in step one. State both numbers side by side; if they still differ, name the remaining findings and why they were left.\n2. Run the unit suite: `cd $3 && uv run pytest tests/unit -q --timeout=120 -p no:randomly`. Report passed/failed counts verbatim from the output — never paraphrase a suite result you did not see.\n3. `git -C $3 status -s` to show exactly which files are dirty.\n\nDo NOT commit and do NOT push. Leave the changes in the working tree for human review and say that you have done so.\n\nFinish with a short summary: baseline number, branch number before, branch number after, files touched, test result. If anything failed, say so plainly rather than reporting success.",
+        "output_schema": null,
+        "sound_effect": null
+      },
+      "b0000005-end-4000-8000-000000000005": {
+        "id": "b0000005-end-4000-8000-000000000005",
+        "type": "end",
+        "name": "DONE",
+        "position": { "x": 150, "y": 450 }
+      }
+    },
+    "connections": [
+      {
+        "id": "c0000001-0000-4000-8000-000000000001",
+        "source_block_id": "b0000001-start-4000-8000-000000000001",
+        "target_block_id": "b0000002-measure-4000-8000-00000000002",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000002-0000-4000-8000-000000000002",
+        "source_block_id": "b0000002-measure-4000-8000-00000000002",
+        "target_block_id": "b0000003-fix-4000-8000-000000000003",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000003-0000-4000-8000-000000000003",
+        "source_block_id": "b0000003-fix-4000-8000-000000000003",
+        "target_block_id": "b0000004-verify-4000-8000-00000000004",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      },
+      {
+        "id": "c0000004-0000-4000-8000-000000000004",
+        "source_block_id": "b0000004-verify-4000-8000-00000000004",
+        "target_block_id": "b0000005-end-4000-8000-000000000005",
+        "source_port": "bottom",
+        "target_port": "top",
+        "is_true_path": true,
+        "condition": null,
+        "label": null
+      }
+    ],
+    "start_block_id": "b0000001-start-4000-8000-000000000001"
+  },
+  "metadata": {
+    "created": "2026-08-16T00:00:00.000000",
+    "modified": "2026-08-16T00:00:00.000000",
+    "version": "1.0",
+    "author": null,
+    "tags": ["lint", "ruff", "quality", "branch-hygiene"]
+  },
+  "arguments": [
+    {
+      "name": "branch",
+      "description": "Branch to check, e.g. feat/provider-model-registry. Becomes $1.",
+      "required": true
+    },
+    {
+      "name": "base",
+      "description": "Base ref to diff against. Becomes $2.",
+      "required": false,
+      "default": "origin/main"
+    },
+    {
+      "name": "path",
+      "description": "Worktree or repo path to run in. Becomes $3.",
+      "required": false,
+      "default": "/home/acer01/axi-assistant"
+    }
+  ]
+}
