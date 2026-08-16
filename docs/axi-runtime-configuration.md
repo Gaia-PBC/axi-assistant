@@ -118,6 +118,19 @@ Supported values:
 Explicit flowchart commands, such as `/soul` or `/flowchart`, still work when
 automatic wrapping is disabled.
 
+## FlowCoder spawn threads
+
+When a flowchart spawn block creates a child agent, the child's output and
+events stream into a per-child Discord thread on the agent's channel (named
+after the child; nested spawns join the ancestry chain with `/`, e.g.
+`child/grandchild`). The parent channel shows a compact spawned/complete
+status line. Threads are archived 5 minutes after completion.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `FC_SPAWN_THREADS` | `1` | `0` disables threads — child output stays in the parent channel as before |
+| `FC_THREAD_GRACE_SECS` | `300` | Seconds to keep a completed spawn's thread open before archiving |
+
 ## Effort
 
 Axi passes `AXI_EFFORT` to Claude Code. Supported values are:
