@@ -6,6 +6,7 @@ without any Discord/frontend dependency.
 
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
@@ -438,3 +439,85 @@ class TestStreamProperties:
             assert not rate_limits
             assert not transient_errors
             assert (any(f.reason == "post_kill" for f in flushes)) == bool("".join(chunks).strip())
+
+
+# ---------------------------------------------------------------------------
+# Session-context seam (Task 2)
+# ---------------------------------------------------------------------------
+
+
+class _RawReceive:
+    """Yields raw dicts like the transport's read_messages."""
+
+    def __init__(self, items):
+        self._items = iter(items)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._items)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class _FakeQuery:
+    def __init__(self, items):
+        self._message_receive = _RawReceive(items)
+
+    def receive_messages(self):
+        return self._message_receive
+
+
+def _raw_stream_event(uuid="u1", session="lint"):
+    return {
+        "type": "stream_event",
+        "uuid": uuid,
+        "session_id": "child-session-1",
+        "event": {"type": "message_start"},
+        "_session_context": {"session": session, "block_id": "b1", "block_name": "B"},
+    }
+
+
+def _raw_result():
+    return {
+        "type": "result",
+        "subtype": "success",
+        "uuid": "u2",
+        "session_id": "flowchart",
+        "duration_ms": 1,
+        "duration_api_ms": 0,
+        "is_error": False,
+        "num_turns": 1,
+        "total_cost_usd": 0.0,
+        "result": "done",
+    }
+
+
+@pytest.mark.asyncio
+async def test_receive_response_safe_attaches_session_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agenthub import streaming as streaming_mod
+
+    session = types.SimpleNamespace(client=types.SimpleNamespace(_query=_FakeQuery(
+        [_raw_stream_event(), _raw_result()])))
+    got = []
+    async for parsed in streaming_mod.receive_response_safe(session):
+        got.append(parsed)
+    # The stream_event carried the stamp; the result message did not (its raw
+    # dict has no _session_context key), so it defaults to {}.
+    assert getattr(got[0], "_session_context", None) == {
+        "session": "lint", "block_id": "b1", "block_name": "B",
+    }
+    assert getattr(got[1], "_session_context", None) == {}
+
+
+@pytest.mark.asyncio
+async def test_receive_response_safe_defaults_context_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agenthub import streaming as streaming_mod
+
+    raw = _raw_stream_event()
+    raw.pop("_session_context")
+    session = types.SimpleNamespace(client=types.SimpleNamespace(_query=_FakeQuery([raw, _raw_result()])))
+    async for parsed in streaming_mod.receive_response_safe(session):
+        assert getattr(parsed, "_session_context", {}) == {}

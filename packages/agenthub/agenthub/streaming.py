@@ -92,6 +92,11 @@ async def receive_response_safe(session: AgentSession) -> AsyncIterator[Any]:
                     json.dumps(data)[:500],
                 )
             continue
+        # Carry the flowcoder transport's session stamp onto the parsed
+        # object. StreamEvent/AssistantMessage/ResultMessage dataclasses are
+        # non-slotted, so this attaches cleanly; SystemMessage keeps the raw
+        # dict anyway. Absent for non-flowcoder transports and the stub model.
+        parsed._session_context = data.get("_session_context", {})
         yield parsed
         if isinstance(parsed, ResultMessage):
             return
