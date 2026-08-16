@@ -27,35 +27,6 @@ from gaia_testbench.tasks import get_task  # noqa: E402
 from gaia_testbench.adapters.flowcoder_cli import FlowcoderCliAdapter  # noqa: E402
 
 
-def resolve_bundle_env(bundle_dir) -> dict:
-    """Env overrides needed to actually run this bundle's model.
-
-    A soul-config's model need not be Claude. For an ollama/vLLM model,
-    resolve_runtime auto-routes on the id (it is unique to one non-anthropic
-    provider) and returns ANTHROPIC_BASE_URL / ANTHROPIC_MODEL / auth / context.
-    Without them the eval subprocess quietly hits the Anthropic endpoint with an
-    id it does not serve, and the candidate is discarded for a harness gap rather
-    than a bad hypothesis.
-
-    Returns {} for an Anthropic model, an unpinned model, an unreadable manifest,
-    or an ambiguous route — in every one of those cases the plain `--model` path
-    is already correct, so degrading to no override is the safe default.
-    """
-    try:
-        manifest = json.loads((Path(bundle_dir) / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    model = (manifest.get("main_model") or "").strip()
-    if not model:
-        return {}
-    try:
-        from axi.config import resolve_runtime
-        _, env, _ = resolve_runtime(model)
-    except Exception:  # axi absent, or an ambiguous multi-provider id
-        return {}
-    return env
-
-
 def _make_adapter(level: str, cfg):
     if level in ("L2", "flowcoder_cli"):
         return FlowcoderCliAdapter(cfg)
@@ -69,9 +40,7 @@ def main() -> int:
     if len(sys.argv) < 5:
         raise SystemExit("usage: run_case.py <bundle_dir> <task_id> <workdir_abs> <level>")
     bundle_dir, task_id, workdir, level = sys.argv[1:5]
-    bundle = Path(bundle_dir).resolve()
-    cfg = dataclasses.replace(load_config(), bundle_dir=bundle,
-                              env=resolve_bundle_env(bundle))
+    cfg = dataclasses.replace(load_config(), bundle_dir=Path(bundle_dir).resolve())
     task = get_task(task_id)
     wd = Path(workdir)
     wd.mkdir(parents=True, exist_ok=True)
