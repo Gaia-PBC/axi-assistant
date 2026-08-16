@@ -31,8 +31,8 @@ dependencies = [
 # For local dev with ~/coding-projects/flowcoder, override with:
 #   flowcoder-engine = { path = "../flowcoder/packages/flowcoder-engine", editable = true }
 #   flowcoder-flowchart = { path = "../flowcoder/packages/flowcoder-flowchart", editable = true }
-flowcoder-engine = { git = "https://github.com/Gaia-PBC/flowcoder-core.git", rev = "96ae03535ca0075faa33cc15fd44d893de3ac3c0", subdirectory = "packages/flowcoder-engine" }
-flowcoder-flowchart = { git = "https://github.com/Gaia-PBC/flowcoder-core.git", rev = "96ae03535ca0075faa33cc15fd44d893de3ac3c0", subdirectory = "packages/flowcoder-flowchart" }
+flowcoder-engine = { git = "https://github.com/Gaia-PBC/flowcoder-core.git", rev = "2c47100bee13858b85ecf241dbd57b0efc9417a9", subdirectory = "packages/flowcoder-engine" }
+flowcoder-flowchart = { git = "https://github.com/Gaia-PBC/flowcoder-core.git", rev = "2c47100bee13858b85ecf241dbd57b0efc9417a9", subdirectory = "packages/flowcoder-flowchart" }
 procmux = { git = "https://github.com/leroux/procmux.git", rev = "88cc1eb91bf91b2653905e8a836abb15999e017d", subdirectory = "py" }
 claudewire = { git = "https://github.com/leroux/claudewire.git", rev = "1f940d89e1a1db8217f997f9dc77063a3738fd36", subdirectory = "py" }
 discordquery = { path = "packages/discordquery", editable = true }
