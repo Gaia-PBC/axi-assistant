@@ -102,16 +102,22 @@ class TestFlowCoderWrap:
 
 
 class TestFlowCoderSpawnThreads:
+    # FC_* are import-time constants, so the reload re-executes config.py's
+    # module level. Never clear os.environ around the reload: conftest's
+    # ambient defaults (DISCORD_TOKEN, ALLOWED_USER_IDS, DISCORD_GUILD_ID,
+    # BOT_NAMESPACE) must stay visible, otherwise a fresh checkout/CI without
+    # a local .env dies on KeyError: 'ALLOWED_USER_IDS' / BOT_NAMESPACE
+    # validation. Patch only the variable under test.
+
     def test_fc_spawn_threads_defaults_on(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
-            importlib.reload(config)
         try:
+            importlib.reload(config)
             assert config.FC_SPAWN_THREADS is True
         finally:
             importlib.reload(config)
 
     def test_fc_spawn_threads_opt_out(self) -> None:
-        with patch.dict("os.environ", {"FC_SPAWN_THREADS": "0"}, clear=True):
+        with patch.dict("os.environ", {"FC_SPAWN_THREADS": "0"}):
             importlib.reload(config)
         try:
             assert config.FC_SPAWN_THREADS is False
@@ -119,15 +125,14 @@ class TestFlowCoderSpawnThreads:
             importlib.reload(config)
 
     def test_fc_thread_grace_secs_default(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
-            importlib.reload(config)
         try:
+            importlib.reload(config)
             assert config.FC_THREAD_GRACE_SECS == 300
         finally:
             importlib.reload(config)
 
     def test_fc_thread_grace_secs_override(self) -> None:
-        with patch.dict("os.environ", {"FC_THREAD_GRACE_SECS": "5"}, clear=True):
+        with patch.dict("os.environ", {"FC_THREAD_GRACE_SECS": "5"}):
             importlib.reload(config)
         try:
             assert config.FC_THREAD_GRACE_SECS == 5
