@@ -58,7 +58,18 @@ class _FakeBot:
         self._threads: dict[int, _FakeThread] = {}
 
     def get_channel(self, thread_id: int) -> _FakeThread | None:
-        return self._threads.get(thread_id)
+        # Real discord.py registers threads created via create_thread in the
+        # bot's cache; mirror that by falling back to the channel's created
+        # threads (wired by _renderer) when _threads misses.
+        thread = self._threads.get(thread_id)
+        if thread is not None:
+            return thread
+        channel = getattr(self, "_channel", None)
+        if channel is not None:
+            for t in channel.threads:
+                if t.id == thread_id:
+                    return t
+        return None
 
 
 @pytest.fixture
@@ -104,9 +115,19 @@ def agent(monkeypatch: pytest.MonkeyPatch) -> AgentSession:
 def env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FC_SPAWN_THREADS", "1")
     monkeypatch.setenv("FC_THREAD_GRACE_SECS", "0")  # instant archive for tests
+    # config reads both env vars at import time, so setenv alone is a no-op for
+    # the module attributes the renderer consults (see the FC_SPAWN_THREADS
+    # comment in test_spawn_threads_disabled_...). Patch the attribute to make
+    # the "instant archive" intent real.
+    from axi import config
+
+    monkeypatch.setattr(config, "FC_THREAD_GRACE_SECS", 0)
 
 
 def _renderer(channel: _FakeChannel, bot: _FakeBot) -> DiscordStreamRenderer:
+    # Mirror discord.py: threads created on a channel are discoverable via the
+    # bot's get_channel (used by the archive paths).
+    bot._channel = channel
     return DiscordStreamRenderer("agent", channel, bot, streaming_enabled=False)  # type: ignore[arg-type]
 
 
@@ -301,11 +322,12 @@ async def test_child_drain_does_not_clobber_parent_last_flushed(
 
     # Parent text first: establishes the parent's last-flushed message.
     await renderer.handle(TextFlush(text="parent answer", reason="end_turn"))
-    await renderer.handle(StreamEnd())
-
-    # A child send via _send_long (e.g. a child drain before QueryResult) must
-    # NOT overwrite the parent's last-flushed bookkeeping.
+    # A child send via _send_long (e.g. a child drain before StreamEnd) must
+    # NOT overwrite the parent's last-flushed bookkeeping. It runs while the
+    # child's thread is still open: StreamEnd would archive unfinished threads
+    # and drop the spawn_threads mapping, falling back to the channel.
     await renderer._send_long("child tail", session="lint")
+    await renderer.handle(StreamEnd())
 
     # The timing suffix must edit the PARENT's last message, not the child's.
     await renderer.handle(QueryResult(cost_usd=0.0, duration_ms=1500, session=""))
@@ -385,3 +407,147 @@ async def test_child_flowchart_command_quiet_gates_child_blocks_only(
     assert any(t is channel and "PARENT" in text for t, text in posted), (
         "parent block line unaffected by the child's flowchart"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 7: spawn thread lifecycle (start/end, fallback, stream-end cleanup)
+# ---------------------------------------------------------------------------
+
+
+async def test_spawn_start_creates_thread_and_posts_status(
+    env, agent: AgentSession, posted: list[tuple[Any, str]], flushed: list[tuple[Any, str]]
+) -> None:
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    renderer = _renderer(channel, bot)
+
+    await renderer.handle(SpawnStart(
+        agent_name="lint", command_name="lint-fix", model="opus",
+        backend="claude", parent_session="main",
+    ))
+
+    assert len(channel.threads) == 1
+    thread = channel.threads[0]
+    assert thread.name == "lint"
+    assert discord_state(agent).spawn_threads == {"lint": thread.id}
+    assert any(
+        t is channel and "spawned" in text and "lint" in text for t, text in posted
+    ), "parent status line"
+    assert any(
+        t is thread and "Spawned agent **lint**" in text for t, text in flushed
+    ), "spawned line in thread"
+    assert any(
+        t is thread and "lint-fix" in text and "opus" in text for t, text in flushed
+    ), "command/model line in thread"
+
+
+async def test_nested_spawn_gets_ancestry_name(
+    env, agent: AgentSession, posted: list[tuple[Any, str]], flushed: list[tuple[Any, str]]
+) -> None:
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    parent_thread = _FakeThread("lint")
+    parent_thread.id = 888
+    bot._threads[888] = parent_thread
+    discord_state(agent).spawn_threads["lint"] = 888
+    renderer = _renderer(channel, bot)
+
+    # Task 3 contract: a nested spawn's event carries session == parent_session
+    # (the emitting walker's session name), so the status line routes into the
+    # parent's thread rather than the parent channel.
+    await renderer.handle(SpawnStart(
+        agent_name="fmt", command_name="fmt-do", parent_session="lint", session="lint",
+    ))
+
+    assert len(channel.threads) == 1
+    assert channel.threads[0].name == "lint/fmt"
+    assert any(
+        t is parent_thread and "fmt" in text and "spawned" in text for t, text in posted
+    ), "nested spawn status line routes into the parent's thread"
+
+
+async def test_spawn_end_routes_status_to_emitting_session(
+    env, agent: AgentSession, posted: list[tuple[Any, str]], flushed: list[tuple[Any, str]]
+) -> None:
+    """A nested spawn's completion line goes into the parent's thread."""
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    parent_thread = _FakeThread("lint")
+    parent_thread.id = 888
+    bot._threads[888] = parent_thread
+    ds = discord_state(agent)
+    ds.spawn_threads["lint"] = 888
+    ds.spawn_threads["fmt"] = 889
+    child_thread = _FakeThread("lint/fmt")
+    child_thread.id = 889
+    bot._threads[889] = child_thread
+    renderer = _renderer(channel, bot)
+
+    await renderer.handle(SpawnEnd(
+        agent_name="fmt", status="completed", duration_ms=500,
+        cost_usd=0.0, session="lint",
+    ))
+
+    assert any(
+        t is parent_thread and "fmt" in text and "completed" in text for t, text in posted
+    ), "completion line in the parent's thread"
+    assert any(t is child_thread and "Spawn **completed**" in text for t, text in flushed)
+
+
+async def test_spawn_end_posts_summary_and_archives(
+    env, agent: AgentSession, posted: list[tuple[Any, str]], flushed: list[tuple[Any, str]]
+) -> None:
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    thread = _FakeThread("lint")
+    bot._threads[888] = thread
+    discord_state(agent).spawn_threads["lint"] = 888
+    renderer = _renderer(channel, bot)
+
+    await renderer.handle(SpawnEnd(
+        agent_name="lint", status="completed", duration_ms=1234,
+        cost_usd=0.042, session="",
+    ))
+
+    assert any(t is thread and "Spawn **completed**" in text for t, text in flushed)
+    assert any(t is thread and "1.2s" in text for t, text in flushed), "duration in summary"
+    assert any(t is thread and "$0.0420" in text for t, text in flushed), "cost in summary"
+    assert any(t is channel and "lint" in text and "completed" in text for t, text in posted)
+    assert "lint" not in discord_state(agent).spawn_threads, "mapping removed"
+    await asyncio.sleep(0.1)  # let the (0-grace) archive task run
+    assert thread.archived
+
+
+async def test_spawn_end_without_thread_is_noop(
+    env, agent: AgentSession, posted: list[tuple[Any, str]]
+) -> None:
+    renderer = _renderer(_FakeChannel(), _FakeBot())
+    await renderer.handle(SpawnEnd(agent_name="ghost", status="completed", session=""))
+    assert posted == []
+
+
+async def test_stream_end_archives_unfinished_threads(
+    env, agent: AgentSession, flushed: list[tuple[Any, str]]
+) -> None:
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    thread = _FakeThread("lint")
+    bot._threads[888] = thread
+    discord_state(agent).spawn_threads["lint"] = 888
+    renderer = _renderer(channel, bot)
+
+    await renderer.handle(StreamEnd(elapsed_s=1.0))
+
+    assert thread.archived
+    assert any(t is thread and "interrupted" in text for t, text in flushed)
+    assert discord_state(agent).spawn_threads == {}
