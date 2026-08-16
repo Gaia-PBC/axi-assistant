@@ -17,7 +17,7 @@ import pytest
 
 SCRIPTS = (
     Path(__file__).resolve().parents[2]
-    / "user-data/autoresearch/dict/configs/optimizer-seed/scripts"
+    / "user-data/autoresearch/scripts"
 )
 
 

@@ -1,17 +1,7 @@
 {
   "id": "cand-baseline-sonnet",
   "parent_id": "baseline-target",
-  "main_model": "claude-sonnet-5",
-  "spawn_block_models": {
-    "spawn_do": "claude-opus-4-8"
-  },
   "extensions": [],
-  "kb_files": [
-    "SYSTEM_PROMPT.md",
-    "refs/scheduling.md",
-    "refs/agent-spawning.md"
-  ],
-  "flowchart_entry": "soul-lite.json",
   "idea_id": "swap-main-model-to-claude-sonnet-5",
   "dataset_version": "seed",
   "provenance": {

@@ -1,0 +1,203 @@
+{
+  "id": "orchestrator",
+  "name": "orchestrator",
+  "description": "Phase 2 - the search loop (PLAN.md 2.1). Runs as an in-process LOOP. Each outer epoch: REFRESH -> INIT_K (FANOUT_K tunable) -> INIT_I -> inner fan-out loop [SAMPLE (sample-config -> parent_id, Thompson) -> CLAIM_SEED_IDEA -> FANOUT (spawn lineage-{{i}} run-experiment, fire-and-forget) -> INCR_I -> LOOP_BRANCH] -> JOIN (empty wait_for = all N) -> LOG (+ ideas.py render) -> back to REFRESH. IDEA FLOW: the mutator GENERATES its own hypotheses; CLAIM_SEED_IDEA only reserves an optional INSPIRATION seed from the shared pool and prints 'none' when the pool is empty (a normal state, not the old idea-default-noop degenerate path). The old READ_IDEA + CLAIM_IDEA grep/sed pair collapsed into this single block because ideas.py claim IS an atomic read-and-claim under flock. The K claims are SERIAL (this loop is sequential; only FANOUT is async), so the K seeds are distinct without further coordination. NOTE: this loop has no exit - END is intentionally unreachable - so it runs until the engine block cap (--max-blocks, walker.py) trips.",
+  "arguments": [],
+  "flowchart": {
+    "start_block_id": "start",
+    "blocks": {
+      "start": {
+        "id": "start",
+        "type": "start",
+        "name": "START"
+      },
+      "refresh-loop-start": {
+        "id": "refresh-loop-start",
+        "type": "refresh",
+        "name": "REFRESH"
+      },
+      "init_k": {
+        "id": "init_k",
+        "type": "bash",
+        "name": "INIT_FANOUT_K",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/scripts\n\"$PY\" -c \"import sys; sys.path.insert(0, '$SCRIPTS'); import tunables; print(tunables.fanout_k())\"",
+        "working_directory": "",
+        "output_variable": "fanout_n",
+        "output_type": "number",
+        "continue_on_error": false
+      },
+      "init_i": {
+        "id": "init_i",
+        "type": "variable",
+        "name": "INIT_I",
+        "variable_name": "i",
+        "variable_value": "1",
+        "variable_type": "number"
+      },
+      "sample": {
+        "id": "sample",
+        "type": "command",
+        "name": "SAMPLE",
+        "command_name": "sample-config",
+        "arguments": "",
+        "merge_output": true
+      },
+      "fanout": {
+        "id": "fanout",
+        "type": "spawn",
+        "name": "FANOUT_LINEAGE",
+        "agent_name": "lineage-{{i}}",
+        "command_name": "run-experiment",
+        "arguments": "{{parent_id}} {{seed_idea_id}} lineage-{{i}}",
+        "cwd": "/home/acer01/axi-assistant/user-data/autoresearch/scratch/lineage-{{i}}",
+        "inherit_variables": true
+      },
+      "incr_i": {
+        "id": "incr_i",
+        "type": "bash",
+        "name": "INCR_I",
+        "command": "echo $(( {{i}} + 1 ))",
+        "working_directory": "",
+        "output_variable": "i",
+        "output_type": "number",
+        "continue_on_error": false
+      },
+      "loop_branch": {
+        "id": "loop_branch",
+        "type": "branch",
+        "name": "MORE_LINEAGES",
+        "condition": "{{i}} <= {{fanout_n}}"
+      },
+      "join": {
+        "id": "join",
+        "type": "wait",
+        "name": "JOIN",
+        "wait_for": [],
+        "timeout_seconds": 21600
+      },
+      "log": {
+        "id": "log",
+        "type": "bash",
+        "name": "LOG_EPOCH",
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=\"$AR/scripts\"\necho \"$(date +%FT%T) epoch parent={{parent_id}} seed={{seed_idea_id}} fanout={{fanout_n}}\" >> \"$AR/epoch.log\"\n# Epoch boundary is the explicit render point (a whole-file rewrite takes the\n# lock, so it must not run per-append). Drift exits 2 and is reported, not fatal.\n\"$PY\" \"$SCRIPTS/ideas.py\" render || echo \"ideas: render skipped (see message above)\"\ntail -1 \"$AR/results.tsv\" 2>/dev/null || true",
+        "working_directory": "",
+        "output_variable": "epoch_summary",
+        "continue_on_error": true
+      },
+      "end": {
+        "id": "end",
+        "type": "end",
+        "name": "END"
+      },
+      "claim_seed": {
+        "id": "claim_seed",
+        "type": "bash",
+        "name": "CLAIM_SEED_IDEA",
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=\"$AR/scripts\"\n# Atomic test-and-set under flock. Prints 'none' when the pool is empty, which\n# is a NORMAL state: the mutator then generates unseeded. Never fails the epoch.\n\"$PY\" \"$SCRIPTS/ideas.py\" claim --lineage \"lineage-{{i}}\" --purpose seed 2>/dev/null || echo none",
+        "working_directory": "",
+        "output_variable": "seed_idea_id",
+        "continue_on_error": true
+      }
+    },
+    "connections": [
+      {
+        "id": "c1",
+        "source_block_id": "start",
+        "target_block_id": "refresh-loop-start",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c2",
+        "source_block_id": "refresh-loop-start",
+        "target_block_id": "init_k",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c3",
+        "source_block_id": "init_k",
+        "target_block_id": "init_i",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c4",
+        "source_block_id": "init_i",
+        "target_block_id": "sample",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c8",
+        "source_block_id": "fanout",
+        "target_block_id": "incr_i",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c9",
+        "source_block_id": "incr_i",
+        "target_block_id": "loop_branch",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c10",
+        "source_block_id": "loop_branch",
+        "target_block_id": "sample",
+        "source_port": "true",
+        "target_port": "in",
+        "is_true_path": true,
+        "label": "i <= fanout_n: sample+spawn next lineage"
+      },
+      {
+        "id": "c11",
+        "source_block_id": "loop_branch",
+        "target_block_id": "join",
+        "source_port": "false",
+        "target_port": "in",
+        "is_true_path": false,
+        "label": "all N spawned: join them"
+      },
+      {
+        "id": "c12",
+        "source_block_id": "join",
+        "target_block_id": "log",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c13",
+        "source_block_id": "log",
+        "target_block_id": "refresh-loop-start",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c5",
+        "source_block_id": "sample",
+        "target_block_id": "claim_seed",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c6",
+        "source_block_id": "claim_seed",
+        "target_block_id": "fanout",
+        "source_port": "out",
+        "target_port": "in"
+      }
+    ]
+  },
+  "metadata": {
+    "created": "2026-08-15",
+    "version": "2.0-phase2-loop",
+    "author": "hackathon-rnd",
+    "tags": [
+      "autoresearch",
+      "optimizer",
+      "phase2"
+    ]
+  }
+}

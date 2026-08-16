@@ -1,0 +1,363 @@
+{
+  "id": "evaluate-config",
+  "name": "evaluate-config",
+  "description": "Phase 1 \u2014 score a config bundle via gaia-testbench over the 5-task fast subset, writing the score.json vector (PLAN.md \u00a72.4 / IMPLEMENTATION.md \u00a72.4). Runs inline as a `command`; used by run-experiment AND teacher. Flow: WIRE (validate bundle + make eval scratch) -> fan out 5 L2 eval-case (chained non-blocking spawns) -> JOIN_L2 (empty wait_for = join all) -> REDUCE_L2 (scripts/reduce_scores.py -> reduce-l2.json + prints run_l3) -> GATE (branch run_l3>0). L2-only in Phase 1 (reduce_scores keeps run_l3=0 unless GAIA_L3_ENABLED + aggregate>threshold); the true path's L3 fan-out + gate tuning is the Phase-3 cost-cascade card. WRITE assembles $1/score.json (scripts/write_score.py). The 5 tasks are the recorded fast subset; each spawn's cost_variable captures the eval-case child's own session cost (the REAL adapter cost rides case-result.json, aggregated by REDUCE).",
+  "arguments": [
+    {
+      "name": "bundle_dir",
+      "description": "absolute path of the config bundle to score ($1)",
+      "required": true
+    },
+    {
+      "name": "benchmark_version",
+      "description": "gaia-testbench benchmark version label written into score.json ($2)",
+      "required": true
+    }
+  ],
+  "flowchart": {
+    "start_block_id": "start",
+    "blocks": {
+      "start": {
+        "id": "start",
+        "type": "start",
+        "name": "START"
+      },
+      "wire": {
+        "id": "wire",
+        "type": "bash",
+        "name": "WIRE",
+        "command": "set -eu\nAR=\"${AUTORES_ROOT:-/home/acer01/axi-assistant/user-data/autoresearch}\"\nBUNDLE=\"$(cd \"$1\" && pwd)\"\ntest -f \"$BUNDLE/manifest.json\" || { echo \"evaluate-config: bundle manifest missing: $BUNDLE\" >&2; exit 1; }\ntest -d \"$BUNDLE/flowchart\" || { echo \"evaluate-config: bundle flowchart/ missing: $BUNDLE\" >&2; exit 1; }\nES=\"$AR/scratch/eval-$(basename \"$BUNDLE\")\"\nrm -rf \"$ES\"\nmkdir -p \"$ES\"\necho \"$ES\"",
+        "working_directory": "",
+        "output_variable": "eval_scratch",
+        "continue_on_error": false
+      },
+      "join_l2": {
+        "id": "join_l2",
+        "type": "wait",
+        "name": "JOIN_L2",
+        "wait_for": [],
+        "timeout_seconds": 21600
+      },
+      "reduce_l2": {
+        "id": "reduce_l2",
+        "type": "bash",
+        "name": "REDUCE_L2",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/scripts\n\"$PY\" \"$SCRIPTS/reduce_scores.py\" \"{{eval_scratch}}\" L2",
+        "working_directory": "",
+        "output_variable": "run_l3",
+        "continue_on_error": false
+      },
+      "gate": {
+        "id": "gate",
+        "type": "branch",
+        "name": "L2_GATE",
+        "condition": "run_l3 > 0"
+      },
+      "join_l3": {
+        "id": "join_l3",
+        "type": "wait",
+        "name": "JOIN_L3",
+        "wait_for": [],
+        "timeout_seconds": 21600
+      },
+      "reduce_l3": {
+        "id": "reduce_l3",
+        "type": "bash",
+        "name": "REDUCE_L3",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/scripts\n\"$PY\" \"$SCRIPTS/reduce_scores.py\" \"{{eval_scratch}}\" axi || true",
+        "working_directory": "",
+        "output_variable": "l3_done",
+        "continue_on_error": true
+      },
+      "write": {
+        "id": "write",
+        "type": "bash",
+        "name": "WRITE_SCORE",
+        "command": "set -eu\nPY=/home/acer01/axi-assistant/.venv/bin/python\nSCRIPTS=/home/acer01/axi-assistant/user-data/autoresearch/scripts\n\"$PY\" \"$SCRIPTS/write_score.py\" \"$1\" \"{{eval_scratch}}\"",
+        "working_directory": "",
+        "output_variable": "cand_score",
+        "continue_on_error": false
+      },
+      "end": {
+        "id": "end",
+        "type": "end",
+        "name": "END"
+      },
+      "prep_id": {
+        "id": "prep_id",
+        "type": "bash",
+        "name": "PREP_ID",
+        "command": "basename \"$1\"",
+        "working_directory": "",
+        "output_variable": "bundle_id",
+        "continue_on_error": false
+      },
+      "l2_sqrt_67_digits": {
+        "id": "l2_sqrt_67_digits",
+        "type": "spawn",
+        "name": "L2_sqrt-67-digits",
+        "agent_name": "case-l2-sqrt-67-digits-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 sqrt-67-digits L2 {{eval_scratch}}/case-sqrt-67-digits",
+        "cwd": "{{eval_scratch}}/case-sqrt-67-digits",
+        "cost_variable": "c_l2_sqrt_67_digits",
+        "inherit_variables": true
+      },
+      "l3_sqrt_67_digits": {
+        "id": "l3_sqrt_67_digits",
+        "type": "spawn",
+        "name": "L3_sqrt-67-digits",
+        "agent_name": "case-l3-sqrt-67-digits-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 sqrt-67-digits axi {{eval_scratch}}/case-l3-sqrt-67-digits",
+        "cwd": "{{eval_scratch}}/case-l3-sqrt-67-digits",
+        "cost_variable": "c_l3_sqrt_67_digits",
+        "inherit_variables": true
+      },
+      "l2_sales_report": {
+        "id": "l2_sales_report",
+        "type": "spawn",
+        "name": "L2_sales-report",
+        "agent_name": "case-l2-sales-report-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 sales-report L2 {{eval_scratch}}/case-sales-report",
+        "cwd": "{{eval_scratch}}/case-sales-report",
+        "cost_variable": "c_l2_sales_report",
+        "inherit_variables": true
+      },
+      "l3_sales_report": {
+        "id": "l3_sales_report",
+        "type": "spawn",
+        "name": "L3_sales-report",
+        "agent_name": "case-l3-sales-report-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 sales-report axi {{eval_scratch}}/case-l3-sales-report",
+        "cwd": "{{eval_scratch}}/case-l3-sales-report",
+        "cost_variable": "c_l3_sales_report",
+        "inherit_variables": true
+      },
+      "l2_fix_balanced_brackets": {
+        "id": "l2_fix_balanced_brackets",
+        "type": "spawn",
+        "name": "L2_fix-balanced-brackets",
+        "agent_name": "case-l2-fix-balanced-brackets-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 fix-balanced-brackets L2 {{eval_scratch}}/case-fix-balanced-brackets",
+        "cwd": "{{eval_scratch}}/case-fix-balanced-brackets",
+        "cost_variable": "c_l2_fix_balanced_brackets",
+        "inherit_variables": true
+      },
+      "l3_fix_balanced_brackets": {
+        "id": "l3_fix_balanced_brackets",
+        "type": "spawn",
+        "name": "L3_fix-balanced-brackets",
+        "agent_name": "case-l3-fix-balanced-brackets-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 fix-balanced-brackets axi {{eval_scratch}}/case-l3-fix-balanced-brackets",
+        "cwd": "{{eval_scratch}}/case-l3-fix-balanced-brackets",
+        "cost_variable": "c_l3_fix_balanced_brackets",
+        "inherit_variables": true
+      },
+      "l2_refactor_user_validation": {
+        "id": "l2_refactor_user_validation",
+        "type": "spawn",
+        "name": "L2_refactor-user-validation",
+        "agent_name": "case-l2-refactor-user-validation-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 refactor-user-validation L2 {{eval_scratch}}/case-refactor-user-validation",
+        "cwd": "{{eval_scratch}}/case-refactor-user-validation",
+        "cost_variable": "c_l2_refactor_user_validation",
+        "inherit_variables": true
+      },
+      "l3_refactor_user_validation": {
+        "id": "l3_refactor_user_validation",
+        "type": "spawn",
+        "name": "L3_refactor-user-validation",
+        "agent_name": "case-l3-refactor-user-validation-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 refactor-user-validation axi {{eval_scratch}}/case-l3-refactor-user-validation",
+        "cwd": "{{eval_scratch}}/case-l3-refactor-user-validation",
+        "cost_variable": "c_l3_refactor_user_validation",
+        "inherit_variables": true
+      },
+      "l2_flaky_api_retry": {
+        "id": "l2_flaky_api_retry",
+        "type": "spawn",
+        "name": "L2_flaky-api-retry",
+        "agent_name": "case-l2-flaky-api-retry-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 flaky-api-retry L2 {{eval_scratch}}/case-flaky-api-retry",
+        "cwd": "{{eval_scratch}}/case-flaky-api-retry",
+        "cost_variable": "c_l2_flaky_api_retry",
+        "inherit_variables": true
+      },
+      "l3_flaky_api_retry": {
+        "id": "l3_flaky_api_retry",
+        "type": "spawn",
+        "name": "L3_flaky-api-retry",
+        "agent_name": "case-l3-flaky-api-retry-{{bundle_id}}",
+        "command_name": "eval-case",
+        "arguments": "$1 flaky-api-retry axi {{eval_scratch}}/case-l3-flaky-api-retry",
+        "cwd": "{{eval_scratch}}/case-l3-flaky-api-retry",
+        "cost_variable": "c_l3_flaky_api_retry",
+        "inherit_variables": true
+      }
+    },
+    "connections": [
+      {
+        "id": "c1",
+        "source_block_id": "start",
+        "target_block_id": "wire",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c1b",
+        "source_block_id": "wire",
+        "target_block_id": "prep_id",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c2",
+        "source_block_id": "prep_id",
+        "target_block_id": "l2_sqrt_67_digits",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c3",
+        "source_block_id": "l2_sqrt_67_digits",
+        "target_block_id": "l2_sales_report",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c4",
+        "source_block_id": "l2_sales_report",
+        "target_block_id": "l2_fix_balanced_brackets",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c5",
+        "source_block_id": "l2_fix_balanced_brackets",
+        "target_block_id": "l2_refactor_user_validation",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c6",
+        "source_block_id": "l2_refactor_user_validation",
+        "target_block_id": "l2_flaky_api_retry",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c7",
+        "source_block_id": "l2_flaky_api_retry",
+        "target_block_id": "join_l2",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c8",
+        "source_block_id": "join_l2",
+        "target_block_id": "reduce_l2",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c9",
+        "source_block_id": "reduce_l2",
+        "target_block_id": "gate",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c10",
+        "source_block_id": "gate",
+        "target_block_id": "l3_sqrt_67_digits",
+        "source_port": "true",
+        "target_port": "in",
+        "is_true_path": true,
+        "label": "l2 cleared threshold + L3 enabled"
+      },
+      {
+        "id": "c11",
+        "source_block_id": "gate",
+        "target_block_id": "write",
+        "source_port": "false",
+        "target_port": "in",
+        "is_true_path": false,
+        "label": "L2-only score (Phase 1 default)"
+      },
+      {
+        "id": "c12",
+        "source_block_id": "l3_sqrt_67_digits",
+        "target_block_id": "l3_sales_report",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c13",
+        "source_block_id": "l3_sales_report",
+        "target_block_id": "l3_fix_balanced_brackets",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c14",
+        "source_block_id": "l3_fix_balanced_brackets",
+        "target_block_id": "l3_refactor_user_validation",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c15",
+        "source_block_id": "l3_refactor_user_validation",
+        "target_block_id": "l3_flaky_api_retry",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c16",
+        "source_block_id": "l3_flaky_api_retry",
+        "target_block_id": "join_l3",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c17",
+        "source_block_id": "join_l3",
+        "target_block_id": "reduce_l3",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c18",
+        "source_block_id": "reduce_l3",
+        "target_block_id": "write",
+        "source_port": "out",
+        "target_port": "in"
+      },
+      {
+        "id": "c19",
+        "source_block_id": "write",
+        "target_block_id": "end",
+        "source_port": "out",
+        "target_port": "in"
+      }
+    ]
+  },
+  "metadata": {
+    "created": "2026-08-15",
+    "version": "1.0-phase1",
+    "author": "hackathon-rnd",
+    "tags": [
+      "autoresearch",
+      "optimizer",
+      "phase1"
+    ]
+  }
+}

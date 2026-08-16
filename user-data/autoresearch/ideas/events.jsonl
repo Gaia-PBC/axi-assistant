@@ -13,3 +13,67 @@
 {"candidate_id":"cand-1786873829864370072","idea_id":"idea-do-haiku","kept":false,"op":"complete","score":null,"ts":1786881133.0396073}
 {"candidate_id":"cand-1786874124727756553","idea_id":"idea-main-haiku","kept":true,"op":"complete","score":0.9333,"ts":1786881133.0396247}
 {"candidate_id":"cand-1786874369776962385","idea_id":"idea-do-haiku","kept":true,"op":"complete","score":0.9111,"ts":1786881133.0396423}
+{"idea_id":"swap-spawn-do-model-from-75de70","op":"propose","origin":"lineage-1","text":"Swap spawn_do model from claude-opus-4-8 to claude-sonnet-5 \u2014 sonnet-5 has reasoning + lower cost, may handle numeric tasks better than opus","ts":1786896853.1605928}
+{"idea_id":"swap-main-model-from-cla-3eb5dd","op":"propose","origin":"lineage-1","text":"Swap main model from claude-haiku-4-5-20251001 to claude-sonnet-5 \u2014 sonnet-5 has reasoning, targets sqrt-67-digits weakness (0.67) at classification stage","ts":1786896853.8688517}
+{"idea_id":"swap-main-model-from-cla-218897","op":"propose","origin":"lineage-1","text":"Swap main model from claude-haiku-4-5-20251001 to claude-sonnet-4-5 \u2014 reasoning tier with different cost-quality tradeoff than sonnet-5","ts":1786896854.4446642}
+{"idea_id":"swap-spawn-do-model-from-cb7bae","op":"propose","origin":"lineage-1","text":"Swap spawn_do model from claude-opus-4-8 to nemotron-3.5-lightning \u2014 local cost-free reasoning model, unexplored region with high upside if quality holds","ts":1786896855.353482}
+{"idea_id":"add-numeric-self-verific-ee12e8","op":"propose","origin":"lineage-1","text":"Add numeric self-verification directive to SYSTEM_PROMPT.md \u2014 sqrt-67-digits (0.67) is weakest task; instruct to verify numeric outputs before finalizing","ts":1786896855.800174}
+{"idea_id":"swap-main-model-from-cla-3eb5dd","lineage":"lineage-1","op":"claim","purpose":"test","ts":1786896861.9677796}
+{"idea_id":"fix-ref-loading-path-in-cc3eb4","op":"propose","origin":"lineage-1","text":"Fix ref-loading path in soul-lite-do.json from /home/pride/ to kb/refs/ to enable reference context for ref-dependent tasks like flaky-api-retry","ts":1786897404.9588091}
+{"idea_id":"add-step-by-step-numeric-ef0682","op":"propose","origin":"lineage-1","text":"Add step-by-step numeric verification directive to SYSTEM_PROMPT.md to improve weak sqrt-67-digits task (0.67) with explicit calculation discipline","ts":1786897405.6269023}
+{"idea_id":"upgrade-spawn-do-model-f-a72fb4","op":"propose","origin":"lineage-1","text":"Upgrade spawn_do model from claude-opus-4-8 to claude-opus-5 for stronger numeric reasoning on weak tasks like sqrt-67-digits","ts":1786897406.2887373}
+{"idea_id":"swap-spawn-do-to-claude-dac381","op":"propose","origin":"lineage-1","text":"Swap spawn_do to claude-sonnet-4-5 with reasoning enabled for better cost-quality tradeoff while maintaining reasoning capability for numeric tasks","ts":1786897406.9926124}
+{"idea_id":"swap-spawn-do-to-nemotro-705f5b","op":"propose","origin":"lineage-1","text":"Swap spawn_do to nemotron-3.5-lightning local model with zero marginal cost to explore unexplored model family and cost-quality frontier","ts":1786897407.528831}
+{"idea_id":"upgrade-spawn-do-model-f-a72fb4","lineage":"lineage-1","op":"claim","purpose":"test","ts":1786897412.7349951}
+{"idea_id":"swap-spawn-do-model-from-75de70","lineage":"lineage-1","op":"claim","purpose":"seed","ts":1786898197.0722733}
+{"idea_id":"swap-main-model-from-cla-218897","lineage":"lineage-1","op":"claim","purpose":"seed","ts":1786898473.1413348}
+{"idea_id":"swap-spawn-do-model-from-cb7bae","lineage":"lineage-2","op":"claim","purpose":"seed","ts":1786898473.2636867}
+{"idea_id":"add-numeric-self-verific-ee12e8","lineage":"lineage-3","op":"claim","purpose":"seed","ts":1786898473.3318}
+{"idea_id":"fix-ref-loading-path-in-cc3eb4","lineage":"lineage-4","op":"claim","purpose":"seed","ts":1786898473.4155953}
+{"idea_id":"add-step-by-step-numeric-ef0682","lineage":"lineage-5","op":"claim","purpose":"seed","ts":1786898473.5420904}
+{"idea_id":"swap-spawn-do-to-claude-dac381","lineage":"lineage-6","op":"claim","purpose":"seed","ts":1786898473.6300735}
+{"idea_id":"swap-spawn-do-to-nemotro-705f5b","lineage":"lineage-7","op":"claim","purpose":"seed","ts":1786898473.759622}
+{"idea_id":"enhance-system-prompt-md-af2ba2","op":"propose","origin":"lineage-1","text":"Enhance SYSTEM_PROMPT.md with validation and API error handling guidance for weak tasks","ts":1786899381.4759903}
+{"idea_id":"create-kb-refs-validatio-334b1b","op":"propose","origin":"lineage-1","text":"Create kb/refs/validation.md with user validation and API reliability patterns","ts":1786899382.5766642}
+{"idea_id":"downgrade-spawn-do-model-c01497","op":"propose","origin":"lineage-1","text":"Downgrade spawn_do model from claude-opus-4-8 to claude-haiku-4-5-20251001 to test prompting vs compute bottleneck","ts":1786899383.988527}
+{"idea_id":"downgrade-spawn-do-model-997bdb","op":"propose","origin":"lineage-1","text":"Downgrade spawn_do model from claude-opus-4-8 to claude-sonnet-4-5 for cost-efficient reasoning","ts":1786899384.7410123}
+{"idea_id":"try-local-model-nemotron-cd23f5","op":"propose","origin":"lineage-1","text":"Try local model nemotron-3.5-lightning as main classifier for zero-cost region exploration","ts":1786899385.6878717}
+{"idea_id":"downgrade-spawn-do-model-c01497","lineage":"lineage-1","op":"claim","purpose":"test","ts":1786899400.0779028}
+{"idea_id":"flowchart-in-soul-lite-d-545e3d","op":"propose","origin":"lineage-1","text":"Flowchart: in soul-lite-do.json bare_do block, replace the trailing 'Be concise' with an explicit verify-before-finalizing step (trace code against the given examples/edge cases, recompute numeric answers, fix failures) \u2014 targets the weakest measured criterion (verification 2.6/3, correctness already 3.0) at zero added model cost.","ts":1786899485.0404613}
+{"idea_id":"model-set-the-main-sessi-c4057a","op":"propose","origin":"lineage-1","text":"Model: set the main-session model in config-meta.json to nemotron-3.5-lightning (local vLLM, rel_cost 0, reasoning) \u2014 the main session only classifies ref-topics, so a zero-cost reasoning model that matches classification quality wins on quality-per-cost versus haiku.","ts":1786899485.0754764}
+{"idea_id":"model-swap-the-spawn-do-142ed5","op":"propose","origin":"lineage-1","text":"Model: swap the spawn_do doer model from claude-opus-4-8 to nemotron-3.5-lightning (local vLLM, rel_cost 15 -> 0) \u2014 replaces the cost center with a zero-cost reasoning model; large quality-per-cost win if doer quality holds.","ts":1786899485.1100771}
+{"idea_id":"system-prompt-add-one-di-5e1b6b","op":"propose","origin":"lineage-1","text":"System prompt: add ONE directive to SYSTEM_PROMPT.md telling the doer to verify code by tracing the given test cases and to recompute numeric outputs before finalizing (no 'concise' clause) \u2014 targets verification 2.6/3 from the config-level prompt locus.","ts":1786899485.1443443}
+{"idea_id":"flowchart-in-soul-lite-d-545e3d","lineage":"lineage-1","op":"claim","purpose":"test","ts":1786899490.3844697}
+{"idea_id":"in-soul-lite-do-json-app-14f48c","op":"propose","origin":"lineage-1","text":"In soul-lite-do.json, append a self-verification step to the BARE_DO_IT doer prompt (re-check every requirement, trace code against edge cases, recompute numbers before finalizing) \u2014 targets the weakest rubric criterion, verification (2.6/3.0).","ts":1786899591.888858}
+{"idea_id":"in-soul-lite-do-json-bar-f25fc7","op":"propose","origin":"lineage-1","text":"In soul-lite-do.json BARE_DO_IT, replace 'Be concise' with a correctness-and-completeness-first directive \u2014 remove brevity pressure that suppresses edge-case handling and verification.","ts":1786899591.9216108}
+{"idea_id":"in-soul-lite-do-json-add-7f4230","op":"propose","origin":"lineage-1","text":"In soul-lite-do.json, add a dedicated REVIEW prompt block between BARE_DO_IT and END that re-examines the draft answer for correctness and edge cases before finalizing (single structural flowchart knob).","ts":1786899591.9436915}
+{"idea_id":"swap-the-spawn-do-doer-m-00bef3","op":"propose","origin":"lineage-1","text":"Swap the spawn_do (doer) model override in flowchart-main.json from claude-opus-4-8 to nemotron-3.5-lightning (local vLLM, rel_cost=0) \u2014 probe the unexplored local-model region for quality-per-cost.","ts":1786899591.965336}
+{"idea_id":"in-soul-lite-do-json-app-14f48c","lineage":"lineage-1","op":"claim","purpose":"test","ts":1786899596.826218}
+{"idea_id":"enhance-system-prompt-md-af2ba2","lineage":"lineage-1","op":"claim","purpose":"seed","ts":1786899830.2388296}
+{"idea_id":"create-kb-refs-validatio-334b1b","lineage":"lineage-2","op":"claim","purpose":"seed","ts":1786899830.323283}
+{"idea_id":"downgrade-spawn-do-model-997bdb","lineage":"lineage-1","op":"claim","purpose":"seed","ts":1786899858.0857656}
+{"idea_id":"try-local-model-nemotron-cd23f5","lineage":"lineage-2","op":"claim","purpose":"seed","ts":1786899858.1718216}
+{"idea_id":"model-set-the-main-sessi-c4057a","lineage":"lineage-3","op":"claim","purpose":"seed","ts":1786899858.2757008}
+{"idea_id":"model-swap-the-spawn-do-142ed5","lineage":"lineage-4","op":"claim","purpose":"seed","ts":1786899858.3759453}
+{"idea_id":"system-prompt-add-one-di-5e1b6b","lineage":"lineage-5","op":"claim","purpose":"seed","ts":1786899858.493887}
+{"idea_id":"in-soul-lite-do-json-bar-f25fc7","lineage":"lineage-6","op":"claim","purpose":"seed","ts":1786899858.6192122}
+{"idea_id":"in-soul-lite-do-json-add-7f4230","lineage":"lineage-7","op":"claim","purpose":"seed","ts":1786899858.7422774}
+{"idea_id":"swap-the-spawn-do-doer-m-00bef3","lineage":"lineage-8","op":"claim","purpose":"seed","ts":1786899858.884547}
+{"idea_id":"swap-main-model-from-hai-0d84b7","op":"propose","origin":"lineage-1","text":"Swap main model from haiku-4-5-20251001 to claude-sonnet-5 \u2014 better reasoning for numeric tasks (targets sqrt-67-digits weakness at 0.67) at 5x cost vs 15x for opus","ts":1786900045.3387945}
+{"idea_id":"swap-spawn-do-model-from-1cdd2f","op":"propose","origin":"lineage-1","text":"Swap spawn_do model from claude-opus-4-8 to claude-sonnet-5 \u2014 maintains reasoning quality at 1/3 cost (5 vs 15 rel_cost), tests if opus is overkill for worker model","ts":1786900046.629814}
+{"idea_id":"add-review-block-to-soul-72983b","op":"propose","origin":"lineage-1","text":"Add REVIEW block to soul-lite-do.json flowchart: insert verification step between BARE_DO_IT and END to catch edge cases and calculation errors (targets sqrt-67-digits at 0.67 and flaky-api-retry at 0.89)","ts":1786900048.0895324}
+{"idea_id":"enhance-system-prompt-md-9041f4","op":"propose","origin":"lineage-1","text":"Enhance SYSTEM_PROMPT.md: add numeric verification directive emphasizing step-by-step calculations, independent verification, and edge case checks before finalizing answers","ts":1786900049.1261046}
+{"idea_id":"swap-main-model-from-hai-0d84b7","lineage":"lineage-1","op":"claim","purpose":"test","ts":1786900053.6237113}
+{"idea_id":"swap-spawn-do-model-from-1cdd2f","lineage":"lineage-1","op":"claim","purpose":"seed","ts":1786900430.3143167}
+{"idea_id":"add-review-block-to-soul-72983b","lineage":"lineage-2","op":"claim","purpose":"seed","ts":1786900430.4253159}
+{"idea_id":"enhance-system-prompt-md-9041f4","lineage":"lineage-3","op":"claim","purpose":"seed","ts":1786900430.5166936}
+{"idea_id":"add-task-specific-verifi-16bedc","op":"propose","origin":"lineage-1","text":"Add task-specific verification directive to SYSTEM_PROMPT.md for API retry, user validation, and report logic edge cases","ts":1786900635.5524719}
+{"idea_id":"add-numeric-precision-va-7bda78","op":"propose","origin":"lineage-1","text":"Add numeric precision validation directive to SYSTEM_PROMPT.md: show step-by-step calculation and verify before finalizing","ts":1786900636.826212}
+{"idea_id":"swap-spawn-do-model-from-a5ee0f","op":"propose","origin":"lineage-1","text":"Swap spawn_do model from claude-opus-4-8 to nemotron-3.5-lightning for cost-free local reasoning","ts":1786900637.8084912}
+{"idea_id":"add-haiku-optimized-proc-9cc133","op":"propose","origin":"lineage-1","text":"Add haiku-optimized processing guidance to SYSTEM_PROMPT.md: avoid redundant loops, inline intermediate steps, verify assumptions early","ts":1786900638.7539144}
+{"idea_id":"add-explicit-edge-case-e-b8db3e","op":"propose","origin":"lineage-1","text":"Add explicit edge-case examples to SYSTEM_PROMPT.md for API retries, validation logic, and report generation","ts":1786900639.719135}
+{"idea_id":"add-task-specific-verifi-16bedc","lineage":"lineage-1","op":"claim","purpose":"test","ts":1786900645.7116995}
+{"idea_id":"add-numeric-precision-va-7bda78","lineage":"lineage-1","op":"claim","purpose":"seed","ts":1786901472.5677884}
+{"idea_id":"swap-spawn-do-model-from-a5ee0f","lineage":"lineage-2","op":"claim","purpose":"seed","ts":1786901472.6880095}
+{"idea_id":"add-haiku-optimized-proc-9cc133","lineage":"lineage-3","op":"claim","purpose":"seed","ts":1786901472.7594047}
+{"idea_id":"add-explicit-edge-case-e-b8db3e","lineage":"lineage-4","op":"claim","purpose":"seed","ts":1786901472.8478835}
