@@ -534,6 +534,35 @@ async def test_spawn_end_without_thread_is_noop(
     assert posted == []
 
 
+async def test_spawn_end_dead_thread_does_not_schedule_archive(
+    env, agent: AgentSession, posted: list[tuple[Any, str]]
+) -> None:
+    """F4: when the spawn thread is unresolvable at spawn_end (thread deleted),
+    the mapping is removed and the handler is done — no dangling grace-delay
+    archive task is scheduled for a thread that cannot exist (design doc §9)."""
+    from axi.axi_types import discord_state
+
+    channel = _FakeChannel()
+    bot = _FakeBot()
+    # spawn_threads still records the thread id, but the bot can no longer
+    # resolve it (thread deleted mid-stream).
+    discord_state(agent).spawn_threads["lint"] = 999
+    renderer = _renderer(channel, bot)
+
+    await renderer.handle(SpawnEnd(
+        agent_name="lint", status="completed", duration_ms=1234,
+        cost_usd=0.042, session="",
+    ))
+
+    assert "lint" not in discord_state(agent).spawn_threads, "mapping removed"
+    assert "lint" not in discord_state(agent).pending_archives, (
+        "no archive task scheduled for an unresolvable thread"
+    )
+    assert any(t is channel and "lint" in text for t, text in posted), (
+        "status line still routes to the parent channel"
+    )
+
+
 async def test_stream_end_archives_unfinished_threads(
     env, agent: AgentSession, flushed: list[tuple[Any, str]]
 ) -> None:
