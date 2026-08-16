@@ -17,7 +17,7 @@
         "position": { "x": 150, "y": 150 },
         "agent_name": "grandprobe",
         "command_name": "prompt",
-        "arguments": "Say hello from the grandchild agent.",
+        "arguments": "\"Say hello from the grandchild agent.\"",
         "inherit_variables": false
       },
       "b0000003-wait-4000-8000-000000000003": {
